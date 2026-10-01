@@ -1,0 +1,10 @@
+﻿<RevitAddIns>
+	<AddIn Type="Application">
+		<Name>RvtGo</Name>
+		<Assembly>RvtGo/RvtGo.dll</Assembly>
+		<AddInId>0A9EDFA5-65F0-4F7F-94C1-24CB56DD50BC</AddInId>
+		<FullClassName>RvtGo.Application</FullClassName>
+		<VendorId>Author Name</VendorId>
+		<VendorDescription>Author Description</VendorDescription>
+	</AddIn>
+</RevitAddIns>

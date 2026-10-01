@@ -1,0 +1,25 @@
+Using the supplied Revit Addin template, I wish to customize it into an AddIn called RvtGo. This AddIn will primarily achiueve the following goals:
+
+1. Runs in a separate window, from the active model. It takes in geometry from nominated categories after an options screen, which we will specify later in this prompt. The window serves as a representation of the model geometry that supports a first person shooter type UI/experience, including basic collision and gravity systems (which can be toggled with no-clip/fly mode where needed). The experience launches from the position of the active 3D view, or a random point if not. This point acts as Home, and a macro can reassign home during the session
+
+2. Geometry of core categories is divided into system, FFE and services. System includes Ceilings, Curtain Panels, Curtain Mullions, Doors, Floors, Stairs, Roofs (+ gutters/flashings), Walls, Windows. These can be configured to load on entry via Revit to the experience, or on/off once loaded in session via the pause/resume menu that triggers when you hit Escape key. Doors must be approximated into rough leafs, and leafs must swing open/shut when the user approaches the, close enough so they may pass through. Stairs must be traffickable vertically, with a tolerance on climbing capability for them.
+
+3. FFE comprises of Casework, Furniture, Furniture Systems, Generic models, Parking, Specialty equipment, Plumbing fixtures and Railing categories. Simialrly can be toggled on/off on experience begin and also during session (if it wasnt loaded, its just greyed out vs on/off toggle-able). Include any other categories you deem relevant. As objects of these categfories can be high poly, threshold them at 20k triangles, settable in the options as well when objects first load.
+
+4. Services include Electrical fixtures/equipment, mechanical equipment, security devices, fire alarm devices, Lighting etc. Handle simiarly to FFE management.
+
+5. Establish an abstract ground plane to prevent people faling throuhg the model, with the option for user to raise/lower this plane to suit. Simple horizon line or skybox. Graphics not hgh priroity, option to cache Revit graphic colour of Element from materials to the Element colours or just greyscale/whitecard look and feel.
+
+6. We want basic cycleable weaponry that does the following:
+- Scan gun: Scans basic name/category info about elements you target with it, elements highlight for context as you aim at them.
+- Measuring gun: Click for one point, abstract line to second point and commit to a fixed line when second click, RMB to remove last made. Reports back distance, and option to togggle normal projection off faces.
+- Portal gun: LMB/RMB place red/blue portals that act like the videogame portal, taking you through with basic FX/sounds. Rerunning one moves the portal, or you can remove them by a hotkey.
+- Comment gun: Shoot a marker that prompts you to leave a comment. RMB removes it, hover over shows the comment you left
+
+7. Basic FPS controls, WASD/Arrow keys, jump with space, shift to run, control to duck etc. Weapons hoykeyed as numbers. Page up/page down moves you up down one revit level/plane. Tab to show minimap on/off.
+
+8. It shoould be fast and performant with the computer/GPU with good framerate and decently scalable design principles. No dependencies if possible, target NET Framework 8.0 and Revit 2025-2027 (see the addin template for how I handle this). A basic button on a tab to launch the experience, all acvailable via the AddIn. Closing the windows ends the experience, but you can reboot via the addin button again afterwards to begin fresh.
+
+9. Take advantage of thigns like MathF, avoid lots of unnecessary casts for faster performance and allow for toggle-able antialiasing to help performance (off by default). Very simple HUD to guide user on controls and the experience game state and frame rate etc.
+
+Ask any queries before we begin, otherwise let's go!
