@@ -1,0 +1,5 @@
+i want rvtgo to become bimgo, and it will involve the app existing outside of Revit, and receiving geometry from Revit sessions and/or loading in extracts from a revit model to view standalone, and re-export if needed via bimgo to a new standalone
+
+this means some tools will not be Revit native anymore if running standalone, but the systemapp will need to contracturally communicate with Revit sessions, probably via a watched folder for the revit model/session in appdata or whereveer is most suitable to get commands/give feedback in return via a Revit addin that primarily serves as an information extractor for the system app to either plugin to that session bridge, or generate standalone extracts to load in
+
+some tools like demolish/move/clone will change functionally if ran without being tied to a model session, e.g. they would only be relevant to the actual bimgo model being handled standalone, but most features could be the same otherwise. You'd need to be able to cache/extract all data for bimgo to handle, probably as a masked json extended as '.bimgo' format
