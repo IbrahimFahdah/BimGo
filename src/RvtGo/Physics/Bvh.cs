@@ -40,8 +40,11 @@ namespace RvtGo.Physics
         /// <summary>Surface normal facing the ray origin.</summary>
         public Vector3 Normal;
 
-        /// <summary>Element index (SceneData.Elements).</summary>
+        /// <summary>Element index (SceneData.Elements). For dynamic hits, the instance's source element.</summary>
         public int Element;
+
+        /// <summary>The <see cref="DynamicInstance"/> hit, or 0 for the static scene.</summary>
+        public int DynamicId;
     }
 
     /// <summary>

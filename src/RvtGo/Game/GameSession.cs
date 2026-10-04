@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Numerics;
 using RvtGo.Audio;
+using RvtGo.Bridge;
 using RvtGo.Game.Guns;
 using RvtGo.Physics;
 using RvtGo.Platform;
@@ -15,8 +16,9 @@ namespace RvtGo.Game
     /// One walkthrough session: owns the game-thread systems and runs the loop
     /// (variable-rate rendering, fixed 120 Hz physics). Never touches the Revit API.
     ///
-    /// Split across partial files: this file (setup, loop, update), GameSession.Render.cs (3D passes, HUD, minimap)
-    /// and GameSession.Menu.cs (pause menu, comment editor).
+    /// Split across partial files: this file (setup, loop, update), GameSession.Render.cs (3D passes, HUD, minimap),
+    /// GameSession.Menu.cs (pause menu, comment editor) and GameSession.Edits.cs (runtime element edits, the Revit
+    /// bridge and the room readout).
     /// </summary>
     internal sealed partial class GameSession : IDisposable
     {
@@ -40,6 +42,7 @@ namespace RvtGo.Game
         private Gun[] _guns;
         private PortalGun _portalGun;
         private CommentGun _commentGun;
+        private readonly BridgeChannel _bridge;
 
         /// <summary>The snapshot.</summary>
         public SceneData Scene { get; }
@@ -110,16 +113,20 @@ namespace RvtGo.Game
         /// <summary>
         /// Creates the session (window and context already exist).
         /// </summary>
-        public GameSession(GameWindow window, SceneData scene)
+        public GameSession(GameWindow window, SceneData scene, BridgeChannel bridge)
         {
             _window = window;
             Scene = scene;
+            _bridge = bridge;
 
             int categories = CategoryCatalog.All.Count;
             _categoryVisible = new bool[categories];
             for (int i = 0; i < categories; i++) { _categoryVisible[i] = scene.CategoryLoaded[i]; }
             _pickMask = new bool[scene.Elements.Length];
             _collisionMask = new bool[scene.Elements.Length];
+            _hidden = new bool[scene.Elements.Length];
+            _elementIndexById = new Dictionary<long, int>(scene.Elements.Length);
+            for (int e = 0; e < scene.Elements.Length; e++) { _elementIndexById.TryAdd(scene.Elements[e].ElementId, e); }
             _doorCategory = CategoryCatalog.Find(CategoryCatalog.KEY_DOORS)?.Index ?? -1;
             _levelNamesUpper = scene.Levels.Select(l => l.Name.ToUpperInvariant()).ToArray();
 
@@ -157,10 +164,12 @@ namespace RvtGo.Game
             _target.Ensure(_window.Width, _window.Height, _msaa);
 
             // Systems
+            Dynamics = new DynamicSet(_bvh, Scene.Elements, _categoryVisible);
             var controller = new CharacterController(_bvh)
             {
                 StepHeight = Scene.Settings.MaxStepHeightMm / 1000f,
-                CollisionMask = _collisionMask
+                CollisionMask = _collisionMask,
+                Dynamics = Dynamics
             };
             _player = new Player(controller);
             RefreshMasks();
@@ -177,7 +186,12 @@ namespace RvtGo.Game
 
             _portalGun = new PortalGun(this);
             _commentGun = new CommentGun(this);
-            _guns = new Gun[] { new ScanGun(this), new MeasureGun(this), _portalGun, _commentGun };
+            _guns = new Gun[]
+            {
+                new ScanGun(this), new MeasureGun(this), _portalGun, _commentGun,
+                new TeleportGun(this), new HammerGun(this), new GizmoGun(this), new CloneGun(this)
+            };
+            for (int i = 0; i < _guns.Length; i++) { _guns[i].Key = (i + 1).ToString(); }
 
             Spawn();
             Native.Wgl.SetSwapInterval(_vsync);
@@ -273,7 +287,7 @@ namespace RvtGo.Game
             ElementRecord[] elements = Scene.Elements;
             for (int e = 0; e < elements.Length; e++)
             {
-                bool visible = _categoryVisible[elements[e].CategoryIndex];
+                bool visible = _categoryVisible[elements[e].CategoryIndex] && !_hidden[e];
                 _pickMask[e] = visible;
                 // Doors render as modelled but are always no-clip, so openings stay walkable
                 _collisionMask[e] = visible && elements[e].CategoryIndex != _doorCategory;
@@ -361,11 +375,30 @@ namespace RvtGo.Game
                 return;
             }
 
+            // A gun that has taken over the movement keys (Gizmo / Clone): Esc cancels it instead of pausing,
+            // and the player's own keys are ignored until it lets go.
+            Gun current = _guns[_activeGun];
+            bool captured = !_paused && current.CapturesInput;
+
             // Global keys
-            if (input.IsPressed(Vk.VK_ESCAPE)) { SetPaused(!_paused); }
+            if (input.IsPressed(Vk.VK_ESCAPE))
+            {
+                if (captured) { current.OnCancel(); }
+                else { SetPaused(!_paused); }
+            }
             if (input.IsPressed(Vk.VK_F1)) { _showHelp = !_showHelp; }
             if (input.IsPressed(Vk.VK_F11)) { _window.ToggleFullscreen(); }
             if (_paused) { return; }
+
+            UpdateRoom();
+
+            if (captured)
+            {
+                current.OnKeys(input);
+                if (input.IsPressed(Vk.VK_TAB)) { _showMap = !_showMap; }
+                UpdateMouseLook(input);
+                return;
+            }
 
             if (input.IsPressed(Vk.VK_TAB)) { _showMap = !_showMap; }
             if (input.IsPressed('V'))
@@ -401,8 +434,14 @@ namespace RvtGo.Game
             }
 
             _guns[_activeGun].OnKeys(input);
+            UpdateMouseLook(input);
+        }
 
-            // Mouse capture and look
+        /// <summary>
+        /// Mouse capture (click to look) and mouse look.
+        /// </summary>
+        private void UpdateMouseLook(InputState input)
+        {
             if (!_window.IsCaptured && input.LeftPressed && _window.IsActive)
             {
                 _window.SetCaptured(true);
@@ -420,7 +459,8 @@ namespace RvtGo.Game
         private void FixedUpdate(float dt)
         {
             _player.Controller.GroundZ = _groundZ;
-            _player.FixedUpdate(dt, _window.Input, inputEnabled: !IsEditingComment && _window.IsActive);
+            bool frozen = IsEditingComment || !_window.IsActive || _guns[_activeGun].CapturesInput;
+            _player.FixedUpdate(dt, _window.Input, inputEnabled: !frozen);
             _portalGun.CheckTeleport(_player, dt);
         }
 
@@ -454,6 +494,7 @@ namespace RvtGo.Game
         /// </summary>
         private void UpdateGuns(float dt)
         {
+            PumpBridge(dt);
             foreach (Gun gun in _guns) { gun.Tick(dt); }
             if (_paused || IsEditingComment) { return; }
 
@@ -487,7 +528,7 @@ namespace RvtGo.Game
 
         private void SelectGun(int index)
         {
-            if (index == _activeGun) { return; }
+            if (index == _activeGun || _guns[_activeGun].CapturesInput) { return; }
             _guns[_activeGun].OnDeselect();
             _activeGun = index;
             Sound.Play(SoundId.UiClick);
@@ -571,12 +612,29 @@ namespace RvtGo.Game
         }
 
         /// <summary>
-        /// Picks against visible static geometry.
+        /// Picks against visible geometry: the static scene and moved / cloned elements.
         /// </summary>
         public bool Pick(Vector3 origin, Vector3 direction, float maxDistance, out RayHit hit)
         {
-            return _bvh.Raycast(origin, direction, maxDistance, _pickMask, out hit);
+            bool hitStatic = _bvh.Raycast(origin, direction, maxDistance, _pickMask, out hit);
+            float limit = hitStatic ? hit.Distance : maxDistance;
+            if (Dynamics != null && Dynamics.Raycast(origin, direction, limit, out RayHit dynamicHit))
+            {
+                hit = dynamicHit;
+                return true;
+            }
+            return hitStatic;
         }
+
+        /// <summary>
+        /// The player (for guns that move it).
+        /// </summary>
+        public Player Player => _player;
+
+        /// <summary>
+        /// This frame's input (for guns that read held keys, e.g. the gizmo).
+        /// </summary>
+        public InputState Input => _window.Input;
 
         #endregion
 

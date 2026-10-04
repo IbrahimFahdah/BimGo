@@ -38,10 +38,12 @@ namespace RvtGo.Game.Guns
         public PortalGun(GameSession session) : base(session) { }
 
         public override string Name => "PORTAL";
-        public override string Key => "3";
         public override string HintPrimary => "Blue portal";
         public override string HintSecondary => "Red portal";
         public override uint Colour => UiTheme.PORTAL_BLUE;
+
+        public override void DrawIcon(UiBatch ui, float cx, float cy, float size, uint colour) => GunIcons.Portal(ui, cx, cy, size, colour);
+
         public override float PanelHeight => 96f;
 
         /// <summary>True if a portal is placed (for the minimap).</summary>

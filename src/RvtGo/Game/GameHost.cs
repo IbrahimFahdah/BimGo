@@ -24,8 +24,9 @@ namespace RvtGo.Game
         /// Starts a session on a new thread.
         /// </summary>
         /// <param name="scene">The snapshot.</param>
+        /// <param name="bridge">The Revit write-back channel (may be null).</param>
         /// <returns>False if a session is already running or the thread could not start.</returns>
-        public static bool Launch(SceneData scene)
+        public static bool Launch(SceneData scene, Bridge.BridgeChannel bridge)
         {
             lock (LOCK)
             {
@@ -34,7 +35,7 @@ namespace RvtGo.Game
 
                 try
                 {
-                    _thread = new Thread(() => RunSession(scene))
+                    _thread = new Thread(() => RunSession(scene, bridge))
                     {
                         Name = "RvtGo game thread",
                         IsBackground = true
@@ -73,7 +74,7 @@ namespace RvtGo.Game
         /// The game thread body. Every exception is caught here: an unhandled exception on a
         /// background thread would take Revit down with it.
         /// </summary>
-        private static void RunSession(SceneData scene)
+        private static void RunSession(SceneData scene, Bridge.BridgeChannel bridge)
         {
             GameWindow window = null;
             GameSession session = null;
@@ -83,7 +84,7 @@ namespace RvtGo.Game
                 window = new GameWindow($"RvtGo — {scene.ModelTitle} (loading)");
                 _window = window;
 
-                session = new GameSession(window, scene);
+                session = new GameSession(window, scene, bridge);
                 session.Run();
             }
             catch (Exception ex)

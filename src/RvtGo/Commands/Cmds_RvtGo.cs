@@ -58,8 +58,11 @@ namespace RvtGo.Commands.Cmds_RvtGo
                     return FormCallers.Cancelled("Nothing to walk through: no geometry was found in the ticked categories.");
                 }
 
+                // The write-back channel (Hammer / Gizmo / Clone). Null if unavailable: those guns then work in-game only.
+                Bridge.BridgeChannel bridge = Bridge.RevitBridge.StartSession(doc, scene.PhaseId, uiApp.MainWindowHandle);
+
                 // Hand the immutable snapshot to the game thread
-                if (!Game.GameHost.Launch(scene))
+                if (!Game.GameHost.Launch(scene, bridge))
                 {
                     return FormCallers.Error($"The walkthrough could not be started. See the log:\n{Utilities.Log_Utils.LogPath}");
                 }

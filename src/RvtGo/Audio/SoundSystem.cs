@@ -18,6 +18,11 @@ namespace RvtGo.Audio
         Remove,
         Error,
         UiClick,
+        Blink,
+        Prime,
+        Demolish,
+        Grab,
+        Commit,
         Count
     }
 
@@ -137,6 +142,11 @@ namespace RvtGo.Audio
                 SoundId.CommentPlace => 0.24f,
                 SoundId.Remove => 0.12f,
                 SoundId.Error => 0.14f,
+                SoundId.Blink => 0.22f,
+                SoundId.Prime => 0.16f,
+                SoundId.Demolish => 0.45f,
+                SoundId.Grab => 0.12f,
+                SoundId.Commit => 0.2f,
                 _ => 0.02f
             };
 
@@ -200,6 +210,44 @@ namespace RvtGo.Audio
                     case SoundId.Error:
                         phase += MathF.Tau * 140f / SAMPLE_RATE;
                         sample = MathF.Sign(MathF.Sin(phase)) * 0.25f;
+                        break;
+
+                    case SoundId.Blink:
+                    {
+                        // Quick rising whoosh
+                        float noise = (float)(random.NextDouble() * 2.0 - 1.0);
+                        lowpass += (noise - lowpass) * (0.08f + 0.5f * u);
+                        phase += MathF.Tau * (300f + 1400f * u * u) / SAMPLE_RATE;
+                        sample = lowpass * 0.45f * (1f - u) + MathF.Sin(phase) * 0.3f;
+                        break;
+                    }
+
+                    case SoundId.Prime:
+                        // Two-tone warning beep
+                        phase += MathF.Tau * (u < 0.5f ? 520f : 390f) / SAMPLE_RATE;
+                        sample = MathF.Sign(MathF.Sin(phase)) * 0.18f + MathF.Sin(phase) * 0.2f;
+                        break;
+
+                    case SoundId.Demolish:
+                    {
+                        // Low thump plus decaying rubble noise
+                        float noise = (float)(random.NextDouble() * 2.0 - 1.0);
+                        lowpass += (noise - lowpass) * 0.12f;
+                        phase += MathF.Tau * (90f - 50f * u) / SAMPLE_RATE;
+                        float decay = MathF.Exp(-5f * u);
+                        sample = (MathF.Sin(phase) * 0.7f + lowpass * 0.8f) * decay;
+                        break;
+                    }
+
+                    case SoundId.Grab:
+                        phase += MathF.Tau * (600f + 300f * u) / SAMPLE_RATE;
+                        sample = MathF.Sin(phase) * 0.45f * (1f - u);
+                        break;
+
+                    case SoundId.Commit:
+                        phase += MathF.Tau * (u < 0.35f ? 740f : 1110f) / SAMPLE_RATE;
+                        phase2 += MathF.Tau * (u < 0.35f ? 1480f : 2220f) / SAMPLE_RATE;
+                        sample = (MathF.Sin(phase) * 0.45f + MathF.Sin(phase2) * 0.12f) * (1f - u * 0.4f);
                         break;
 
                     default:

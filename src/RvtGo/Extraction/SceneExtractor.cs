@@ -137,8 +137,10 @@ namespace RvtGo.Extraction
             // Scene origin: median of element centres, rounded to whole metres (robust against outliers)
             _origin = ComputeOrigin(work.SelectMany(w => w.Elements));
 
-            // Level names and elevations
+            // Level names and elevations, the working phase and its rooms
             LevelInfo[] levels = CollectLevels();
+            Phase phase = ResolvePhase(uiDoc);
+            RoomInfo[] rooms = CollectRooms(phase);
 
             // Extract geometry
             int[] counts = new int[catalog.Count];
@@ -168,8 +170,8 @@ namespace RvtGo.Extraction
             if (!bounds.IsValid) { bounds = new Aabb(new Vector3(-10, -10, 0), new Vector3(10, 10, 3)); }
 
             stopwatch.Stop();
-            Utilities.Log_Utils.Write($"Extracted {_elements.Count} elements, {_indices.Count / 3} triangles, " +
-                $"in {stopwatch.Elapsed.TotalSeconds:F1}s (proxies {_proxyCount}, skipped {_skippedCount}).");
+            Utilities.Log_Utils.Write($"Extracted {_elements.Count} elements, {_indices.Count / 3} triangles, {rooms.Length} rooms " +
+                $"in {stopwatch.Elapsed.TotalSeconds:F1}s (proxies {_proxyCount}, skipped {_skippedCount}). Phase: {phase?.Name ?? "none"}.");
 
             return new SceneData
             {
@@ -177,6 +179,9 @@ namespace RvtGo.Extraction
                 Indices = _indices.ToArray(),
                 Elements = _elements.ToArray(),
                 Levels = levels,
+                Rooms = rooms,
+                PhaseId = phase?.Id.Value ?? -1,
+                PhaseName = phase?.Name,
                 Spawn = ResolveSpawn(uiDoc),
                 Bounds = bounds,
                 OriginOffset = _origin,
@@ -306,6 +311,8 @@ namespace RvtGo.Extraction
             int transparentStart = _indices.Count;
             foreach (int index in _tmpTransparent) { _indices.Add((uint)(index + vertexBase)); }
 
+            string blockReason = MoveBlockReasonOf(element, out Vector3 pivot);
+
             var record = new ElementRecord
             {
                 ElementId = element.Id.Value,
@@ -319,7 +326,10 @@ namespace RvtGo.Extraction
                 TransparentStart = transparentStart,
                 TransparentCount = _tmpTransparent.Count,
                 Bounds = bounds,
-                IsProxy = isProxy
+                IsProxy = isProxy,
+                Movable = blockReason == null,
+                MoveBlockReason = blockReason,
+                Pivot = pivot
             };
 
             _elements.Add(record);
@@ -672,6 +682,177 @@ namespace RvtGo.Extraction
 
             if (levelId != null && _levelNames.TryGetValue(levelId.Value, out string name)) { return name; }
             return "—";
+        }
+
+        #endregion
+
+        #region Movability
+
+        /// <summary>
+        /// Decides whether the Gizmo / Clone guns may transform the element, and captures its rotation pivot.
+        /// Only point-based loadable family instances that Revit will let us move freely in plan qualify.
+        /// </summary>
+        /// <param name="element">The element.</param>
+        /// <param name="pivot">The location point in scene coordinates (zero when not movable).</param>
+        /// <returns>Null when movable, else a short reason for the HUD.</returns>
+        private string MoveBlockReasonOf(Element element, out Vector3 pivot)
+        {
+            pivot = Vector3.Zero;
+            try
+            {
+                if (element is not FamilyInstance instance) { return "Not a loadable family"; }
+                if (instance.Symbol?.Family is Family family && family.IsInPlace) { return "In-place family"; }
+                if (instance.SuperComponent != null) { return "Nested in another family"; }
+                if (element.GroupId != ElementId.InvalidElementId) { return "Part of a group"; }
+                if (element.Pinned) { return "Pinned"; }
+                if (instance.Host is Wall) { return "Hosted by a wall"; }
+                if (element.Location is not LocationPoint location) { return "No location point"; }
+
+                pivot = ToScenePoint(location.Point);
+                return null;
+            }
+            catch (Exception ex)
+            {
+                Utilities.Log_Utils.Write($"Movability check failed for {element.Id.Value}: {ex.Message}");
+                return "Unknown";
+            }
+        }
+
+        #endregion
+
+        #region Phase and rooms
+
+        /// <summary>
+        /// The working phase: the launch view's phase, else the last phase in the project.
+        /// </summary>
+        private Phase ResolvePhase(UIDocument uiDoc)
+        {
+            try
+            {
+                Parameter viewPhase = uiDoc.ActiveView?.get_Parameter(BuiltInParameter.VIEW_PHASE);
+                if (viewPhase != null && viewPhase.StorageType == StorageType.ElementId && _doc.GetElement(viewPhase.AsElementId()) is Phase phase)
+                {
+                    return phase;
+                }
+
+                PhaseArray phases = _doc.Phases;
+                if (phases != null && phases.Size > 0) { return phases.get_Item(phases.Size - 1); }
+            }
+            catch (Exception ex)
+            {
+                Utilities.Log_Utils.Write($"Phase lookup failed: {ex.Message}");
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// Collects placed, bounded rooms (finish boundaries, arcs tessellated) for the HUD readout.
+        /// Rooms of the working phase are preferred; if none match, all placed rooms are used.
+        /// </summary>
+        private RoomInfo[] CollectRooms(Phase phase)
+        {
+            var all = new List<(RoomInfo Room, long PhaseId)>();
+            try
+            {
+                var options = new SpatialElementBoundaryOptions
+                {
+                    SpatialElementBoundaryLocation = SpatialElementBoundaryLocation.Finish
+                };
+
+                var collector = new FilteredElementCollector(_doc).OfCategory(BuiltInCategory.OST_Rooms).WhereElementIsNotElementType();
+                foreach (Element element in collector)
+                {
+                    if (element is not Autodesk.Revit.DB.Architecture.Room room) { continue; }
+                    try
+                    {
+                        RoomInfo info = BuildRoom(room, options);
+                        if (info == null) { continue; }
+                        long roomPhase = room.get_Parameter(BuiltInParameter.ROOM_PHASE)?.AsElementId()?.Value ?? -1;
+                        all.Add((info, roomPhase));
+                    }
+                    catch (Exception ex)
+                    {
+                        Utilities.Log_Utils.Write($"Room {room.Id.Value} skipped: {ex.Message}");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Utilities.Log_Utils.Write($"Room collection failed: {ex.Message}");
+            }
+
+            if (phase != null && all.Any(r => r.PhaseId == phase.Id.Value))
+            {
+                return all.Where(r => r.PhaseId == phase.Id.Value).Select(r => r.Room).ToArray();
+            }
+            return all.Select(r => r.Room).ToArray();
+        }
+
+        /// <summary>
+        /// Builds one room's plan loops and vertical extent, or null if it is unplaced, unbounded or redundant.
+        /// </summary>
+        private RoomInfo BuildRoom(Autodesk.Revit.DB.Architecture.Room room, SpatialElementBoundaryOptions options)
+        {
+            if (room.Location == null || room.Area <= 1e-6) { return null; }
+
+            IList<IList<BoundarySegment>> segments = room.GetBoundarySegments(options);
+            if (segments == null || segments.Count == 0) { return null; }
+
+            var loops = new List<Vector2[]>();
+            var min = new Vector2(float.MaxValue);
+            var max = new Vector2(float.MinValue);
+            var points = new List<Vector2>();
+
+            foreach (IList<BoundarySegment> loop in segments)
+            {
+                points.Clear();
+                foreach (BoundarySegment segment in loop)
+                {
+                    Curve curve = segment.GetCurve();
+                    if (curve == null) { continue; }
+                    IList<XYZ> tessellated = curve.Tessellate();
+
+                    // Each curve's last point is the next curve's first: skip it
+                    for (int i = 0; i < tessellated.Count - 1; i++)
+                    {
+                        Vector3 p = ToScenePoint(tessellated[i]);
+                        var p2 = new Vector2(p.X, p.Y);
+                        points.Add(p2);
+                        min = Vector2.Min(min, p2);
+                        max = Vector2.Max(max, p2);
+                    }
+                }
+                if (points.Count >= 3) { loops.Add(points.ToArray()); }
+            }
+            if (loops.Count == 0) { return null; }
+
+            // Vertical extent from the room's bounding box (accounts for base offset and upper limit)
+            BoundingBoxXYZ box = room.get_BoundingBox(null);
+            float bottom, top;
+            if (box != null)
+            {
+                bottom = (float)(box.Min.Z * FT) - _origin.Z;
+                top = (float)(box.Max.Z * FT) - _origin.Z;
+            }
+            else
+            {
+                double baseZ = (room.Level?.ProjectElevation ?? 0.0) + room.BaseOffset;
+                bottom = (float)(baseZ * FT) - _origin.Z;
+                top = bottom + (float)(room.UnboundedHeight * FT);
+            }
+            if (top - bottom < 0.1f) { top = bottom + 2.4f; }
+
+            string name = room.get_Parameter(BuiltInParameter.ROOM_NAME)?.AsString();
+            return new RoomInfo
+            {
+                Number = string.IsNullOrWhiteSpace(room.Number) ? "—" : room.Number,
+                Name = string.IsNullOrWhiteSpace(name) ? "Room" : name,
+                Loops = loops.ToArray(),
+                Min = min,
+                Max = max,
+                BottomZ = bottom,
+                TopZ = top
+            };
         }
 
         #endregion

@@ -38,6 +38,23 @@ namespace RvtGo.Game
         public static readonly uint COMMENT = Rgba.Hex(0xA78BFA);
         public static readonly uint COMMENT_LABEL = Rgba.Hex(0xC4B5FD);
 
+        public static readonly uint TELEPORT = Rgba.Hex(0x34D399);
+        public static readonly uint TELEPORT_LABEL = Rgba.Hex(0x6EE7B7);
+        public static readonly uint TELEPORT_BLOCKED = Rgba.Hex(0xF87171);
+
+        public static readonly uint HAMMER = Rgba.Hex(0xFB923C);
+        public static readonly uint HAMMER_LABEL = Rgba.Hex(0xFDBA74);
+        public static readonly uint HAMMER_PRIMED = Rgba.Hex(0xEF4444);
+
+        public static readonly uint GIZMO = Rgba.Hex(0xF472B6);
+        public static readonly uint GIZMO_LABEL = Rgba.Hex(0xF9A8D4);
+
+        public static readonly uint CLONE = Rgba.Hex(0xA3E635);
+        public static readonly uint CLONE_LABEL = Rgba.Hex(0xBEF264);
+
+        public static readonly uint AXIS_X = Rgba.Hex(0xF87171);
+        public static readonly uint AXIS_Y = Rgba.Hex(0x4ADE80);
+
         public static readonly uint MAP_BACKGROUND = Rgba.Hex(0x14171C);
         public static readonly uint MENU_BACKGROUND = Rgba.Hex(0x101318, 0.94f);
         public static readonly uint CARD = Rgba.Hex(0x181C22);

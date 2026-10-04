@@ -1,0 +1,15 @@
+Everything is working brilliantly at the moment, now we need to add some QOL features:
+
+1. I want an indicator of the room name and number the camera is currently positioned within to show in the HUD, and it needs to change/update as the user goes between rooms
+2. I'd like the indicators in the HUD for the gun types to be symbolic istead of named, as we will be expanding this to more guns, so itll grow quite a bit and need to take up more space. Keep the current 4 guns as is, but we will add more (see next item)
+3. We need new guns/tools that do the following. Please tell me if any are too extreme/don't function well with current setup so we can work through if they're viable or need rethinking:
+- Teleporter gun, that lets you teleport over to the target point or thereabouts. Sort of like how VR experiences have the move to point tools
+- Demolition hammer, that lets you target a hover over element for demolition. Click once to 'prime for demolition', click again on a primed element to delete in the actual experience as well as back in Revit. Swallow the errors/exceptions using a basic failure handler
+- Gizmo gun, that triggers a move/orbit gizmo and locks you in to the element as wasd for move and q/e for rotate in XY plane ccw/cw. When you lock onto an element with the gizmo, these keys stop controlling the user and instead run the gizmo controls. Once the move/rotate is done, these transforms are applied back in Revit as well to the Element if possible. This only works for FFE items/loadable families so hover over should only suit those. Escape to commit the gizmo actions and RMB to commit the gizmo
+- Clone gun, that lets you copy an Element in place and put you straight into the gizmo gun UX on that instance that is then created back in Revit when the gizmo is commited. Only works for aloadable/FFE families as well like the other ones
+
+Answers to Claude's questions:
+- Gizmo/Clone: RMB commit, Esc cancel
+- Hammer: by default, set phase demolished, toggle to make it actually do delete as briefed
+- Gizmo feel: camera-relative, smooth
+- Write-back code: new Bridge/ folder

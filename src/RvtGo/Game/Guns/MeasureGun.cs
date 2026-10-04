@@ -28,10 +28,12 @@ namespace RvtGo.Game.Guns
         public MeasureGun(GameSession session) : base(session) { }
 
         public override string Name => "MEASURE";
-        public override string Key => "2";
         public override string HintPrimary => _hasStart ? "Commit end point" : "Place start point";
         public override string HintSecondary => _hasStart ? "Cancel line" : "Remove last line";
         public override uint Colour => UiTheme.MEASURE;
+
+        public override void DrawIcon(UiBatch ui, float cx, float cy, float size, uint colour) => GunIcons.Measure(ui, cx, cy, size, colour);
+
         public override float PanelHeight => 132f;
 
         public override void Update(float dt, in AimInfo aim)

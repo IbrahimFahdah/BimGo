@@ -79,6 +79,11 @@ namespace RvtGo.Physics
         /// <summary>Per element: collide? (shared array owned by the session).</summary>
         public bool[] CollisionMask { get; set; }
 
+        /// <summary>Moved and cloned elements (collided with their current transforms), or null.</summary>
+        public DynamicSet Dynamics { get; set; }
+
+        private BvhTriangle[] _dynamicTriangles = new BvhTriangle[256];
+
 
         #endregion
 
@@ -282,6 +287,20 @@ namespace RvtGo.Physics
                     }
                 }
 
+                // Moved / cloned elements
+                int dynamicCount = Dynamics != null ? Dynamics.CollectTriangles(min, max, ref _dynamicTriangles) : 0;
+                for (int i = 0; i < dynamicCount; i++)
+                {
+                    ref BvhTriangle tri = ref _dynamicTriangles[i];
+                    if (!Overlaps(tri, min, max)) { continue; }
+                    if (PushOut(ref feet, height, tri.A, tri.B, tri.C, ref result))
+                    {
+                        pushed = true;
+                        min = feet - new Vector3(RADIUS + 0.02f, RADIUS + 0.02f, 0.02f);
+                        max = feet + new Vector3(RADIUS + 0.02f, RADIUS + 0.02f, height + 0.02f);
+                    }
+                }
+
                 if (feet.Z < GroundZ)
                 {
                     feet.Z = GroundZ;
@@ -356,6 +375,13 @@ namespace RvtGo.Physics
             for (int i = 0; i < staticCount; i++)
             {
                 ref BvhTriangle tri = ref _bvh.Triangles[_query[i]];
+                if (GeoMath.ClosestSegmentTriangle(p, q, tri.A, tri.B, tri.C, out _, out _) < limit) { return true; }
+            }
+
+            int dynamicCount = Dynamics != null ? Dynamics.CollectTriangles(min, max, ref _dynamicTriangles) : 0;
+            for (int i = 0; i < dynamicCount; i++)
+            {
+                ref BvhTriangle tri = ref _dynamicTriangles[i];
                 if (GeoMath.ClosestSegmentTriangle(p, q, tri.A, tri.B, tri.C, out _, out _) < limit) { return true; }
             }
 

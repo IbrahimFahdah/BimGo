@@ -199,6 +199,9 @@ namespace RvtGo.Native
         [DllImport("user32.dll")]
         public static extern bool SetForegroundWindow(nint hwnd);
 
+        /// <summary>The do-nothing message.</summary>
+        public const uint WM_NULL = 0x0000;
+
         [DllImport("user32.dll")]
         public static extern bool IsIconic(nint hwnd);
 

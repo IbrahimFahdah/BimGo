@@ -1,6 +1,7 @@
 using System.Numerics;
 using System.Runtime.InteropServices;
 using RvtGo.Native;
+using RvtGo.Physics;
 using RvtGo.Scene;
 
 // The class belongs to the Rendering namespace
@@ -55,6 +56,16 @@ namespace RvtGo.Rendering
         private int[] _drawCounts = Array.Empty<int>();
         private nint[] _drawOffsets = Array.Empty<nint>();
 
+        // Hidden elements: their index ranges are overwritten with degenerate triangles (scratch reused)
+        private uint[] _degenerate = Array.Empty<uint>();
+
+        // Dynamic (moved / cloned) geometry: copies of source index ranges drawn with a model matrix
+        private uint _dynamicVao, _dynamicIbo;
+        private readonly List<uint> _dynamicIndices = new();
+        private ElementRange[] _dynamicRanges = Array.Empty<ElementRange>();
+        private bool[] _hasDynamicRange = Array.Empty<bool>();
+        private bool _dynamicDirty;
+
         /// <summary>Chunks drawn last frame (stats).</summary>
         public int ChunksDrawn { get; private set; }
 
@@ -65,11 +76,12 @@ namespace RvtGo.Rendering
         /// </summary>
         private struct SceneUniforms
         {
-            public int ViewProj, Eye, LightDir, FogColor, FogDensity, Whitecard, Plan, ClipZ, Override;
+            public int ViewProj, Model, Eye, LightDir, FogColor, FogDensity, Whitecard, Plan, ClipZ, Override;
 
             public static SceneUniforms From(ShaderProgram p) => new()
             {
                 ViewProj = p.Uniform("uViewProj"),
+                Model = p.Uniform("uModel"),
                 Eye = p.Uniform("uEye"),
                 LightDir = p.Uniform("uLightDir"),
                 FogColor = p.Uniform("uFogColor"),
@@ -123,13 +135,19 @@ namespace RvtGo.Rendering
                 Gl.BufferData(Gl.ELEMENT_ARRAY_BUFFER, (nint)batches.Indices.Length * sizeof(uint), i, Gl.STATIC_DRAW);
             }
 
-            Gl.EnableVertexAttribArray(0);
-            Gl.VertexAttribPointer(0, 3, Gl.FLOAT, false, SceneVertex.SIZE, 0);
-            Gl.EnableVertexAttribArray(1);
-            Gl.VertexAttribPointer(1, 3, Gl.FLOAT, false, SceneVertex.SIZE, 12);
-            Gl.EnableVertexAttribArray(2);
-            Gl.VertexAttribPointer(2, 4, Gl.UNSIGNED_BYTE, true, SceneVertex.SIZE, 24);
+            SetVertexLayout();
             Gl.BindVertexArray(0);
+
+            // Dynamic geometry shares the vertex buffer, with its own (small) index buffer
+            _dynamicVao = Gl.GenVertexArray();
+            Gl.BindVertexArray(_dynamicVao);
+            Gl.BindBuffer(Gl.ARRAY_BUFFER, _vbo);
+            _dynamicIbo = Gl.GenBuffer();
+            Gl.BindBuffer(Gl.ELEMENT_ARRAY_BUFFER, _dynamicIbo);
+            SetVertexLayout();
+            Gl.BindVertexArray(0);
+            _dynamicRanges = new ElementRange[scene.Elements.Length];
+            _hasDynamicRange = new bool[scene.Elements.Length];
 
             int maxChunks = 1;
             foreach (RenderBatch batch in batches.Batches) { maxChunks = Math.Max(maxChunks, batch.ChunkCount); }
@@ -137,6 +155,148 @@ namespace RvtGo.Rendering
             _drawOffsets = new nint[maxChunks];
 
             _emptyVao = Gl.GenVertexArray();
+        }
+
+        /// <summary>
+        /// Vertex attributes of <see cref="SceneVertex"/> for the bound VAO / VBO.
+        /// </summary>
+        private static void SetVertexLayout()
+        {
+            Gl.EnableVertexAttribArray(0);
+            Gl.VertexAttribPointer(0, 3, Gl.FLOAT, false, SceneVertex.SIZE, 0);
+            Gl.EnableVertexAttribArray(1);
+            Gl.VertexAttribPointer(1, 3, Gl.FLOAT, false, SceneVertex.SIZE, 12);
+            Gl.EnableVertexAttribArray(2);
+            Gl.VertexAttribPointer(2, 4, Gl.UNSIGNED_BYTE, true, SceneVertex.SIZE, 24);
+        }
+
+        #endregion
+
+        #region Element visibility and dynamic geometry
+
+        /// <summary>
+        /// Hides or restores an element in the static batches. Hiding overwrites its index ranges with
+        /// degenerate triangles (zero raster cost) so the batch / chunk draw lists never change.
+        /// </summary>
+        /// <param name="element">Element index.</param>
+        /// <param name="hidden">True to hide, false to restore.</param>
+        public void SetElementHidden(int element, bool hidden)
+        {
+            ElementRange range = _batches.Ranges[element];
+            // The element buffer binding is VAO state (core profile): bind the VAO, never unbind the buffer from it
+            Gl.BindVertexArray(_vao);
+            Upload(range.OpaqueStart, range.OpaqueCount);
+            Upload(range.TransparentStart, range.TransparentCount);
+            Gl.BindVertexArray(0);
+
+            void Upload(int start, int count)
+            {
+                if (count <= 0) { return; }
+                if (hidden)
+                {
+                    if (_degenerate.Length < count) { _degenerate = new uint[Math.Max(count, _degenerate.Length * 2)]; }
+                    Array.Fill(_degenerate, _batches.Indices[start], 0, count);
+                    fixed (uint* data = _degenerate)
+                    {
+                        Gl.BufferSubData(Gl.ELEMENT_ARRAY_BUFFER, (nint)start * sizeof(uint), (nint)count * sizeof(uint), data);
+                    }
+                }
+                else
+                {
+                    fixed (uint* data = &_batches.Indices[start])
+                    {
+                        Gl.BufferSubData(Gl.ELEMENT_ARRAY_BUFFER, (nint)start * sizeof(uint), (nint)count * sizeof(uint), data);
+                    }
+                }
+            }
+        }
+
+        /// <summary>
+        /// Makes sure an element's triangles are available to the dynamic pass (copied once per source element;
+        /// clones of the same element share them).
+        /// </summary>
+        public void EnsureDynamicGeometry(int element)
+        {
+            if (_hasDynamicRange[element]) { return; }
+
+            ElementRange source = _batches.Ranges[element];
+            var range = new ElementRange
+            {
+                OpaqueStart = _dynamicIndices.Count,
+                OpaqueCount = source.OpaqueCount
+            };
+            for (int i = 0; i < source.OpaqueCount; i++) { _dynamicIndices.Add(_batches.Indices[source.OpaqueStart + i]); }
+            range.TransparentStart = _dynamicIndices.Count;
+            range.TransparentCount = source.TransparentCount;
+            for (int i = 0; i < source.TransparentCount; i++) { _dynamicIndices.Add(_batches.Indices[source.TransparentStart + i]); }
+
+            _dynamicRanges[element] = range;
+            _hasDynamicRange[element] = true;
+            _dynamicDirty = true;
+        }
+
+        /// <summary>
+        /// Uploads the dynamic index buffer if it changed.
+        /// </summary>
+        private void FlushDynamic()
+        {
+            if (!_dynamicDirty) { return; }
+            _dynamicDirty = false;
+            uint[] data = _dynamicIndices.ToArray();
+            Gl.BindVertexArray(_dynamicVao);
+            fixed (uint* pointer = data)
+            {
+                Gl.BufferData(Gl.ELEMENT_ARRAY_BUFFER, (nint)data.Length * sizeof(uint), pointer, Gl.DYNAMIC_DRAW);
+            }
+            Gl.BindVertexArray(0);
+        }
+
+        /// <summary>
+        /// Draws the active dynamic instances of one pass.
+        /// </summary>
+        public void DrawDynamic(in SceneDrawParams p, DynamicSet set, bool transparent)
+        {
+            if (set.Instances.Count == 0) { return; }
+            FlushDynamic();
+
+            _sceneProgram.Use();
+            ApplyUniforms(_sceneUniforms, p, Vector4.Zero);
+            Gl.BindVertexArray(_dynamicVao);
+            foreach (DynamicInstance instance in set.Instances)
+            {
+                if (!set.IsActive(instance) || !_hasDynamicRange[instance.Element]) { continue; }
+                if (!FpsCamera.IsVisible(p.Planes, instance.WorldBounds)) { continue; }
+                DrawDynamicRange(instance, transparent);
+            }
+            Gl.UniformMatrix4(_sceneUniforms.Model, Matrix4x4.Identity);
+            Gl.BindVertexArray(0);
+        }
+
+        /// <summary>
+        /// Draws one dynamic instance with a colour override (highlights).
+        /// </summary>
+        public void DrawDynamicHighlight(in SceneDrawParams p, DynamicInstance instance, Vector4 colour)
+        {
+            if (!_hasDynamicRange[instance.Element]) { return; }
+            FlushDynamic();
+
+            _sceneProgram.Use();
+            ApplyUniforms(_sceneUniforms, p, colour);
+            Gl.BindVertexArray(_dynamicVao);
+            DrawDynamicRange(instance, transparent: false);
+            DrawDynamicRange(instance, transparent: true);
+            Gl.UniformMatrix4(_sceneUniforms.Model, Matrix4x4.Identity);
+            Gl.BindVertexArray(0);
+        }
+
+        private void DrawDynamicRange(DynamicInstance instance, bool transparent)
+        {
+            ElementRange range = _dynamicRanges[instance.Element];
+            int start = transparent ? range.TransparentStart : range.OpaqueStart;
+            int count = transparent ? range.TransparentCount : range.OpaqueCount;
+            if (count <= 0) { return; }
+            Gl.UniformMatrix4(_sceneUniforms.Model, instance.Model);
+            Gl.DrawElements(Gl.TRIANGLES, count, Gl.UNSIGNED_INT, (nint)start * sizeof(uint));
         }
 
         #endregion
@@ -236,6 +396,7 @@ namespace RvtGo.Rendering
         private static void ApplyUniforms(in SceneUniforms u, in SceneDrawParams p, Vector4 overrideColour)
         {
             Gl.UniformMatrix4(u.ViewProj, p.ViewProjection);
+            Gl.UniformMatrix4(u.Model, Matrix4x4.Identity);
             Gl.Uniform3(u.Eye, p.Eye.X, p.Eye.Y, p.Eye.Z);
             Gl.Uniform3(u.LightDir, LIGHT_DIR.X, LIGHT_DIR.Y, LIGHT_DIR.Z);
             Gl.Uniform3(u.FogColor, FOG_COLOUR.X, FOG_COLOUR.Y, FOG_COLOUR.Z);
@@ -258,7 +419,9 @@ namespace RvtGo.Rendering
             _groundProgram?.Dispose();
             Gl.DeleteBuffer(_vbo);
             Gl.DeleteBuffer(_ibo);
+            Gl.DeleteBuffer(_dynamicIbo);
             Gl.DeleteVertexArray(_vao);
+            Gl.DeleteVertexArray(_dynamicVao);
             Gl.DeleteVertexArray(_emptyVao);
         }
     }

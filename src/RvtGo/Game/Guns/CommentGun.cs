@@ -24,10 +24,12 @@ namespace RvtGo.Game.Guns
         public CommentGun(GameSession session) : base(session) { }
 
         public override string Name => "COMMENT";
-        public override string Key => "4";
         public override string HintPrimary => "Place + type comment";
         public override string HintSecondary => "Remove marker";
         public override uint Colour => UiTheme.COMMENT;
+
+        public override void DrawIcon(UiBatch ui, float cx, float cy, float size, uint colour) => GunIcons.Comment(ui, cx, cy, size, colour);
+
         public override float PanelHeight => 96f;
 
         /// <summary>The marker under the crosshair (any gun).</summary>

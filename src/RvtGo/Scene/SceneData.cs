@@ -130,6 +130,47 @@ namespace RvtGo.Scene
         /// <summary>True if the element was replaced by a bounding-box proxy.</summary>
         public bool IsProxy { get; init; }
 
+        /// <summary>
+        /// True if the Gizmo / Clone guns may move or copy it: a loadable family instance with a location point
+        /// that is not pinned, grouped, nested, in-place or wall-hosted.
+        /// </summary>
+        public bool Movable { get; init; }
+
+        /// <summary>Why the element can't be moved (shown on hover), or null when <see cref="Movable"/>.</summary>
+        public string MoveBlockReason { get; init; }
+
+        /// <summary>Rotation pivot: the Revit location point (scene-local metres). Valid when <see cref="Movable"/>.</summary>
+        public Vector3 Pivot { get; init; }
+    }
+
+    /// <summary>
+    /// A placed, bounded Revit room: plan boundary loops and a vertical extent, used for the HUD room readout.
+    /// </summary>
+    internal sealed class RoomInfo
+    {
+        /// <summary>The room number.</summary>
+        public string Number { get; init; }
+
+        /// <summary>The room name (without the number).</summary>
+        public string Name { get; init; }
+
+        /// <summary>
+        /// Boundary loops in plan (scene-local metres). The outer loop and any islands; a point is inside when it is
+        /// inside an odd number of loops (even-odd rule), so holes need no special handling.
+        /// </summary>
+        public Vector2[][] Loops { get; init; }
+
+        /// <summary>Plan bounds minimum (fast rejection).</summary>
+        public Vector2 Min { get; init; }
+
+        /// <summary>Plan bounds maximum.</summary>
+        public Vector2 Max { get; init; }
+
+        /// <summary>Bottom of the room volume (scene Z).</summary>
+        public float BottomZ { get; init; }
+
+        /// <summary>Top of the room volume (scene Z).</summary>
+        public float TopZ { get; init; }
     }
 
     /// <summary>
@@ -174,6 +215,15 @@ namespace RvtGo.Scene
 
         /// <summary>Levels sorted by elevation.</summary>
         public LevelInfo[] Levels { get; init; }
+
+        /// <summary>Placed, bounded rooms of the current phase (may be empty).</summary>
+        public RoomInfo[] Rooms { get; init; } = Array.Empty<RoomInfo>();
+
+        /// <summary>The phase used for rooms and phase demolition (ElementId value, -1 if none).</summary>
+        public long PhaseId { get; init; } = -1;
+
+        /// <summary>The phase name (for the HUD), or null.</summary>
+        public string PhaseName { get; init; }
 
         /// <summary>Spawn from the active 3D view, or null to pick a random valid point.</summary>
         public SpawnInfo Spawn { get; init; }

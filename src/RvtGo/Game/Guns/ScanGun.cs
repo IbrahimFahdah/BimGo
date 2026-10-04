@@ -11,36 +11,45 @@ namespace RvtGo.Game.Guns
     /// </summary>
     internal sealed class ScanGun : Gun
     {
-        private int _hover = -1;
-        private int _locked = -1;
+        private int _hover = -1, _hoverDynamic;
+        private int _locked = -1, _lockedDynamic;
         private Vector3 _lockPoint;
 
         public ScanGun(GameSession session) : base(session) { }
 
         public override string Name => "SCAN";
-        public override string Key => "1";
         public override string HintPrimary => "Lock target";
         public override string HintSecondary => "Clear";
         public override uint Colour => UiTheme.SCAN;
+
+        public override void DrawIcon(UiBatch ui, float cx, float cy, float size, uint colour) => GunIcons.Scan(ui, cx, cy, size, colour);
+
         public override float PanelHeight => 150f;
 
         public override int HighlightElement => _locked >= 0 ? _locked : _hover;
+        public override int HighlightDynamic => _locked >= 0 ? _lockedDynamic : _hoverDynamic;
         public override float HighlightStrength => _locked >= 0 ? 0.42f : 0.22f;
 
         public override void Update(float dt, in AimInfo aim)
         {
             _hover = aim.HasHit ? aim.Hit.Element : -1;
+            _hoverDynamic = aim.HasHit ? aim.Hit.DynamicId : 0;
+
+            // Drop a lock whose target was demolished / deleted
+            if (_locked >= 0 && !Session.IsTargetPresent(_locked, _lockedDynamic)) { _locked = -1; _lockedDynamic = 0; }
         }
 
         public override void OnDeselect()
         {
             _hover = -1;
+            _hoverDynamic = 0;
         }
 
         public override void OnPrimary(in AimInfo aim)
         {
             if (!aim.HasHit) { return; }
             _locked = aim.Hit.Element;
+            _lockedDynamic = aim.Hit.DynamicId;
             _lockPoint = aim.Hit.Point;
             Session.Sound.Play(SoundId.ScanLock);
         }
@@ -87,13 +96,16 @@ namespace RvtGo.Game.Guns
             }
 
             ElementRecord record = Session.Scene.Elements[target];
+            Physics.DynamicInstance instance = Session.Dynamics.Find(_locked >= 0 ? _lockedDynamic : _hoverDynamic);
             ui.TextWrapped(f.Bold, x, y, width, record.Name, UiTheme.TEXT, maxLines: 1);
             y += S(24);
 
             float labelWidth = S(84);
             Row(ui, f, x, ref y, labelWidth, "Category", record.CategoryName);
             Row(ui, f, x, ref y, labelWidth, "Family", record.FamilyType);
-            Session.Text.Clear().Append(record.ElementId);
+            if (instance == null) { Session.Text.Clear().Append(record.ElementId); }
+            else if (instance.RevitId > 0) { Session.Text.Clear().Append(instance.RevitId).Append(instance.IsClone ? " (clone)" : " (moved)"); }
+            else { Session.Text.Clear().Append(instance.Committed ? "creating in Revit…" : "clone (not committed)"); }
             ui.Text(f.Body, x, y, "Element ID", UiTheme.TEXT_MUTED);
             ui.Text(f.Mono, x + labelWidth, y + S(1), Session.Text.Span, UiTheme.TEXT);
             y += S(19);

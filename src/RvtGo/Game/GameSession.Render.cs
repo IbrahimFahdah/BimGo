@@ -15,6 +15,7 @@ namespace RvtGo.Game
         #region Fields
 
         private readonly Vector4[] _mapPlanes = new Vector4[6];
+        private readonly List<Highlight> _highlights = new();
 
         private static readonly (string Key, string Action)[] HELP_ROWS =
         {
@@ -24,7 +25,7 @@ namespace RvtGo.Game
             ("V", "Fly / no-clip"),
             ("PGUP / PGDN", "Level up / down"),
             ("H / SHIFT+H", "Home / Set home"),
-            ("1–4 · WHEEL", "Select gun"),
+            ("1–8 · WHEEL", "Select gun"),
             ("X", "Clear gun markers"),
             ("TAB · ESC", "Map · Pause"),
             ("F11", "Fullscreen"),
@@ -65,20 +66,20 @@ namespace RvtGo.Game
             };
 
             _renderer.DrawStatic(p, _categoryVisible, transparent: false);
+            _renderer.DrawDynamic(p, Dynamics, transparent: false);
             _renderer.DrawGround(Camera, _groundZ);
 
-            // Scan highlight
+            // Gun highlights (scan target, primed demolitions, gizmo target…)
             Gun active = _guns[_activeGun];
-            int highlight = _paused ? -1 : active.HighlightElement;
-            if (highlight >= 0 && _pickMask[highlight])
+            _highlights.Clear();
+            if (!_paused) { active.CollectHighlights(_highlights); }
+            if (_highlights.Count > 0)
             {
                 Gl.Enable(Gl.BLEND);
                 Gl.BlendFunc(Gl.SRC_ALPHA, Gl.ONE_MINUS_SRC_ALPHA);
                 Gl.Enable(Gl.POLYGON_OFFSET_FILL);
                 Gl.PolygonOffset(-1f, -2f);
-                Vector4 colour = Rgba.ToVector(UiTheme.SCAN);
-                colour.W = active.HighlightStrength;
-                _renderer.DrawElementHighlight(p, highlight, colour);
+                foreach (Highlight highlight in _highlights) { DrawHighlight(p, highlight); }
                 Gl.Disable(Gl.POLYGON_OFFSET_FILL);
                 Gl.Disable(Gl.BLEND);
             }
@@ -88,6 +89,7 @@ namespace RvtGo.Game
             Gl.BlendFunc(Gl.SRC_ALPHA, Gl.ONE_MINUS_SRC_ALPHA);
             Gl.DepthMask(false);
             _renderer.DrawStatic(p, _categoryVisible, transparent: true);
+            _renderer.DrawDynamic(p, Dynamics, transparent: true);
             Gl.DepthMask(true);
             Gl.Disable(Gl.BLEND);
 
@@ -114,6 +116,25 @@ namespace RvtGo.Game
                 if (IsEditingComment) { BuildCommentEditor(); }
             }
             _ui.Flush(width, height);
+        }
+
+        /// <summary>
+        /// Tints one static element or dynamic instance.
+        /// </summary>
+        private void DrawHighlight(in SceneDrawParams p, Highlight highlight)
+        {
+            Vector4 colour = Rgba.ToVector(highlight.Colour);
+            colour.W = highlight.Strength;
+
+            if (highlight.DynamicId > 0)
+            {
+                Physics.DynamicInstance instance = Dynamics.Find(highlight.DynamicId);
+                if (instance != null && Dynamics.IsActive(instance)) { _renderer.DrawDynamicHighlight(p, instance, colour); }
+            }
+            else if (highlight.Element >= 0 && _pickMask[highlight.Element])
+            {
+                _renderer.DrawElementHighlight(p, highlight.Element, colour);
+            }
         }
 
         #region Minimap
@@ -155,6 +176,7 @@ namespace RvtGo.Game
             };
             Gl.Enable(Gl.DEPTH_TEST);
             _renderer.DrawStatic(p, _categoryVisible, transparent: false);
+            _renderer.DrawDynamic(p, Dynamics, transparent: false);
 
             Gl.Disable(Gl.SCISSOR_TEST);
             Gl.Viewport(0, 0, _window.Width, _window.Height);
@@ -275,6 +297,7 @@ namespace RvtGo.Game
 
             BuildHelp(f, height);
             BuildGunBar(f, width, height, active);
+            BuildRoomBanner(f, width);
             BuildToast(f, width);
         }
 
@@ -283,7 +306,7 @@ namespace RvtGo.Game
         /// </summary>
         private void BuildStatusPanel(FontAtlas f)
         {
-            float x = S(20), y = S(20), w = S(230), h = S(126);
+            float x = S(20), y = S(20), w = S(250), h = S(146);
             _ui.Panel(x, y, w, h, UiTheme.PANEL, UiTheme.PANEL_BORDER);
             _ui.Text(f.Bold, x + S(14), y + S(11), "RVTGO", UiTheme.TEXT, S(2f));
 
@@ -312,6 +335,18 @@ namespace RvtGo.Game
             else
             {
                 _ui.Text(f.Body, valueX, rowY, "—", UiTheme.TEXT);
+            }
+            rowY += row;
+
+            _ui.Text(f.Body, labelX, rowY, "ROOM", UiTheme.TEXT_MUTED);
+            if (CurrentRoom is RoomInfo room)
+            {
+                float used = _ui.Text(f.Mono, valueX, rowY + S(1), room.Number, UiTheme.ACCENT);
+                _ui.TextWrapped(f.Body, valueX + used + S(8), rowY, w - (valueX - x) - used - S(22), room.Name, UiTheme.TEXT, maxLines: 1);
+            }
+            else
+            {
+                _ui.Text(f.Body, valueX, rowY, Scene.Rooms.Length == 0 ? "No rooms in model" : "—", UiTheme.TEXT_MUTED);
             }
             rowY += row;
 
@@ -353,34 +388,49 @@ namespace RvtGo.Game
         }
 
         /// <summary>
-        /// Bottom-centre gun bar with LMB / RMB hints.
+        /// Bottom-centre gun bar: square symbol slots with the key number in the corner. The selected gun's
+        /// name sits above the bar beside the LMB / RMB hints, so the bar stays compact as guns are added.
         /// </summary>
         private void BuildGunBar(FontAtlas f, int width, int height, Gun active)
         {
-            float buttonW = S(132), buttonH = S(56), gap = S(6);
-            float total = _guns.Length * buttonW + (_guns.Length - 1) * gap;
+            float slot = S(52), gap = S(6), iconSize = S(30);
+            float total = _guns.Length * slot + (_guns.Length - 1) * gap;
             float x = MathF.Round(width * 0.5f - total * 0.5f);
-            float y = height - S(20) - buttonH;
+            float y = height - S(20) - slot;
 
             for (int i = 0; i < _guns.Length; i++)
             {
                 Gun gun = _guns[i];
                 bool selected = i == _activeGun;
-                float bx = x + i * (buttonW + gap);
-                _ui.Rect(bx, y, buttonW, buttonH, Rgba.Hex(0x0C0E12, selected ? 0.9f : 0.6f));
-                _ui.Outline(bx, y, buttonW, buttonH, S(2), selected ? gun.Colour : Rgba.Hex(0xFFFFFF, 0.14f));
-                float textY = y + buttonH * 0.5f - f.Bold.LineHeight * 0.5f;
-                float keyWidth = _ui.Text(f.Mono, bx + S(12), textY + S(2), gun.Key, selected ? gun.Colour : UiTheme.TEXT_MUTED);
-                _ui.Text(f.Bold, bx + S(12) + keyWidth + S(10), textY, gun.Name, UiTheme.TEXT, S(1f));
+                float bx = x + i * (slot + gap);
+                _ui.Rect(bx, y, slot, slot, Rgba.Hex(0x0C0E12, selected ? 0.9f : 0.6f));
+                _ui.Outline(bx, y, slot, slot, S(2), selected ? gun.Colour : Rgba.Hex(0xFFFFFF, 0.14f));
+                gun.DrawIcon(_ui, bx + slot * 0.5f, y + slot * 0.5f + S(2), iconSize, selected ? gun.Colour : UiTheme.TEXT_MUTED);
+                _ui.Text(f.Small, bx + S(5), y + S(3), gun.Key, selected ? gun.Colour : UiTheme.TEXT_FAINT);
             }
 
-            // Hints
-            float hintY = y - S(8) - S(24);
+            // Selected gun name, then the hints, on one row above the bar
+            float rowY = y - S(8) - S(24);
+            float nameWidth = UiBatch.Measure(f.Bold, active.Name, S(1f)) + S(20);
             float lmbWidth = HintWidth(f, active.HintPrimary);
             float rmbWidth = HintWidth(f, active.HintSecondary);
-            float hintX = width * 0.5f - (lmbWidth + rmbWidth + S(14)) * 0.5f;
-            Hint(f, hintX, hintY, "LMB", active.HintPrimary, active.Colour);
-            Hint(f, hintX + lmbWidth + S(14), hintY, "RMB", active.HintSecondary, active.Colour);
+            float rowWidth = nameWidth + S(10) + lmbWidth + S(10) + rmbWidth;
+            float rowX = MathF.Round(width * 0.5f - rowWidth * 0.5f);
+
+            _ui.Rect(rowX, rowY, nameWidth, S(24), Rgba.WithAlpha(active.Colour, 0.9f));
+            _ui.Text(f.Bold, rowX + S(10), rowY + S(4), active.Name, UiTheme.SCAN_TAG_TEXT, S(1f));
+            rowX += nameWidth + S(10);
+            Hint(f, rowX, rowY, "LMB", active.HintPrimary, active.Colour);
+            Hint(f, rowX + lmbWidth + S(10), rowY, "RMB", active.HintSecondary, active.Colour);
+
+            // Revit write-back activity
+            if (RevitPending > 0)
+            {
+                Text.Clear().Append("REVIT · ").Append(RevitPending).Append(" pending");
+                float pendingWidth = UiBatch.Measure(f.Small, Text.Span) + S(16);
+                _ui.Rect(width * 0.5f - pendingWidth * 0.5f, rowY - S(26), pendingWidth, S(20), Rgba.Hex(0x0C0E12, 0.7f));
+                _ui.TextCentred(f.Small, width * 0.5f, rowY - S(22), Text.Span, UiTheme.MEASURE_LABEL);
+            }
         }
 
         private float HintWidth(FontAtlas f, string text) =>
@@ -391,6 +441,24 @@ namespace RvtGo.Game
             _ui.Rect(x, y, HintWidth(f, text), S(24), Rgba.Hex(0x0C0E12, 0.7f));
             float used = _ui.Text(f.Mono, x + S(8), y + S(5), button, colour);
             _ui.Text(f.Body, x + S(8) + used + S(6), y + S(4), text, Rgba.Hex(0xE5E7EB));
+        }
+
+        /// <summary>
+        /// Top-centre banner when the player walks into a different room.
+        /// </summary>
+        private void BuildRoomBanner(FontAtlas f, int width)
+        {
+            if (CurrentRoom is not RoomInfo room || _clock >= _roomBannerUntil) { return; }
+            float remaining = _roomBannerUntil - _clock;
+            float alpha = Math.Clamp(remaining / 0.5f, 0f, 1f) * Math.Clamp((2.4f - remaining) / 0.2f, 0f, 1f);
+
+            float numberWidth = UiBatch.Measure(f.Mono, room.Number) + S(20);
+            float nameWidth = UiBatch.Measure(f.Bold, room.Name, S(1f)) + S(24);
+            float x = MathF.Round(width * 0.5f - (numberWidth + nameWidth) * 0.5f), y = S(62), h = S(32);
+            _ui.Rect(x, y, numberWidth, h, Rgba.WithAlpha(UiTheme.ACCENT, 0.92f * alpha));
+            _ui.Text(f.Mono, x + S(10), y + S(8), room.Number, Rgba.WithAlpha(UiTheme.SCAN_TAG_TEXT, alpha));
+            _ui.Rect(x + numberWidth, y, nameWidth, h, Rgba.WithAlpha(UiTheme.PANEL_STRONG, 0.88f * alpha));
+            _ui.Text(f.Bold, x + numberWidth + S(12), y + S(7), room.Name, Rgba.WithAlpha(UiTheme.TEXT, alpha), S(1f));
         }
 
         /// <summary>

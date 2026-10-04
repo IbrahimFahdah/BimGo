@@ -1,5 +1,6 @@
 using System.Numerics;
 using RvtGo.Audio;
+using RvtGo.Game.Guns;
 using RvtGo.Platform;
 using RvtGo.Rendering;
 using RvtGo.Scene;
@@ -172,8 +173,11 @@ namespace RvtGo.Game
             y += S(58);
             if (MenuButton(f, leftX, y, leftW, "CLEAR MARKERS", false, false))
             {
-                // Scan lock, measure lines and portals (comments are persistent: use X with the Comment gun)
-                for (int i = 0; i < 3; i++) { _guns[i].ClearMarkers(); }
+                // Every gun's markers except comments (persistent: use X with the Comment gun)
+                foreach (Gun gun in _guns)
+                {
+                    if (gun != _commentGun) { gun.ClearMarkers(); }
+                }
                 Toast("Markers cleared (comments kept)");
             }
 
