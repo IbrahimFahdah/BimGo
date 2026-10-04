@@ -1,0 +1,68 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+	<!--
+		BimGo.App: the standalone walkthrough app (BimGo.exe) and the engine (GL renderer, physics, guns, HUD).
+		No Revit references. Until live sessions arrive (phase 2) the Revit add-in also hosts this engine in-process
+		through GameHost, which is why this exe is referenced by BimGo.Revit.
+
+		UseWindowsForms only brings in-box framework pieces (System.Drawing for the font atlas, file dialogs).
+		No NuGet packages.
+	-->
+	<PropertyGroup>
+		<OutputType>WinExe</OutputType>
+		<TargetFramework>net8.0-windows</TargetFramework>
+		<LangVersion>latest</LangVersion>
+		<UseWindowsForms>true</UseWindowsForms>
+		<ImplicitUsings>true</ImplicitUsings>
+		<Nullable>disable</Nullable>
+		<PlatformTarget>x64</PlatformTarget>
+		<Prefer32Bit>false</Prefer32Bit>
+		<AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+		<RootNamespace>BimGo</RootNamespace>
+		<AssemblyName>BimGo</AssemblyName>
+		<AssemblyVersion>3.00.00.01</AssemblyVersion>
+		<FileVersion>3.00.00.01</FileVersion>
+		<Company>Author</Company>
+		<Product>BimGo</Product>
+		<GenerateDocumentationFile>True</GenerateDocumentationFile>
+		<NoWarn>$(NoWarn);CS1591</NoWarn>
+		<Configurations>Debug;Release</Configurations>
+		<StartupObject>BimGo.Program</StartupObject>
+		<!-- The ">>" icon: embedded in BimGo.exe (Explorer, taskbar pins) and copied beside it for the window class -->
+		<ApplicationIcon>Resources\BimGo.ico</ApplicationIcon>
+		<!-- Shared install location used by every Revit year's add-in to find BimGo.exe -->
+		<BimGoInstallDir>$(LocalAppData)\Programs\BimGo\</BimGoInstallDir>
+	</PropertyGroup>
+
+	<PropertyGroup Condition="'$(Configuration)' == 'Debug'">
+		<DefineConstants>$(DefineConstants);DEBUG;TRACE</DefineConstants>
+		<Optimize>false</Optimize>
+	</PropertyGroup>
+
+	<PropertyGroup Condition="'$(Configuration)' == 'Release'">
+		<DefineConstants>$(DefineConstants);TRACE</DefineConstants>
+		<Optimize>true</Optimize>
+	</PropertyGroup>
+
+	<ItemGroup>
+		<ProjectReference Include="..\BimGo.Core\BimGo.Core.csproj" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<None Update="Resources\BimGo.ico" Link="BimGo.ico" CopyToOutputDirectory="PreserveNewest" />
+	</ItemGroup>
+
+	<!--
+		Install a copy of the build to %LocalAppData%\Programs\BimGo\ so the add-ins (all Revit years) can launch it.
+		Skipped quietly if BimGo.exe is running (the copy is retried on the next build).
+	-->
+	<Target Name="InstallBimGoApp" AfterTargets="Build" Condition="'$(BimGoInstallDir)' != ''">
+		<ItemGroup>
+			<BimGoAppFiles Include="$(TargetDir)**\*.*" Exclude="$(TargetDir)**\*.pdb" />
+		</ItemGroup>
+		<MakeDir Directories="$(BimGoInstallDir)" ContinueOnError="true" />
+		<Copy SourceFiles="@(BimGoAppFiles)" DestinationFiles="@(BimGoAppFiles->'$(BimGoInstallDir)%(RecursiveDir)%(Filename)%(Extension)')"
+			  SkipUnchangedFiles="true" ContinueOnError="true" />
+	</Target>
+
+</Project>

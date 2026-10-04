@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+	<!--
+		BimGo.Core: shared by the standalone app (BimGo.App) and every Revit add-in build (BimGo.Revit, R25-R27).
+		No Revit, no GL, no UI. Holds the scene model, the .bimgo format, edit messages and the edit journal.
+		net8.0 so the net8 (R25/R26) and net10 (R27) add-ins can both reference it.
+	-->
+	<PropertyGroup>
+		<TargetFramework>net8.0</TargetFramework>
+		<LangVersion>latest</LangVersion>
+		<ImplicitUsings>true</ImplicitUsings>
+		<Nullable>disable</Nullable>
+		<AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+		<RootNamespace>BimGo</RootNamespace>
+		<AssemblyName>BimGo.Core</AssemblyName>
+		<AssemblyVersion>3.00.00.01</AssemblyVersion>
+		<FileVersion>3.00.00.01</FileVersion>
+		<Company>Author</Company>
+		<GenerateDocumentationFile>True</GenerateDocumentationFile>
+		<!-- Missing XML comments on DTO members are not worth failing over -->
+		<NoWarn>$(NoWarn);CS1591</NoWarn>
+		<Configurations>Debug;Release</Configurations>
+	</PropertyGroup>
+
+</Project>

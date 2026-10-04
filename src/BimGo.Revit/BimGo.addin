@@ -1,0 +1,10 @@
+﻿<RevitAddIns>
+	<AddIn Type="Application">
+		<Name>BimGo</Name>
+		<Assembly>BimGo/BimGo.Revit.dll</Assembly>
+		<AddInId>C1A459F6-4B86-42DF-8CA9-C9E2042F1ABA</AddInId>
+		<FullClassName>BimGo.Application</FullClassName>
+		<VendorId>Author Name</VendorId>
+		<VendorDescription>Author Description</VendorDescription>
+	</AddIn>
+</RevitAddIns>
