@@ -6,7 +6,10 @@
 		through GameHost, which is why this exe is referenced by BimGo.Revit.
 
 		UseWindowsForms only brings in-box framework pieces (System.Drawing for the font atlas, file dialogs).
-		No NuGet packages.
+
+		NuGet packages (see the README dependency table; every package needs Gavin's explicit yes):
+		  Silk.NET.OpenGL: GL function bindings behind the Native/Gl.cs facade. Context creation stays in Native/Wgl.cs.
+		The Revit add-in does not reference this project, so nothing here loads inside Revit.
 	-->
 	<PropertyGroup>
 		<OutputType>WinExe</OutputType>
@@ -50,7 +53,15 @@
 	</ItemGroup>
 
 	<ItemGroup>
+		<!-- Pinned. MIT. Pulls in Silk.NET.Core and Silk.NET.Maths (MIT). Do not add Silk.NET.Windowing / Input. -->
+		<PackageReference Include="Silk.NET.OpenGL" Version="2.23.0" />
+	</ItemGroup>
+
+	<ItemGroup>
 		<None Update="Resources\BimGo.ico" Link="BimGo.ico" CopyToOutputDirectory="PreserveNewest" />
+		<!-- Licence texts travel with BimGo.exe (MIT obliges the third-party notices to ship with the binaries) -->
+		<None Include="..\..\LICENSE" Link="LICENSE.txt" CopyToOutputDirectory="PreserveNewest" />
+		<None Include="..\..\THIRD-PARTY-NOTICES.txt" Link="THIRD-PARTY-NOTICES.txt" CopyToOutputDirectory="PreserveNewest" />
 	</ItemGroup>
 
 	<!--

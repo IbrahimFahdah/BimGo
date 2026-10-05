@@ -165,10 +165,13 @@ namespace BimGo.Scene
                 .Distinct(StringComparer.Ordinal)
                 .ToList();
 
-            // Keep the list bounded (models not seen for a long time lose their choice: none, the default)
-            LinkedModels.Remove(hostModelKey);
-            if (links.Count > 0) { LinkedModels[hostModelKey] = links; }
-            while (LinkedModels.Count > MAX_LINKED_MODEL_ENTRIES) { LinkedModels.Remove(LinkedModels.Keys.First()); }
+            // Keep the list bounded (models not seen for a long time lose their choice: none, the default).
+            // Rebuilt rather than edited in place: a Dictionary reuses a removed entry's slot, so after the first
+            // removal Keys.First() is no longer the oldest choice and would drop the one just added.
+            var ordered = LinkedModels.Where(p => !string.Equals(p.Key, hostModelKey, StringComparison.Ordinal)).ToList();
+            if (links.Count > 0) { ordered.Add(new KeyValuePair<string, List<string>>(hostModelKey, links)); }
+            int excess = Math.Max(0, ordered.Count - MAX_LINKED_MODEL_ENTRIES);
+            LinkedModels = new Dictionary<string, List<string>>(ordered.Skip(excess), StringComparer.Ordinal);
         }
 
         /// <summary>Shadow-map quality on this machine (the sun panel and the Options dialog change it).</summary>

@@ -1,0 +1,22 @@
+<Project Sdk="MSTest.Sdk/4.4.1">
+
+	<!--
+		BimGo.Core.Tests: unit tests for BimGo.Core (format round-trips, older files, journal, sun, settings,
+		progress, live protocol). Dev-only: ships nothing and is not referenced by any product project.
+		MSTest.Sdk is pinned in the Sdk attribute above (MIT). Runs from Visual Studio Test Explorer or `dotnet test`.
+		References BimGo.Core only (no Revit, GL or UI).
+	-->
+	<PropertyGroup>
+		<TargetFramework>net8.0</TargetFramework>
+		<LangVersion>latest</LangVersion>
+		<ImplicitUsings>disable</ImplicitUsings>
+		<Nullable>disable</Nullable>
+		<RootNamespace>BimGo.Tests</RootNamespace>
+		<IsPackable>false</IsPackable>
+	</PropertyGroup>
+
+	<ItemGroup>
+		<ProjectReference Include="..\..\src\BimGo.Core\BimGo.Core.csproj" />
+	</ItemGroup>
+
+</Project>

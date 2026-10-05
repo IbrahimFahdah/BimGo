@@ -1,6 +1,6 @@
 # BimGo — First-Person BIM Walkthroughs
 
-BimGo (formerly **RvtGo**) turns a Revit model into an FPS-style, first-person walkthrough with collision, gravity, walkable stairs, a room readout and eight tool guns: **Scan**, **Measure**, **Portal**, **Comment**, **Teleport**, **Demolish**, **Gizmo** and **Clone**. It renders with a small custom OpenGL engine (hand-written P/Invoke, no NuGet packages).
+BimGo (formerly **RvtGo**) turns a Revit model into an FPS-style, first-person walkthrough with collision, gravity, walkable stairs, a room readout and eight tool guns: **Scan**, **Measure**, **Portal**, **Comment**, **Teleport**, **Demolish**, **Gizmo** and **Clone**. It renders with a small custom OpenGL engine (own renderer, window and input; GL function bindings from Silk.NET, see §10).
 
 It comes in two parts:
 
@@ -15,7 +15,11 @@ The v3 design brief is `ai/261005_V3/1_BimGo v3_Handoff.md`. Decisions and the c
 
 1. **Read the handoff and build notes first.** This README documents what is built and where it deviates.
 2. **Keep this README current**, especially the Changelog and *Known limitations / to verify*.
-3. **No dependencies.** The no-NuGet rule is a design goal: GL, WGL, Win32, Raw Input and waveOut are all hand-written P/Invoke. `UseWindowsForms` / `UseWPF` only pull in-box framework parts. Ask before adding any package.
+3. **Dependencies: own what differentiates BimGo, rent the commodity plumbing.**
+   - Own: renderer architecture, shadows, picking, physics, the gun / tool system, the UI look, the `.bimgo` format, the journal, the Revit bridge and live protocol. The window / input stack (`Platform/GameWindow.cs`, `Native/Win32.cs`, `Platform/InputState.cs`, `Native/Wgl.cs`), waveOut audio and the font atlas also stay hand-written until they cause real pain.
+   - Rent: OpenGL function bindings (Silk.NET.OpenGL behind the `Native/Gl.cs` facade: renderer code calls `Gl.Xxx` with `uint` constants; add new GL calls as facade wrappers, not new P/Invoke).
+   - **BimGo.Revit stays dependency-free at run time** (it loads inside Revit beside other add-ins). Packages go in BimGo.App, in dev / build tooling, or nowhere. Revit API references stay HintPaths to the installed Revit.
+   - Every package needs Gavin's explicit yes, a permissive licence (MIT / Apache / BSD / zlib), a pinned version and a line in the dependency table (§10). No UI toolkits (they would change the look). Ask before adding folders.
 4. **Project boundaries:**
    - **BimGo.Core** has no Revit, GL or UI code.
    - **BimGo.App** never references the Revit API.
@@ -26,7 +30,8 @@ The v3 design brief is `ai/261005_V3/1_BimGo v3_Handoff.md`. Decisions and the c
    - Extensions live in `Extensions/TypeName_Ext.cs`.
    - Tooltips and icons resolve from the command's base name (`BimGo_Launch`, `BimGo_Export`).
 7. **Name clashes:** WPF, WinForms and Revit's `DB`/`UI` namespaces are global usings in BimGo.Revit, and WinForms + System.Drawing are global in BimGo.App. Avoid unqualified `Color`, `Point`, `Plane`, `View`, `Panel`, `CheckBox`, `TextBox`, `TaskDialog`… (use the `DB.`, `UI.`, `SD.`, `Wpf.`, `Win.` and `WinForms` aliases).
-8. **Zip handoff:** zip the repo minus `bin/`, `obj/` and `.vs/`.
+8. **Zip handoff:** zip the repo minus `bin/`, `obj/`, `.vs/` and `artifacts/`.
+9. **Tests:** `tests/BimGo.Core.Tests` (MSTest) covers BimGo.Core. Run it after Core changes (Test Explorer or `dotnet test`).
 
 ## 1. Overview
 
@@ -53,9 +58,11 @@ The v3 design brief is `ai/261005_V3/1_BimGo v3_Handoff.md`. Decisions and the c
 1. Open `src/BimGo.sln` in Visual Studio 2022 (.NET desktop workload).
 2. Pick a configuration (`Debug R25`, `Debug R26`, `Debug R27`, or Release). Core and App build as Debug/Release under each.
 3. Build the solution (the app must be built too: Go launches it). The add-in deploys to `%AppData%\Autodesk\Revit\Addins\<year>\BimGo\` (with `BimGo.addin`). The app installs to `%LocalAppData%\Programs\BimGo\`.
-4. **Remove the old `RvtGo.addin`** from the Addins folder. It has a different AddInId, so both tabs would load.
-5. In Revit, press **BimGo → Go** for a live walkthrough (the app starts, or the running app asks to switch), or **Export .bimgo**, then open the file in BimGo.
-6. To debug the app, set **BimGo.App** as the startup project and pass a `.bimgo` path, or `--session <id>` (the id is the folder name under `%LocalAppData%\BimGo\Sessions`). Running sessions also appear on the home screen.
+   The first build restores the NuGet packages (§10), so it needs internet access once.
+4. **Tests:** Test → Test Explorer → Run All (or `dotnet test tests/BimGo.Core.Tests`). They use temp folders only and log to `%LocalAppData%\BimGo\Logs\BimGo.Tests.log`.
+5. **Remove the old `RvtGo.addin`** from the Addins folder. It has a different AddInId, so both tabs would load.
+6. In Revit, press **BimGo → Go** for a live walkthrough (the app starts, or the running app asks to switch), or **Export .bimgo**, then open the file in BimGo.
+7. To debug the app, set **BimGo.App** as the startup project and pass a `.bimgo` path, or `--session <id>` (the id is the folder name under `%LocalAppData%\BimGo\Sessions`). Running sessions also appear on the home screen.
 
 ## 3. Controls
 
@@ -151,6 +158,9 @@ src/
     ├── Bridge/RevitEditor.Push.cs #   journal.apply: one TransactionGroup, dry run, staleness check, push-local clone map
     ├── Forms/OptionsWindow        #   WPF options (categories, phases, extra parameters, display, gizmo snap)
     └── Extensions/ General/ Utilities/ Resources/   # template (+ App_Utils: find / start BimGo.exe)
+tests/
+└── BimGo.Core.Tests/              # MSTest (dev-only, references BimGo.Core only): format round-trips, older / damaged files,
+                                   #   journal, sun position, settings, progress, live channel, sidecars
 ```
 
 ## 5. How it works
@@ -259,8 +269,19 @@ Envelope: `protocol`, `id`, `seq`, `sessionId`, `type`, `replyTo`, `sentUtc`, `p
 - **v7** (linked models) built and works (Gavin, 2026-10-11).
 - Linked models: only top-level link instances are offered (nested links are not extracted); unloaded links are listed but can't be ticked; link phases are matched by name (Revit's per-link phase mapping isn't exposed in the API); a link's levels name its elements but don't join the level list (PgUp / PgDn); linked elements are read-only and never enter the journal or push; comments on them record no element id. A link reloaded in Revit shows as MODEL CHANGED (F5 re-extracts it).
 - More than 9 guns will need a rethink of the number keys.
+- **Dependencies round (Silk.NET GL bindings + Core tests) not compiled yet** (written without a .NET SDK or NuGet access). Verify: restore of `Silk.NET.OpenGL` 2.23.0 and `MSTest.Sdk` 4.4.1; the `Gl` facade overloads against Silk.NET (GLEnum casts, `uint` sizes); every test passes; the §6 UX parity checklist in `ai/261013_Dependencies/0_BimGo Dependencies_Handoff.md` (rendering paths, 3.3 fallback, startup error text, frame times).
+- Silk.NET.Core brings Microsoft.Extensions.DependencyModel 9.x, which may in turn copy a newer `System.Text.Json.dll` (9.x) beside `BimGo.exe`; the app (and BimGo.Core inside it) would then use it instead of the 8.0 framework copy. Check the build output; JSON behaviour should be identical for BimGo's DTOs, and the Revit add-in is unaffected.
+- Journal replay onto the scene lives in BimGo.App (`GameSession`), so the Core tests cover the journal's own rules (numbering, undo / redo, clone keys, push request) but not replay.
 
 ## 9. Changelog
+
+### 2026-10-13: Dependencies round: Silk.NET GL bindings, Core tests, MIT licence
+
+- **OpenGL bindings:** `Native/Gl.cs` is now a thin facade over **Silk.NET.OpenGL 2.23.0** (BimGo.App only). Same `Gl.Xxx` names, signatures and `uint` constants, so no renderer or UI code changed; the ~75 hand-written function pointers and their load table are gone. Every entry point BimGo uses is still checked at startup with the same "Update the graphics driver" message; Silk.NET then resolves each one lazily through the same `wglGetProcAddress` / opengl32 lookup (`Gl.GetProc`, still used by `Wgl`). Forwarding allocates nothing. `Native/Wgl.cs` (context creation, 4.1 → 3.3 fallback, swap interval) is unchanged.
+- **Tests:** new `tests/BimGo.Core.Tests` (MSTest.Sdk 4.4.1, net8.0, BimGo.Core only, in the solution's `tests` folder): `.bimgo` round-trips (geometry, elements, links, site, journal, bookmarks with home and thumbnail, sun, visibility, comments, parameters), optional entries, atomic replace and cancelled save / read, early-layout files, newer / foreign / damaged files, journal rules and the push request, sun position against an independent reference (Sydney, London, Adelaide), settings sanitising and link choices, progress maths and cancellation, the live folder channel (round-trip, order, wrong session, newer protocol, 4 MB cap, duplicates) and the sidecars. Tests log to `BimGo.Tests.log` and use temp folders only.
+- **Fix (found by the tests):** `LaunchSettings.SetLinksFor` kept at most 200 models' link choices by removing `Keys.First()`, but a `Dictionary` reuses freed slots, so once full it dropped the choice just made instead of the oldest. It now rebuilds the dictionary in recency order.
+- **Licence:** MIT (© Aussie BIM Guru) replaces the Unlicense. `THIRD-PARTY-NOTICES.txt` lists Silk.NET and its MIT dependencies; both files are copied beside `BimGo.exe` on build (`LICENSE.txt`, `THIRD-PARTY-NOTICES.txt`).
+- README: the dependency policy replaces the old "No dependencies" rule (AI item 3), dependency table (§10).
 
 ### 2026-10-12: 1.0.0: saved home, bookmark thumbnails, bookmark cancel
 
@@ -373,3 +394,14 @@ Envelope: `protocol`, `id`, `seq`, `sessionId`, `type`, `replyTo`, `sentUtc`, `p
 ### 2026-10-01: v1 (first full pass)
 
 - Template fork, WPF options, extraction, engine (GL, batching, MSAA, sky, minimap, HUD, pause menu), physics, and the Scan / Measure / Portal / Comment guns.
+
+## 10. Dependencies
+
+The policy is in *For AI assistants* item 3. BimGo.Revit ships no packages. Licence texts are in `THIRD-PARTY-NOTICES.txt`.
+
+| Package | Version | Licence | Used in | Why |
+|---|---|---|---|---|
+| Silk.NET.OpenGL | 2.23.0 (pinned) | MIT | BimGo.App (`Native/Gl.cs` only) | OpenGL function bindings: no hand-written unmanaged signatures for new GL calls |
+| Silk.NET.Core, Silk.NET.Maths | 2.23.0 (transitive) | MIT | BimGo.App | Required by Silk.NET.OpenGL (loader / vtable; maths types unused by BimGo) |
+| Microsoft.DotNet.PlatformAbstractions, Microsoft.Extensions.DependencyModel (+ small System.* packages) | transitive | MIT | BimGo.App | Required by Silk.NET.Core |
+| MSTest.Sdk | 4.4.1 (pinned in the Sdk attribute) | MIT | `tests/BimGo.Core.Tests` (dev-only) | Test framework and runner; ships nothing |

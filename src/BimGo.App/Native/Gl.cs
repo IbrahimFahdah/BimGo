@@ -1,12 +1,18 @@
 using System.Runtime.InteropServices;
+using GLEnum = Silk.NET.OpenGL.GLEnum;
+using SilkGL = Silk.NET.OpenGL.GL;
 
 // The class belongs to the Native namespace
 namespace BimGo.Native
 {
     /// <summary>
-    /// Hand-written OpenGL bindings using unmanaged function pointers.
-    /// GL 1.1 entry points come from opengl32.dll exports; everything newer via wglGetProcAddress.
+    /// BimGo's OpenGL facade. Renderer and UI code call <c>Gl.Xxx(...)</c> with the <c>uint</c> constants below;
+    /// each wrapper forwards to Silk.NET.OpenGL (MIT, pinned in BimGo.App.csproj), casting the constants to
+    /// <see cref="GLEnum"/>. Entry points resolve through <see cref="GetProc"/> (wglGetProcAddress, then the
+    /// opengl32.dll export for GL 1.1), lazily and once each; forwarding does not allocate.
     /// <see cref="Load"/> must be called on the game thread with a current context.
+    /// To use a new GL function: add a wrapper here (and its GL name to <see cref="RequiredEntryPoints"/>), then call it
+    /// through the renderer. Context creation stays in <see cref="Wgl"/>.
     /// </summary>
     internal static unsafe class Gl
     {
@@ -47,107 +53,54 @@ namespace BimGo.Native
 
         #endregion
 
-        #region Function pointers
-
-        // GL 1.1
-        private static delegate* unmanaged<uint, void> _clear;
-        private static delegate* unmanaged<float, float, float, float, void> _clearColor;
-        private static delegate* unmanaged<double, void> _clearDepth;
-        private static delegate* unmanaged<int, int, int, int, void> _viewport;
-        private static delegate* unmanaged<int, int, int, int, void> _scissor;
-        private static delegate* unmanaged<uint, void> _enable;
-        private static delegate* unmanaged<uint, void> _disable;
-        private static delegate* unmanaged<uint, void> _depthFunc;
-        private static delegate* unmanaged<byte, void> _depthMask;
-        private static delegate* unmanaged<uint, uint, void> _blendFunc;
-        private static delegate* unmanaged<uint, void> _cullFace;
-        private static delegate* unmanaged<float, float, void> _polygonOffset;
-        private static delegate* unmanaged<uint, byte*> _getString;
-        private static delegate* unmanaged<uint, int*, void> _getIntegerv;
-        private static delegate* unmanaged<uint> _getError;
-        private static delegate* unmanaged<uint, uint, void> _bindTexture;
-        private static delegate* unmanaged<int, uint*, void> _genTextures;
-        private static delegate* unmanaged<int, uint*, void> _deleteTextures;
-        private static delegate* unmanaged<uint, int, int, int, int, int, uint, uint, void*, void> _texImage2D;
-        private static delegate* unmanaged<uint, uint, int, void> _texParameteri;
-        private static delegate* unmanaged<uint, int, void> _pixelStorei;
-        private static delegate* unmanaged<uint, int, uint, void*, void> _drawElements;
-        private static delegate* unmanaged<uint, int, int, void> _drawArrays;
-
-        // GL 1.3+
-        private static delegate* unmanaged<uint, void> _activeTexture;
-        private static delegate* unmanaged<uint, int*, uint, void**, int, void> _multiDrawElements;
-        private static delegate* unmanaged<uint, uint, uint, uint, void> _blendFuncSeparate;
-
-        // Buffers
-        private static delegate* unmanaged<int, uint*, void> _genBuffers;
-        private static delegate* unmanaged<int, uint*, void> _deleteBuffers;
-        private static delegate* unmanaged<uint, uint, void> _bindBuffer;
-        private static delegate* unmanaged<uint, nint, void*, uint, void> _bufferData;
-        private static delegate* unmanaged<uint, nint, nint, void*, void> _bufferSubData;
-
-        // Vertex arrays
-        private static delegate* unmanaged<int, uint*, void> _genVertexArrays;
-        private static delegate* unmanaged<int, uint*, void> _deleteVertexArrays;
-        private static delegate* unmanaged<uint, void> _bindVertexArray;
-        private static delegate* unmanaged<uint, void> _enableVertexAttribArray;
-        private static delegate* unmanaged<uint, int, uint, byte, int, void*, void> _vertexAttribPointer;
-        private static delegate* unmanaged<uint, uint, void> _vertexAttribDivisor;
-        private static delegate* unmanaged<uint, int, uint, void*, int, void> _drawElementsInstanced;
-
-        // Shaders
-        private static delegate* unmanaged<uint, uint> _createShader;
-        private static delegate* unmanaged<uint, int, byte**, int*, void> _shaderSource;
-        private static delegate* unmanaged<uint, void> _compileShader;
-        private static delegate* unmanaged<uint, uint, int*, void> _getShaderiv;
-        private static delegate* unmanaged<uint, int, int*, byte*, void> _getShaderInfoLog;
-        private static delegate* unmanaged<uint, void> _deleteShader;
-        private static delegate* unmanaged<uint> _createProgram;
-        private static delegate* unmanaged<uint, uint, void> _attachShader;
-        private static delegate* unmanaged<uint, void> _linkProgram;
-        private static delegate* unmanaged<uint, uint, int*, void> _getProgramiv;
-        private static delegate* unmanaged<uint, int, int*, byte*, void> _getProgramInfoLog;
-        private static delegate* unmanaged<uint, void> _deleteProgram;
-        private static delegate* unmanaged<uint, void> _useProgram;
-        private static delegate* unmanaged<uint, byte*, int> _getUniformLocation;
-        private static delegate* unmanaged<int, int, void> _uniform1i;
-        private static delegate* unmanaged<int, float, void> _uniform1f;
-        private static delegate* unmanaged<int, float, float, void> _uniform2f;
-        private static delegate* unmanaged<int, float, float, float, void> _uniform3f;
-        private static delegate* unmanaged<int, float, float, float, float, void> _uniform4f;
-        private static delegate* unmanaged<int, int, byte, float*, void> _uniformMatrix4fv;
-
-        // Framebuffers
-        private static delegate* unmanaged<int, uint*, void> _genFramebuffers;
-        private static delegate* unmanaged<int, uint*, void> _deleteFramebuffers;
-        private static delegate* unmanaged<uint, uint, void> _bindFramebuffer;
-        private static delegate* unmanaged<uint, uint, uint, uint, void> _framebufferRenderbuffer;
-        private static delegate* unmanaged<uint, uint> _checkFramebufferStatus;
-        private static delegate* unmanaged<int, uint*, void> _genRenderbuffers;
-        private static delegate* unmanaged<int, uint*, void> _deleteRenderbuffers;
-        private static delegate* unmanaged<uint, uint, void> _bindRenderbuffer;
-        private static delegate* unmanaged<uint, int, uint, int, int, void> _renderbufferStorageMultisample;
-        private static delegate* unmanaged<int, int, int, int, int, int, int, int, uint, uint, void> _blitFramebuffer;
-        private static delegate* unmanaged<uint, uint, uint, int, int, void> _framebufferTextureLayer;
-        private static delegate* unmanaged<uint, int, int, int, int, int, int, uint, uint, void*, void> _texImage3D;
-        private static delegate* unmanaged<byte, byte, byte, byte, void> _colorMask;
-        private static delegate* unmanaged<uint, void> _drawBuffer;
-        private static delegate* unmanaged<uint, void> _readBuffer;
-        private static delegate* unmanaged<int, int, int, int, uint, uint, void*, void> _readPixels;
-
-        #endregion
-
         #region Loading
+
+        /// <summary>
+        /// Every GL entry point BimGo calls. Checked once in <see cref="Load"/> so a missing one fails at startup
+        /// with a readable message instead of a Silk.NET <c>SymbolLoadingException</c> mid-frame.
+        /// Add the GL name here when a new wrapper is added below.
+        /// </summary>
+        private static readonly string[] RequiredEntryPoints =
+        {
+            // GL 1.1 (opengl32.dll exports)
+            "glClear", "glClearColor", "glClearDepth", "glViewport", "glScissor", "glEnable", "glDisable",
+            "glDepthFunc", "glDepthMask", "glBlendFunc", "glCullFace", "glPolygonOffset", "glGetString",
+            "glGetIntegerv", "glGetError", "glBindTexture", "glGenTextures", "glDeleteTextures", "glTexImage2D",
+            "glTexParameteri", "glPixelStorei", "glDrawElements", "glDrawArrays", "glColorMask", "glDrawBuffer",
+            "glReadBuffer", "glReadPixels",
+
+            // GL 1.3+
+            "glActiveTexture", "glMultiDrawElements", "glBlendFuncSeparate", "glTexImage3D",
+
+            // Buffers and vertex arrays
+            "glGenBuffers", "glDeleteBuffers", "glBindBuffer", "glBufferData", "glBufferSubData",
+            "glGenVertexArrays", "glDeleteVertexArrays", "glBindVertexArray", "glEnableVertexAttribArray",
+            "glVertexAttribPointer", "glVertexAttribDivisor", "glDrawElementsInstanced",
+
+            // Shaders
+            "glCreateShader", "glShaderSource", "glCompileShader", "glGetShaderiv", "glGetShaderInfoLog",
+            "glDeleteShader", "glCreateProgram", "glAttachShader", "glLinkProgram", "glGetProgramiv",
+            "glGetProgramInfoLog", "glDeleteProgram", "glUseProgram", "glGetUniformLocation", "glUniform1i",
+            "glUniform1f", "glUniform2f", "glUniform3f", "glUniform4f", "glUniformMatrix4fv",
+
+            // Framebuffers
+            "glGenFramebuffers", "glDeleteFramebuffers", "glBindFramebuffer", "glFramebufferRenderbuffer",
+            "glCheckFramebufferStatus", "glGenRenderbuffers", "glDeleteRenderbuffers", "glBindRenderbuffer",
+            "glRenderbufferStorageMultisample", "glBlitFramebuffer", "glFramebufferTextureLayer",
+        };
 
         [DllImport("opengl32.dll", CharSet = CharSet.Ansi, BestFitMapping = false)]
         private static extern nint wglGetProcAddress(string name);
 
         private static nint _opengl32;
 
+        /// <summary>The Silk.NET API object every wrapper forwards to. Created once by <see cref="Load"/>.</summary>
+        private static SilkGL _gl;
+
         /// <summary>
-        /// Resolves one entry point.
+        /// Resolves one entry point (also used by <see cref="Wgl"/> for the WGL extensions).
         /// </summary>
-        /// <param name="name">The GL function name.</param>
+        /// <param name="name">The GL / WGL function name.</param>
         /// <param name="required">Throw if missing.</param>
         /// <returns>The function address (0 if missing and optional).</returns>
         public static nint GetProc(string name, bool required = true)
@@ -169,124 +122,55 @@ namespace BimGo.Native
         }
 
         /// <summary>
-        /// Loads every entry point used by BimGo.
+        /// The loader handed to Silk.NET: same lookup as <see cref="GetProc"/>, never throws (Silk.NET resolves lazily,
+        /// once per entry point, and the required ones were already checked).
+        /// </summary>
+        private static nint LoadProc(string name) => GetProc(name, required: false);
+
+        /// <summary>
+        /// Checks every entry point BimGo uses and creates the Silk.NET API.
+        /// Must be called on the game thread with the context current.
         /// </summary>
         public static void Load()
         {
-            _clear = (delegate* unmanaged<uint, void>)GetProc("glClear");
-            _clearColor = (delegate* unmanaged<float, float, float, float, void>)GetProc("glClearColor");
-            _clearDepth = (delegate* unmanaged<double, void>)GetProc("glClearDepth");
-            _viewport = (delegate* unmanaged<int, int, int, int, void>)GetProc("glViewport");
-            _scissor = (delegate* unmanaged<int, int, int, int, void>)GetProc("glScissor");
-            _enable = (delegate* unmanaged<uint, void>)GetProc("glEnable");
-            _disable = (delegate* unmanaged<uint, void>)GetProc("glDisable");
-            _depthFunc = (delegate* unmanaged<uint, void>)GetProc("glDepthFunc");
-            _depthMask = (delegate* unmanaged<byte, void>)GetProc("glDepthMask");
-            _blendFunc = (delegate* unmanaged<uint, uint, void>)GetProc("glBlendFunc");
-            _cullFace = (delegate* unmanaged<uint, void>)GetProc("glCullFace");
-            _polygonOffset = (delegate* unmanaged<float, float, void>)GetProc("glPolygonOffset");
-            _getString = (delegate* unmanaged<uint, byte*>)GetProc("glGetString");
-            _getIntegerv = (delegate* unmanaged<uint, int*, void>)GetProc("glGetIntegerv");
-            _getError = (delegate* unmanaged<uint>)GetProc("glGetError");
-            _bindTexture = (delegate* unmanaged<uint, uint, void>)GetProc("glBindTexture");
-            _genTextures = (delegate* unmanaged<int, uint*, void>)GetProc("glGenTextures");
-            _deleteTextures = (delegate* unmanaged<int, uint*, void>)GetProc("glDeleteTextures");
-            _texImage2D = (delegate* unmanaged<uint, int, int, int, int, int, uint, uint, void*, void>)GetProc("glTexImage2D");
-            _texParameteri = (delegate* unmanaged<uint, uint, int, void>)GetProc("glTexParameteri");
-            _pixelStorei = (delegate* unmanaged<uint, int, void>)GetProc("glPixelStorei");
-            _drawElements = (delegate* unmanaged<uint, int, uint, void*, void>)GetProc("glDrawElements");
-            _drawArrays = (delegate* unmanaged<uint, int, int, void>)GetProc("glDrawArrays");
-
-            _activeTexture = (delegate* unmanaged<uint, void>)GetProc("glActiveTexture");
-            _multiDrawElements = (delegate* unmanaged<uint, int*, uint, void**, int, void>)GetProc("glMultiDrawElements");
-            _blendFuncSeparate = (delegate* unmanaged<uint, uint, uint, uint, void>)GetProc("glBlendFuncSeparate");
-
-            _genBuffers = (delegate* unmanaged<int, uint*, void>)GetProc("glGenBuffers");
-            _deleteBuffers = (delegate* unmanaged<int, uint*, void>)GetProc("glDeleteBuffers");
-            _bindBuffer = (delegate* unmanaged<uint, uint, void>)GetProc("glBindBuffer");
-            _bufferData = (delegate* unmanaged<uint, nint, void*, uint, void>)GetProc("glBufferData");
-            _bufferSubData = (delegate* unmanaged<uint, nint, nint, void*, void>)GetProc("glBufferSubData");
-
-            _genVertexArrays = (delegate* unmanaged<int, uint*, void>)GetProc("glGenVertexArrays");
-            _deleteVertexArrays = (delegate* unmanaged<int, uint*, void>)GetProc("glDeleteVertexArrays");
-            _bindVertexArray = (delegate* unmanaged<uint, void>)GetProc("glBindVertexArray");
-            _enableVertexAttribArray = (delegate* unmanaged<uint, void>)GetProc("glEnableVertexAttribArray");
-            _vertexAttribPointer = (delegate* unmanaged<uint, int, uint, byte, int, void*, void>)GetProc("glVertexAttribPointer");
-            _vertexAttribDivisor = (delegate* unmanaged<uint, uint, void>)GetProc("glVertexAttribDivisor");
-            _drawElementsInstanced = (delegate* unmanaged<uint, int, uint, void*, int, void>)GetProc("glDrawElementsInstanced");
-
-            _createShader = (delegate* unmanaged<uint, uint>)GetProc("glCreateShader");
-            _shaderSource = (delegate* unmanaged<uint, int, byte**, int*, void>)GetProc("glShaderSource");
-            _compileShader = (delegate* unmanaged<uint, void>)GetProc("glCompileShader");
-            _getShaderiv = (delegate* unmanaged<uint, uint, int*, void>)GetProc("glGetShaderiv");
-            _getShaderInfoLog = (delegate* unmanaged<uint, int, int*, byte*, void>)GetProc("glGetShaderInfoLog");
-            _deleteShader = (delegate* unmanaged<uint, void>)GetProc("glDeleteShader");
-            _createProgram = (delegate* unmanaged<uint>)GetProc("glCreateProgram");
-            _attachShader = (delegate* unmanaged<uint, uint, void>)GetProc("glAttachShader");
-            _linkProgram = (delegate* unmanaged<uint, void>)GetProc("glLinkProgram");
-            _getProgramiv = (delegate* unmanaged<uint, uint, int*, void>)GetProc("glGetProgramiv");
-            _getProgramInfoLog = (delegate* unmanaged<uint, int, int*, byte*, void>)GetProc("glGetProgramInfoLog");
-            _deleteProgram = (delegate* unmanaged<uint, void>)GetProc("glDeleteProgram");
-            _useProgram = (delegate* unmanaged<uint, void>)GetProc("glUseProgram");
-            _getUniformLocation = (delegate* unmanaged<uint, byte*, int>)GetProc("glGetUniformLocation");
-            _uniform1i = (delegate* unmanaged<int, int, void>)GetProc("glUniform1i");
-            _uniform1f = (delegate* unmanaged<int, float, void>)GetProc("glUniform1f");
-            _uniform2f = (delegate* unmanaged<int, float, float, void>)GetProc("glUniform2f");
-            _uniform3f = (delegate* unmanaged<int, float, float, float, void>)GetProc("glUniform3f");
-            _uniform4f = (delegate* unmanaged<int, float, float, float, float, void>)GetProc("glUniform4f");
-            _uniformMatrix4fv = (delegate* unmanaged<int, int, byte, float*, void>)GetProc("glUniformMatrix4fv");
-
-            _genFramebuffers = (delegate* unmanaged<int, uint*, void>)GetProc("glGenFramebuffers");
-            _deleteFramebuffers = (delegate* unmanaged<int, uint*, void>)GetProc("glDeleteFramebuffers");
-            _bindFramebuffer = (delegate* unmanaged<uint, uint, void>)GetProc("glBindFramebuffer");
-            _framebufferRenderbuffer = (delegate* unmanaged<uint, uint, uint, uint, void>)GetProc("glFramebufferRenderbuffer");
-            _checkFramebufferStatus = (delegate* unmanaged<uint, uint>)GetProc("glCheckFramebufferStatus");
-            _genRenderbuffers = (delegate* unmanaged<int, uint*, void>)GetProc("glGenRenderbuffers");
-            _deleteRenderbuffers = (delegate* unmanaged<int, uint*, void>)GetProc("glDeleteRenderbuffers");
-            _bindRenderbuffer = (delegate* unmanaged<uint, uint, void>)GetProc("glBindRenderbuffer");
-            _renderbufferStorageMultisample = (delegate* unmanaged<uint, int, uint, int, int, void>)GetProc("glRenderbufferStorageMultisample");
-            _blitFramebuffer = (delegate* unmanaged<int, int, int, int, int, int, int, int, uint, uint, void>)GetProc("glBlitFramebuffer");
-            _framebufferTextureLayer = (delegate* unmanaged<uint, uint, uint, int, int, void>)GetProc("glFramebufferTextureLayer");
-            _texImage3D = (delegate* unmanaged<uint, int, int, int, int, int, int, uint, uint, void*, void>)GetProc("glTexImage3D");
-            _colorMask = (delegate* unmanaged<byte, byte, byte, byte, void>)GetProc("glColorMask");
-            _drawBuffer = (delegate* unmanaged<uint, void>)GetProc("glDrawBuffer");
-            _readBuffer = (delegate* unmanaged<uint, void>)GetProc("glReadBuffer");
-            _readPixels = (delegate* unmanaged<int, int, int, int, uint, uint, void*, void>)GetProc("glReadPixels");
+            foreach (string name in RequiredEntryPoints)
+            {
+                GetProc(name);
+            }
+            _gl = SilkGL.GetApi(LoadProc);
         }
 
         #endregion
 
         #region Wrappers: state
 
-        public static void Clear(uint mask) => _clear(mask);
-        public static void ClearColor(float r, float g, float b, float a) => _clearColor(r, g, b, a);
-        public static void ClearDepth(double depth) => _clearDepth(depth);
-        public static void Viewport(int x, int y, int w, int h) => _viewport(x, y, w, h);
-        public static void Scissor(int x, int y, int w, int h) => _scissor(x, y, w, h);
-        public static void Enable(uint cap) => _enable(cap);
-        public static void Disable(uint cap) => _disable(cap);
-        public static void DepthFunc(uint func) => _depthFunc(func);
-        public static void DepthMask(bool write) => _depthMask(write ? (byte)1 : (byte)0);
-        public static void BlendFunc(uint src, uint dst) => _blendFunc(src, dst);
-        public static void BlendFuncSeparate(uint srcRgb, uint dstRgb, uint srcA, uint dstA) => _blendFuncSeparate(srcRgb, dstRgb, srcA, dstA);
-        public static void CullFace(uint mode) => _cullFace(mode);
-        public static void PolygonOffset(float factor, float units) => _polygonOffset(factor, units);
-        public static uint GetError() => _getError();
-        public static void PixelStore(uint name, int value) => _pixelStorei(name, value);
-
-        public static void ColorMask(bool r, bool g, bool b, bool a)
-            => _colorMask(r ? (byte)1 : (byte)0, g ? (byte)1 : (byte)0, b ? (byte)1 : (byte)0, a ? (byte)1 : (byte)0);
+        public static void Clear(uint mask) => _gl.Clear(mask);
+        public static void ClearColor(float r, float g, float b, float a) => _gl.ClearColor(r, g, b, a);
+        public static void ClearDepth(double depth) => _gl.ClearDepth(depth);
+        public static void Viewport(int x, int y, int w, int h) => _gl.Viewport(x, y, (uint)w, (uint)h);
+        public static void Scissor(int x, int y, int w, int h) => _gl.Scissor(x, y, (uint)w, (uint)h);
+        public static void Enable(uint cap) => _gl.Enable((GLEnum)cap);
+        public static void Disable(uint cap) => _gl.Disable((GLEnum)cap);
+        public static void DepthFunc(uint func) => _gl.DepthFunc((GLEnum)func);
+        public static void DepthMask(bool write) => _gl.DepthMask(write);
+        public static void BlendFunc(uint src, uint dst) => _gl.BlendFunc((GLEnum)src, (GLEnum)dst);
+        public static void BlendFuncSeparate(uint srcRgb, uint dstRgb, uint srcA, uint dstA) => _gl.BlendFuncSeparate((GLEnum)srcRgb, (GLEnum)dstRgb, (GLEnum)srcA, (GLEnum)dstA);
+        public static void CullFace(uint mode) => _gl.CullFace((GLEnum)mode);
+        public static void PolygonOffset(float factor, float units) => _gl.PolygonOffset(factor, units);
+        public static uint GetError() => (uint)_gl.GetError();
+        public static void PixelStore(uint name, int value) => _gl.PixelStore((GLEnum)name, value);
+        public static void ColorMask(bool r, bool g, bool b, bool a) => _gl.ColorMask(r, g, b, a);
 
         public static int GetInteger(uint name)
         {
             int value = 0;
-            _getIntegerv(name, &value);
+            _gl.GetInteger((GLEnum)name, &value);
             return value;
         }
 
         public static string GetString(uint name)
         {
-            byte* text = _getString(name);
+            byte* text = _gl.GetString((GLEnum)name);
             return text == null ? string.Empty : Marshal.PtrToStringAnsi((nint)text) ?? string.Empty;
         }
 
@@ -297,24 +181,24 @@ namespace BimGo.Native
         public static uint GenTexture()
         {
             uint id = 0;
-            _genTextures(1, &id);
+            _gl.GenTextures(1, &id);
             return id;
         }
 
         public static void DeleteTexture(uint id)
         {
-            if (id != 0) { _deleteTextures(1, &id); }
+            if (id != 0) { _gl.DeleteTextures(1, &id); }
         }
 
-        public static void ActiveTexture(uint unit) => _activeTexture(unit);
-        public static void BindTexture(uint target, uint id) => _bindTexture(target, id);
-        public static void TexParameter(uint target, uint name, int value) => _texParameteri(target, name, value);
+        public static void ActiveTexture(uint unit) => _gl.ActiveTexture((GLEnum)unit);
+        public static void BindTexture(uint target, uint id) => _gl.BindTexture((GLEnum)target, id);
+        public static void TexParameter(uint target, uint name, int value) => _gl.TexParameter((GLEnum)target, (GLEnum)name, value);
 
         public static void TexImage2D(uint target, int level, uint internalFormat, int width, int height, uint format, uint type, void* pixels)
-            => _texImage2D(target, level, (int)internalFormat, width, height, 0, format, type, pixels);
+            => _gl.TexImage2D((GLEnum)target, level, (int)internalFormat, (uint)width, (uint)height, 0, (GLEnum)format, (GLEnum)type, pixels);
 
         public static void TexImage3D(uint target, int level, uint internalFormat, int width, int height, int depth, uint format, uint type, void* pixels)
-            => _texImage3D(target, level, (int)internalFormat, width, height, depth, 0, format, type, pixels);
+            => _gl.TexImage3D((GLEnum)target, level, (int)internalFormat, (uint)width, (uint)height, (uint)depth, 0, (GLEnum)format, (GLEnum)type, pixels);
 
         #endregion
 
@@ -323,53 +207,53 @@ namespace BimGo.Native
         public static uint GenBuffer()
         {
             uint id = 0;
-            _genBuffers(1, &id);
+            _gl.GenBuffers(1, &id);
             return id;
         }
 
         public static void DeleteBuffer(uint id)
         {
-            if (id != 0) { _deleteBuffers(1, &id); }
+            if (id != 0) { _gl.DeleteBuffers(1, &id); }
         }
 
-        public static void BindBuffer(uint target, uint id) => _bindBuffer(target, id);
-        public static void BufferData(uint target, nint size, void* data, uint usage) => _bufferData(target, size, data, usage);
-        public static void BufferSubData(uint target, nint offset, nint size, void* data) => _bufferSubData(target, offset, size, data);
+        public static void BindBuffer(uint target, uint id) => _gl.BindBuffer((GLEnum)target, id);
+        public static void BufferData(uint target, nint size, void* data, uint usage) => _gl.BufferData((GLEnum)target, (nuint)size, data, (GLEnum)usage);
+        public static void BufferSubData(uint target, nint offset, nint size, void* data) => _gl.BufferSubData((GLEnum)target, offset, (nuint)size, data);
 
         public static uint GenVertexArray()
         {
             uint id = 0;
-            _genVertexArrays(1, &id);
+            _gl.GenVertexArrays(1, &id);
             return id;
         }
 
         public static void DeleteVertexArray(uint id)
         {
-            if (id != 0) { _deleteVertexArrays(1, &id); }
+            if (id != 0) { _gl.DeleteVertexArrays(1, &id); }
         }
 
-        public static void BindVertexArray(uint id) => _bindVertexArray(id);
-        public static void EnableVertexAttribArray(uint index) => _enableVertexAttribArray(index);
+        public static void BindVertexArray(uint id) => _gl.BindVertexArray(id);
+        public static void EnableVertexAttribArray(uint index) => _gl.EnableVertexAttribArray(index);
 
         public static void VertexAttribPointer(uint index, int size, uint type, bool normalized, int stride, nint offset)
-            => _vertexAttribPointer(index, size, type, normalized ? (byte)1 : (byte)0, stride, (void*)offset);
+            => _gl.VertexAttribPointer(index, size, (GLEnum)type, normalized, (uint)stride, (void*)offset);
 
-        public static void VertexAttribDivisor(uint index, uint divisor) => _vertexAttribDivisor(index, divisor);
+        public static void VertexAttribDivisor(uint index, uint divisor) => _gl.VertexAttribDivisor(index, divisor);
 
-        public static void DrawElements(uint mode, int count, uint type, nint byteOffset) => _drawElements(mode, count, type, (void*)byteOffset);
-        public static void DrawArrays(uint mode, int first, int count) => _drawArrays(mode, first, count);
+        public static void DrawElements(uint mode, int count, uint type, nint byteOffset) => _gl.DrawElements((GLEnum)mode, (uint)count, (GLEnum)type, (void*)byteOffset);
+        public static void DrawArrays(uint mode, int first, int count) => _gl.DrawArrays((GLEnum)mode, first, (uint)count);
 
         public static void MultiDrawElements(uint mode, int* counts, uint type, void** offsets, int drawCount)
-            => _multiDrawElements(mode, counts, type, offsets, drawCount);
+            => _gl.MultiDrawElements((GLEnum)mode, (uint*)counts, (GLEnum)type, offsets, (uint)drawCount);
 
         public static void DrawElementsInstanced(uint mode, int count, uint type, nint byteOffset, int instances)
-            => _drawElementsInstanced(mode, count, type, (void*)byteOffset, instances);
+            => _gl.DrawElementsInstanced((GLEnum)mode, (uint)count, (GLEnum)type, (void*)byteOffset, (uint)instances);
 
         #endregion
 
         #region Wrappers: shaders
 
-        public static uint CreateShader(uint type) => _createShader(type);
+        public static uint CreateShader(uint type) => _gl.CreateShader((GLEnum)type);
 
         public static void ShaderSource(uint shader, string source)
         {
@@ -378,16 +262,16 @@ namespace BimGo.Native
             {
                 byte* pp = p;
                 int length = bytes.Length;
-                _shaderSource(shader, 1, &pp, &length);
+                _gl.ShaderSource(shader, 1, &pp, &length);
             }
         }
 
-        public static void CompileShader(uint shader) => _compileShader(shader);
+        public static void CompileShader(uint shader) => _gl.CompileShader(shader);
 
         public static int GetShader(uint shader, uint name)
         {
             int value = 0;
-            _getShaderiv(shader, name, &value);
+            _gl.GetShader(shader, (GLEnum)name, &value);
             return value;
         }
 
@@ -396,19 +280,19 @@ namespace BimGo.Native
             int length = GetShader(shader, INFO_LOG_LENGTH);
             if (length <= 1) { return string.Empty; }
             byte[] buffer = new byte[length];
-            fixed (byte* p = buffer) { _getShaderInfoLog(shader, length, null, p); }
+            fixed (byte* p = buffer) { _gl.GetShaderInfoLog(shader, (uint)length, (uint*)null, p); }
             return System.Text.Encoding.UTF8.GetString(buffer).TrimEnd('\0');
         }
 
-        public static void DeleteShader(uint shader) => _deleteShader(shader);
-        public static uint CreateProgram() => _createProgram();
-        public static void AttachShader(uint program, uint shader) => _attachShader(program, shader);
-        public static void LinkProgram(uint program) => _linkProgram(program);
+        public static void DeleteShader(uint shader) => _gl.DeleteShader(shader);
+        public static uint CreateProgram() => _gl.CreateProgram();
+        public static void AttachShader(uint program, uint shader) => _gl.AttachShader(program, shader);
+        public static void LinkProgram(uint program) => _gl.LinkProgram(program);
 
         public static int GetProgram(uint program, uint name)
         {
             int value = 0;
-            _getProgramiv(program, name, &value);
+            _gl.GetProgram(program, (GLEnum)name, &value);
             return value;
         }
 
@@ -417,28 +301,28 @@ namespace BimGo.Native
             int length = GetProgram(program, INFO_LOG_LENGTH);
             if (length <= 1) { return string.Empty; }
             byte[] buffer = new byte[length];
-            fixed (byte* p = buffer) { _getProgramInfoLog(program, length, null, p); }
+            fixed (byte* p = buffer) { _gl.GetProgramInfoLog(program, (uint)length, (uint*)null, p); }
             return System.Text.Encoding.UTF8.GetString(buffer).TrimEnd('\0');
         }
 
         public static void DeleteProgram(uint program)
         {
-            if (program != 0) { _deleteProgram(program); }
+            if (program != 0) { _gl.DeleteProgram(program); }
         }
 
-        public static void UseProgram(uint program) => _useProgram(program);
+        public static void UseProgram(uint program) => _gl.UseProgram(program);
 
         public static int GetUniformLocation(uint program, string name)
         {
             byte[] bytes = System.Text.Encoding.ASCII.GetBytes(name + "\0");
-            fixed (byte* p = bytes) { return _getUniformLocation(program, p); }
+            fixed (byte* p = bytes) { return _gl.GetUniformLocation(program, p); }
         }
 
-        public static void Uniform1(int location, int value) => _uniform1i(location, value);
-        public static void Uniform1(int location, float value) => _uniform1f(location, value);
-        public static void Uniform2(int location, float x, float y) => _uniform2f(location, x, y);
-        public static void Uniform3(int location, float x, float y, float z) => _uniform3f(location, x, y, z);
-        public static void Uniform4(int location, float x, float y, float z, float w) => _uniform4f(location, x, y, z, w);
+        public static void Uniform1(int location, int value) => _gl.Uniform1(location, value);
+        public static void Uniform1(int location, float value) => _gl.Uniform1(location, value);
+        public static void Uniform2(int location, float x, float y) => _gl.Uniform2(location, x, y);
+        public static void Uniform3(int location, float x, float y, float z) => _gl.Uniform3(location, x, y, z);
+        public static void Uniform4(int location, float x, float y, float z, float w) => _gl.Uniform4(location, x, y, z, w);
 
         /// <summary>
         /// Uploads a System.Numerics matrix as-is (row-vector convention reads as the GL column-vector transpose).
@@ -446,7 +330,7 @@ namespace BimGo.Native
         public static void UniformMatrix4(int location, in System.Numerics.Matrix4x4 matrix)
         {
             System.Numerics.Matrix4x4 copy = matrix;
-            _uniformMatrix4fv(location, 1, 0, (float*)&copy);
+            _gl.UniformMatrix4(location, 1, false, (float*)&copy);
         }
 
         #endregion
@@ -456,43 +340,44 @@ namespace BimGo.Native
         public static uint GenFramebuffer()
         {
             uint id = 0;
-            _genFramebuffers(1, &id);
+            _gl.GenFramebuffers(1, &id);
             return id;
         }
 
         public static void DeleteFramebuffer(uint id)
         {
-            if (id != 0) { _deleteFramebuffers(1, &id); }
+            if (id != 0) { _gl.DeleteFramebuffers(1, &id); }
         }
 
-        public static void BindFramebuffer(uint target, uint id) => _bindFramebuffer(target, id);
-        public static void FramebufferRenderbuffer(uint target, uint attachment, uint rbTarget, uint renderbuffer) => _framebufferRenderbuffer(target, attachment, rbTarget, renderbuffer);
-        public static uint CheckFramebufferStatus(uint target) => _checkFramebufferStatus(target);
+        public static void BindFramebuffer(uint target, uint id) => _gl.BindFramebuffer((GLEnum)target, id);
+        public static void FramebufferRenderbuffer(uint target, uint attachment, uint rbTarget, uint renderbuffer) => _gl.FramebufferRenderbuffer((GLEnum)target, (GLEnum)attachment, (GLEnum)rbTarget, renderbuffer);
+        public static uint CheckFramebufferStatus(uint target) => (uint)_gl.CheckFramebufferStatus((GLEnum)target);
 
-        public static void DrawBuffer(uint buffer) => _drawBuffer(buffer);
-        public static void ReadBuffer(uint buffer) => _readBuffer(buffer);
-        public static void ReadPixels(int x, int y, int width, int height, uint format, uint type, void* pixels) => _readPixels(x, y, width, height, format, type, pixels);
+        public static void DrawBuffer(uint buffer) => _gl.DrawBuffer((GLEnum)buffer);
+        public static void ReadBuffer(uint buffer) => _gl.ReadBuffer((GLEnum)buffer);
+        public static void ReadPixels(int x, int y, int width, int height, uint format, uint type, void* pixels) => _gl.ReadPixels(x, y, (uint)width, (uint)height, (GLEnum)format, (GLEnum)type, pixels);
 
         public static void FramebufferTextureLayer(uint target, uint attachment, uint texture, int level, int layer)
-            => _framebufferTextureLayer(target, attachment, texture, level, layer);
+            => _gl.FramebufferTextureLayer((GLEnum)target, (GLEnum)attachment, texture, level, layer);
 
         public static uint GenRenderbuffer()
         {
             uint id = 0;
-            _genRenderbuffers(1, &id);
+            _gl.GenRenderbuffers(1, &id);
             return id;
         }
 
         public static void DeleteRenderbuffer(uint id)
         {
-            if (id != 0) { _deleteRenderbuffers(1, &id); }
+            if (id != 0) { _gl.DeleteRenderbuffers(1, &id); }
         }
 
-        public static void BindRenderbuffer(uint target, uint id) => _bindRenderbuffer(target, id);
-        public static void RenderbufferStorageMultisample(uint target, int samples, uint format, int width, int height) => _renderbufferStorageMultisample(target, samples, format, width, height);
+        public static void BindRenderbuffer(uint target, uint id) => _gl.BindRenderbuffer((GLEnum)target, id);
+        public static void RenderbufferStorageMultisample(uint target, int samples, uint format, int width, int height)
+            => _gl.RenderbufferStorageMultisample((GLEnum)target, (uint)samples, (GLEnum)format, (uint)width, (uint)height);
 
         public static void BlitFramebuffer(int sx0, int sy0, int sx1, int sy1, int dx0, int dy0, int dx1, int dy1, uint mask, uint filter)
-            => _blitFramebuffer(sx0, sy0, sx1, sy1, dx0, dy0, dx1, dy1, mask, filter);
+            => _gl.BlitFramebuffer(sx0, sy0, sx1, sy1, dx0, dy0, dx1, dy1, mask, (GLEnum)filter);
 
         #endregion
     }
