@@ -37,9 +37,16 @@ The v3 design brief is `ai/261005_V3/1_BimGo v3_Handoff.md`. Decisions and the c
 | File format | `.bimgo`: a ZIP holding JSON metadata, binary geometry, comments and an edit journal (see §6) |
 | Revit link | **Live sessions** over a watched folder per document (`%LocalAppData%\BimGo\Sessions\<id>\`): JSON message files both ways, heartbeats, `.bimgo` snapshots for geometry. One `ExternalEvent` runs all Revit-side work. |
 | Comments | Revit: sidecar `<model>.bimgo-comments.json` beside the model (a legacy `.rvtgo.json` is migrated). Files: inside the `.bimgo`. |
+| Bookmarks | Revit: sidecar `<model>.bimgo-bookmarks.json` next to the comments sidecar. Files: inside the `.bimgo` (`bookmarks.json`). |
+| Sun & shadows | Off by default. Cascaded shadow maps with glass transmittance; sun from the Revit site location (captured at export) and a date / time the user scrubs. State saved with the model (`sun.json` / `<model>.bimgo-sun.json`); quality is per machine |
 | Settings / logs | `%AppData%\BimGo\settings.json` (migrated once from RvtGo) · `%LocalAppData%\BimGo\Logs\BimGo.Revit.log` / `BimGo.App.log` |
 | App install | The App build copies itself to `%LocalAppData%\Programs\BimGo\`, where every Revit year's add-in looks for `BimGo.exe`. That copy registers `.bimgo` (HKCU, ">>" icon) and a Start-menu shortcut on start; `BimGo.exe --register` / `--unregister` [`--quiet`] do it on demand |
 | Phases | **Existing** and **new** phase picked in Options (saved by name). The walkthrough shows the new phase; demolish = Phase Demolished → new phase, existing elements only; clones are created in the new phase |
+| Version | **1.0.0** (all three assemblies; shown on the home screen, F1 help, the Options title and in the logs) |
+| Active view only | Options → WHAT TO LOAD: **off by default**. When ticked, every model element the active view shows comes in (its V/G, filters, section box, hidden elements, design options and phase filter decide; category ticks, phases and design-option rules don't); ticked links contribute what the view shows of them (Revit 2024+ view + link collector). A 3D view's subcategory visibility and detail level apply to host geometry. Unlisted categories land in **Other (active view)**. F5 reuses the active view, else the last one used for that model |
+| Helper geometry | Options → GEOMETRY: **on by default**. Leaves out the Light Source subcategory (IES / photometric cones) and any *subcategory* whose name contains a keyword (default: light source, clearance, zone, cone, photometric; editable) |
+| Ground plane | 100 mm below the lowest level by default (clear of slab faces on that level); the pause menu slider still moves it |
+| Linked models | **None by default.** Options → LINKED MODELS lists every Revit link instance; ticked (loaded) instances are extracted with the host's categories, baked into scene coordinates with the instance's total transform, in the link phase named like the host's (else the link's last). The choice is remembered per host model (`LinkedModels` in settings) and reused by F5. Linked elements are **read-only** (Scan / Measure / Comment / Teleport / Portal only) and can be shown / hidden per link in the pause menu |
 
 ## 2. Getting started
 
@@ -70,23 +77,39 @@ The v3 design brief is `ai/261005_V3/1_BimGo v3_Handoff.md`. Decisions and the c
 | RMB · Esc | Gizmo / Clone while locked on: commit · cancel |
 | **G** | Gizmo / Clone: toggle snap mode (moves / turns step by the increment; Ctrl held inverts) |
 | **Z / X · C / V** | Gizmo / Clone while locked on: move increment down / up (5 mm … 1 m) · angle increment down / up (1° … 90°) |
-| **R** | Scan gun, live session: select and show the target in Revit |
+| **R** | Scan gun, live session: select and show the target in Revit (a linked element is selected inside its link) |
 | **F5** | Live session: ask Revit for a fresh snapshot (reloads where you stand) |
 | Page Up / Page Down | Teleport up / down one level |
 | Tab | Toggle minimap |
-| H / Shift+H | Return home / set home |
+| H / Shift+H | Return home / set home (saved with the model: walkthroughs start there) |
 | X | Clear current gun's markers (Comment gun: press twice to delete all comments) |
 | **Ctrl+S / Ctrl+Shift+S** | Save / Save as (file). In Revit: save the walkthrough as a new `.bimgo` |
 | **Ctrl+Z** | Undo the last edit (files only; in a live session, undo in Revit, then F5) |
-| F1 | Toggle controls help |
+| **Ctrl+Y / Ctrl+Shift+Z** | Redo the last undone edit (files only; a new edit ends the redo history) |
+| **B** | Bookmark this viewpoint (type a name, Enter; Esc keeps "View n") |
+| **Ctrl+1–9** | Jump to bookmark 1–9 |
+| **L** | Coordinate readout: off → shared → project → internal (crosshair point, or your feet when aiming at nothing) |
+| **O** | Shadows on / off (sun lighting; off restores the classic light and frees the shadow maps) |
+| **Shift+O** · click the sun icon | Open the sun panel (bottom right; frees the cursor, the player stands still, the scene keeps rendering). Esc / O close it |
+| **[ / ]** | Sun time −/+ 5 min (Shift: 1 min) while shadows are on; a short note shows the date, time and sun position at each step. Space plays / pauses the day in the sun panel |
+| **I · Shift+I** | Scan gun: hide the target in the walkthrough only · isolate its category (again: restore). Pause menu SHOW ALL brings everything back |
+| F1 | Toggle controls help (shows the version) |
 | F11 | Borderless fullscreen |
+| **F12** | Screenshot of the 3D view (no HUD) to `Pictures\BimGo\<model> <date time>.png` |
 | Esc | Pause menu (save, push to Revit, comments list, category toggles, display settings…); cancels the gizmo when locked on; closes the push / comments panel |
 
 App home screen: running **Live Revit sessions** (click to join), **Open .bimgo…** (Ctrl+O), recent files (right-click removes one), or drop a file on the window. During a walkthrough, dropped / double-clicked files wait until you close the model; a Go from Revit for another model asks before switching.
 
 Pause menu extras:
+- **SHOW ALL (n HIDDEN)** (when anything is hidden): elements hidden with I, categories and links switched off, and a Shift+I isolation all come back. Hidden things are saved with the model (`visibility.json`, or the `<model>.bimgo-visibility.json` sidecar in live sessions) and count as unsaved changes in files.
 - **PUSH TO REVIT (n)…** (files): pushes the edits not yet in Revit into the live session of the model the file came from (open it in Revit and press Go; answer No to the switch prompt). A dry run previews every edit (will apply / conflict / skipped / will fail / already in Revit); conflicts (moved in Revit since the file was made, > 5 mm) are skipped unless "apply anyway" is ticked. The real push is one undo step in Revit; pushed entries are marked in the file (Save keeps that) and are never sent again. EXPORT REPORT… writes a CSV.
 - **COMMENTS (n)**: every comment, filtered by level (← →), with GO (stand in front of it), EDIT, DELETE (click twice) and EXPORT CSV….
+- **LINKED MODELS** (under the category cards, when the model has links): one toggle per extracted link instance (drawing, picking, collision, shadows) with its element count.
+- **BOOKMARKS (n)**: saved viewpoints in Ctrl+number order, with GO, RENAME, SET HERE (move it to where you are), ↑ ↓ (reorder), DELETE (click twice) and ADD THIS VIEW. Shown as blue dots on the minimap.
+
+Sun panel (Shift+O): **Shadows** on/off and **quality** (Low 1 × 2048 px / 60 m, Medium 3 × 2048 px / 120 m, High 4 × 3072 px / 200 m; per machine), **time of day** slider (5-minute steps, Shift = 1 minute) with play (one hour per second), **month** and **day** boxes (type digits, Enter / Tab, ↑ ↓ step; clamped to the month), **+1 h DST**, the sun's height and bearing, and sliders for **sunlight**, **sky / diffuse light**, **shadow intensity** and **light through glass**, plus RESET LIGHTING. The site comes from Revit's Location (latitude, longitude, time zone); the start date / time from the launch view's sun settings (else today 12:00). Glass lets light through by its Revit transparency, tinted by its colour. Bookmarks saved with shadows on remember the date / time and GO restores it.
+
+Coordinate readout (L, remembered in settings): **Shared** = survey coordinates (E / N / elevation) from the model's shared site, as Revit's spot coordinates relative to the survey point; **Project** = relative to the project base point on project-north axes; **Internal** = Revit internal metres. Files exported before v5.1 derive shared coordinates from the survey point stored in float precision (marked "≈", can be ~0.5 m out on large grid coordinates): export again for millimetres.
 
 ### Guns
 
@@ -107,21 +130,22 @@ Pause menu extras:
 src/
 ├── BimGo.sln
 ├── BimGo.Core/                    # net8.0: no Revit, no GL, no UI
-│   ├── Scene/                     #   SceneData, CategoryCatalog, LaunchSettings, ModelInfo (provenance, site, ParameterTable)
+│   ├── Scene/                     #   SceneData, CategoryCatalog, LaunchSettings, ModelInfo (provenance, site, ParameterTable), LinkInfo, SiteCoordinates, SolarPosition
 │   ├── Edits/                     #   EditRequest/EditResult/EditChannel, EditJournal + JournalEntry
 │   ├── Sources/                   #   IModelSource, FileEditSource
 │   ├── Live/                      #   protocol (session.json, envelopes, message types), FolderChannel, LiveSessions, LiveSessionSource + ILiveLink, JournalPush (temporary push channel)
-│   ├── Format/                    #   .bimgo: BimGoFormat, BimGoReader/Writer, DTOs, BimGoDocument, comment sidecars
+│   ├── Format/                    #   .bimgo: BimGoFormat, BimGoReader/Writer, DTOs, BimGoDocument, SunModels, comment / bookmark / sun sidecars
 │   └── Utilities/Log_Utils.cs
 ├── BimGo.App/                     # BimGo.exe and the engine (no Revit)
 │   ├── Program.cs                 #   entry point, single instance, DPI awareness, --register / --unregister
 │   ├── Shell/                     #   AppShell (home ↔ walkthrough loop, switch / reload), HomeScreen, OpenTarget, RecentFiles, AppInstance (mutex + inbox), FileAssociation
-│   ├── Game/                      #   GameSession (+Render, +Menu, +Edits, +Document, +Live, +Push, +Comments), SessionOptions, guns
-│   ├── Rendering/ Physics/ Platform/ Native/ Audio/
+│   ├── Game/                      #   GameSession (+Render, +Menu, +Edits, +Document, +Live, +Push, +Comments, +Bookmarks, +Coordinates, +Sun), CommentStore, BookmarkStore, SessionOptions, guns
+│   ├── Rendering/                 #   SceneRenderer (+ shadow passes), ShadowMaps (cascades), SunLighting, Shaders, UI
+│   ├── Physics/ Platform/ Native/ Audio/
 └── BimGo.Revit/                   # the add-in (template configs R25–R27)
     ├── Application.cs             #   ribbon: BimGo tab → Walkthrough → Go, Export .bimgo, Live (status)
     ├── Commands/Cmds_BimGo.cs     #   Cmd_Launch (Go → live session + app), Cmd_Export (.bimgo), Cmd_Status
-    ├── Extraction/                #   SceneExtractor, CategoryResolver, ParameterScanner, PhaseResolver (existing / new phases, element roles)
+    ├── Extraction/                #   SceneExtractor (host + ticked links), LinkResolver (link instances, saved choice), CategoryResolver, ParameterScanner, PhaseResolver
     ├── Live/                      #   SessionHost (folder, heartbeat, snapshots), LiveDispatcher (ExternalEvent, registry, doc events, ribbon status)
     ├── Bridge/RevitEditor.cs      #   applies edits: transactions, failure swallowing, clone key map, phases
     ├── Bridge/RevitEditor.Push.cs #   journal.apply: one TransactionGroup, dry run, staleness check, push-local clone map
@@ -138,6 +162,7 @@ src/
   - the **extra parameters** picked in Options (instance value, else the type's).
 
   The extraction also captures:
+  - **Linked models** ticked in Options (`LinkResolver`): each loaded instance is a *source* with its own document, total transform, phases (matched by name to the host's) and caches (materials, categories, levels). Its elements follow the host's (so host elements keep the lowest indices) with `link` = n, are never movable (`MoveBlockReason` "In linked model … (read-only)") and record no host id. Its rooms are added with `link` = n (host rooms win in the readout). Levels and the level list stay the host's.
   - **Provenance:** title, path, `ProjectInformation.UniqueId` as the model key, cloud GUIDs, Revit version, user and time.
   - **Site:** true north, project base point and survey point.
 - **Sessions.** One `GameSession` runs both modes. Only the `IModelSource` differs:
@@ -170,11 +195,20 @@ A ZIP container with the extension masked:
 |---|---|
 | `manifest.json` | `format`, `formatVersion`, generator, kind (`revit-export` / `session-save` / `save` / `live-snapshot`, which also records the comment sidecar path), title, created/saved UTC, units, **provenance**, extraction options, counts |
 | `model.json` | origin offset, bounds, site, new phase (`phaseId`/`phaseName`), existing phase (`existingPhaseId`/`existingPhaseName`, optional), `phaseNote` (optional), spawn, levels, rooms (flattened loops), categories (by catalog key) |
-| `elements.json` | per element: id, uniqueId, name, category index, family/type, level, hostId, proxy, movable/reason, pivot, `phase` (optional: `new` / `between` / `unphased`; absent = existing), bounds, `[start,count]` index ranges |
+| `elements.json` | per element: id, uniqueId, name, category index, family/type, level, hostId, proxy, movable/reason, pivot, `phase` (optional: `new` / `between` / `unphased`; absent = existing), `link` (optional: n = `model.links[n-1]`; absent = host), bounds, `[start,count]` index ranges |
 | `parameters.json` | optional: pooled `names`, pooled `values`, per-element `rows` of name/value index pairs |
 | `geometry.bin` | header (`BGEO`, version, vertex size 28, counts), then `SceneVertex[]` and `uint[]` indices, little-endian |
 | `comments.json` | comment markers (Revit internal metres; optional `edited` / `editedBy`) |
 | `journal.json` | ordered edit entries |
+| `visibility.json` | optional (only when something is hidden): `hiddenCategories` (catalog keys), `hiddenLinks` (link instance UniqueIds), `hiddenElements[]` (`link` instance UniqueId or absent, `uniqueId`, `id`) |
+| `sun.json` | optional: `enabled`, `time` (`month`, `day`, `minutes`, `daylightSaving`), `sunIntensity`, `skyIntensity`, `shadowIntensity`, `glassTransmission`. Bookmarks may carry `sun` (same `time` shape) |
+| `bookmarks.json` | optional (written when there are bookmarks or a home): `bookmarks[]` with id, name, author, created, `x`/`y`/`z` (feet, Revit internal metres), `yaw`/`pitch` (radians), `flying`, `level`, optional `sun` and `thumbnail` (base64 JPEG); optional `home` (same shape: where walkthroughs start). List order = Ctrl+1–9 order |
+
+`model.site` also carries (v5.1, additive) `hasSharedTransform`, `sharedEast`, `sharedNorth`, `sharedElevation` (shared position of the internal origin, double precision) and `sharedAngle` (internal → shared rotation): shared = Rz(sharedAngle) · internal + (east, north, elevation). The manifest's `counts` gained `bookmarks`. v6 adds `model.site.hasLocation`, `latitude`, `longitude` (degrees, east / north positive), `timeZone` (hours), `placeName` and `sunStart` (`yyyy-MM-ddTHH:mm`, the launch view's sun-study start). Settings gained `ShadowQuality` (Low / Medium / High).
+
+v8 (1.0) adds `visibility.json`, `manifest.extraction.activeView` (the view name when extracted with "active view only") and the catalog key `other`. Settings gained `ActiveViewOnly`, `SkipHelperGeometry` and `HelperSubcategoryKeywords`.
+
+v7 adds `model.links[]` (optional; one per extracted link instance: `index`, `name`, `title`, `instanceId`, `instanceUniqueId`, `modelKey`, `modelPath`, `originX/Y/Z` (host internal metres, double), `basisX/Y/Z`, `phaseName`, `existingPhaseName`, `elementCount`, `roomCount`), `elements[].link`, `model.rooms[].link` and `manifest.counts.links`. Ids and unique ids are only unique within one model: readers must key elements by (link, id). Older readers ignore the fields and show linked elements as ordinary (non-movable) elements. Settings gained `LinkedModels` (host model key → ticked link instance UniqueIds).
 
 Readers load this version and older ones, and refuse newer ones with a message. Writes are atomic: a `.tmp` file, then a replace. JSON entries are readable (camelCase). The large entries are compact.
 
@@ -188,7 +222,7 @@ Readers load this version and older ones, and refuse newer ones with a message. 
 | Revit → app | `edit.result` | `EditResult` (ticket, success, message, affected ids, new id, clone key) |
 | app → Revit | `extract.request` | reason |
 | Revit → app | `extract.ready` / `extract.failed` | snapshot path, number, counts, seconds, reason (`go` / `refresh`) / message |
-| app → Revit | `select.elements` | ElementIds |
+| app → Revit | `select.elements` | ElementIds; optional `linked[]` (`linkInstanceId`, `elementId`): a new add-in selects those by link reference (`Selection.SetReferences`) and zooms to them, an older one selects the link instances in ElementIds |
 | Revit → app | `select.result` | success, message |
 | Revit → app | `model.changed` | added / modified / deleted counts since the last flush |
 | Revit → app | `session.closing` | reason |
@@ -202,7 +236,7 @@ Envelope: `protocol`, `id`, `seq`, `sessionId`, `type`, `replyTo`, `sentUtc`, `p
 
 ## 8. Known limitations / to verify
 
-- **v5 not compiled yet** (written without a .NET SDK or the Revit API assemblies; phase 2 has since been built and fixed). Check `PhaseResolver` (`Element.GetPhaseStatus`, `ElementOnPhaseStatus` names), `RevitEditor.Push.cs` (`TransactionGroup.Assimilate`), `DBEvents.UndoOperation.TransactionGroupRolledBack`, the COM `IShellLinkW` interop in `FileAssociation` and the new XAML rows in `OptionsWindow`.
+- **v5 not compiled yet** (`ElementOnPhaseStatus.NotApplicable` does not exist and was removed in v5.1; written without a .NET SDK or the Revit API assemblies; phase 2 has since been built and fixed). Check `PhaseResolver` (`Element.GetPhaseStatus`, `ElementOnPhaseStatus` names), `RevitEditor.Push.cs` (`TransactionGroup.Assimilate`), `DBEvents.UndoOperation.TransactionGroupRolledBack`, the COM `IShellLinkW` interop in `FileAssociation` and the new XAML rows in `OptionsWindow`.
 - Show in Revit works when the session's model is Revit's active document (otherwise the app is told to switch).
 - One app window walks one model; other sessions wait on the home screen.
 - Revit API calls to verify on 2025–2027:
@@ -210,15 +244,75 @@ Envelope: `protocol`, `id`, `seq`, `sessionId`, `type`, `replyTo`, `sentUtc`, `p
   - `WorksharingUtils.GetCheckoutStatus`, `Element.GetDependentElements`;
   - new in v3: `Document.GetCloudModelPath`, `BasePoint.GetProjectBasePoint/GetSurveyPoint`, `ProjectLocation.GetProjectPosition`.
 - Standalone demolish removes hosted elements with their host (from `HostId`). Revit's own rules for face-hosted families may differ.
-- Undo is file-only and has no redo. In a live session, undo in Revit, then F5 (undoing BimGo's own edits counts as a model change). In a file, undo stops at edits already in Revit (pushed or made live).
+- Undo / redo are file-only. In a live session, undo in Revit, then F5 (undoing BimGo's own edits counts as a model change). In a file, undo stops at edits already in Revit (pushed or made live). The redo history lives in memory only (not saved) and ends with any new edit.
+- **v5.1 not compiled yet** either (redo, bookmarks, coordinate readout). Revit side: `ProjectPosition` (`EastWest`, `NorthSouth`, `Elevation`, `Angle`) in `SceneExtractor.BuildSite`. The internal → shared rotation sign is checked against the survey / base point at extraction (logged when flipped); verify the shared readout against a Revit spot coordinate on a rotated, georeferenced model.
+- **v6 not compiled yet** (sun / shadows). Verify: `Document.SiteLocation` (`Latitude` / `Longitude` in radians, `TimeZone`, `PlaceName`), `View.SunAndShadowSettings.StartDateAndTime` (UTC or local? the code converts when `Kind` is UTC; compare the start time in the log with Revit's Sun Settings); GL `glTexImage3D` / `glFramebufferTextureLayer` (wglGetProcAddress) and `glColorMask` / `glDrawBuffer` / `glReadBuffer` (opengl32 exports); the GLSL (`sampler2DArrayShadow`, dynamic uniform-array indexing) on the target drivers. Compare the sun direction with a Revit sun study on a rotated model.
+- Shadows: one glass layer model (all glass in front of the first opaque surface multiplies; glass beyond it is ignored). No cascade blending (a faint seam can show where cascades meet). Shadow acne / peter-panning tuned by a fixed polygon offset and a 1.5-texel normal offset. DST is a manual +1 h checkbox (no regional rules). Video memory: Low ~16 MB, Medium ~50 MB, High ~150 MB (doubled for models with glass).
+- Project coordinates are relative to the project base point on project-north axes (the base point's own "angle to true north" is not applied).
 - Refresh is a full re-extract (incremental refresh later).
 - Push: the staleness check needs a location point (only point-based families are movable, so moves and clones always have one). A hide whose element is gone counts as already applied for deletes and skipped for demolitions. Clones have no duplicate guard beyond the journal flag: if the app loses the answer to a real push (timeout), check Revit before pushing again.
 - Phases are saved by name in the shared settings; a model without those names falls back to the defaults (and the walkthrough says so once). Clones made before v5 kept their source's phase.
 - Saving from a Revit session leaves out edits still waiting for Revit (a toast says so).
-- Stairs, railings, roof edges, linked models and orthographic spawn behave as in v2 (see the build notes).
+- Stairs, railings, roof edges and orthographic spawn behave as in v2 (see the build notes).
+- **1.0 not compiled yet** (active view only, helper geometry, hide / isolate, visibility file, screenshots). Verify: `FilteredElementCollector(doc, viewId, linkId)` (2024+), `Options.View` with a 3D view, `GraphicsStyle.GraphicsStyleCategory` / `Category.Parent`, `View.GetCategoryHidden`, `Element.IsHidden(View)`, `glReadPixels` (opengl32 export), `System.Drawing.Bitmap` PNG save.
+- Active view only: what a plan or section shows depends on its view range / far clip (a 3D view is the reliable choice); temporary hide / isolate in Revit may or may not be honoured by the view collector; elements Revit draws only in plan (symbolic lines) have no 3D geometry.
+- **v7** (linked models) built and works (Gavin, 2026-10-11).
+- Linked models: only top-level link instances are offered (nested links are not extracted); unloaded links are listed but can't be ticked; link phases are matched by name (Revit's per-link phase mapping isn't exposed in the API); a link's levels name its elements but don't join the level list (PgUp / PgDn); linked elements are read-only and never enter the journal or push; comments on them record no element id. A link reloaded in Revit shows as MODEL CHANGED (F5 re-extracts it).
 - More than 9 guns will need a rethink of the number keys.
 
 ## 9. Changelog
+
+### 2026-10-12: 1.0.0: saved home, bookmark thumbnails, bookmark cancel
+
+- **Saved home:** Shift+H / SET HOME HERE now saves home with the model (`bookmarks.json` → `home` in a .bimgo, or the bookmarks sidecar beside the Revit model), and walkthroughs of that model start there (before the active 3D view or a random spot; a reload still keeps where you stood). Setting home is acknowledged with a sound, a flash, a note and, in the pause menu, the button reading HOME SAVED HERE for two seconds. Export .bimgo now carries the model's bookmarks and home too (like its comments).
+- **Bookmark thumbnails:** a 192 × 108 JPEG (base64 `thumbnail`, a few kB) of the 3D view (no HUD) is taken the frame after B, ADD THIS VIEW or SET HERE, and shown in the BOOKMARKS list (older bookmarks show NO PICTURE until SET HERE). `UiBatch.Image` draws textures in order with the batch.
+- **Esc cancels a new bookmark:** B now prepares the bookmark and only adds it when the name is confirmed with Enter; Esc throws it away (nothing saved, the file isn't marked changed).
+
+### 2026-10-12: 1.0.0: stair climbing
+
+- **Stairs climb reliably.** The capsule's rounded bottom used to hang on the nosing: the old step-up probed only one tick (~3 cm) ahead, its landing contact read as a wall, and the climb was refused, so the step height setting seemed to do nothing. Now a contact on the rounded bottom that is no higher than the **max step height** above the feet (and whose triangle doesn't reach higher, so steep slopes and walls stay walls) lifts the player straight up, rolling over nosings, riser tops, kerbs and stringer edges like a short ramp, for square, sloped, open or rounded risers and at any angle of approach. Risers taller than the rounded bottom can ride (step height above ~0.27 m) use a step-up that probes a capsule radius ahead. The max step height (Options, default 200 mm) now means exactly that.
+
+### 2026-10-12: 1.0.0 polish: progress bars, sun time readout, help panel, wording
+
+- **Progress with Cancel** for the long tasks. Revit: Go, Export and refreshes (F5 / Send a fresh snapshot) show a progress window (stage, element count, bar, Cancel; it appears after half a second, on its own thread so it stays responsive while Revit works). Cancelling stops the extraction or the file write; nothing in the model changes, an export or snapshot is not written, and a cancelled refresh tells the walkthrough. App: opening a file, joining / reloading a live session, preparing the scene and saving show a progress screen (CANCEL or Esc; a cancelled save leaves the file on disk untouched).
+- **[ ]** now shows the date and time reached on each step, with the sun's height and direction (e.g. "21 Jun 14:35 · sun 32° high in the NW").
+- **F1 help panel** sizes itself to its text.
+- **Wording review** across the app, the Options dialog and the Revit messages: one name per thing (Demolish gun, not hammer; "not connected to Revit" instead of "no Revit link", so it can't be confused with linked models; portals "connect"), full sentences in dialogs, the same Esc → BUTTON pattern for menu hints.
+- Smoke tested on Revit 2025, 2026 and 2027 (Gavin, 2026-10-11).
+
+### 2026-10-11: 1.0.0: active view only, helper geometry, hide / isolate, screenshots
+
+- **Build fix:** `Gl.SRC_COLOR` (used by the glass shadow pass) was missing.
+- **Active view only** (Options, off by default): the view decides what comes in, for the host and ticked links (`ViewScope`, Revit 2024+ link view collector); unlisted model categories go to the new catalog entry **Other (active view)**; 3D views read host geometry through the view. Rooms, spaces, areas, link instances, model groups, assemblies, cameras and model lines are never geometry.
+- **Helper geometry** (Options, on by default): Light Source subcategory (IES cones) always left out, plus subcategories matching editable keywords; logged once per subcategory.
+- **Ground plane** defaults to 100 mm below the lowest level.
+- **Hide / isolate** (Scan gun): I hides the target in the walkthrough only, Shift+I isolates its category; pause menu SHOW ALL. Category / link toggles and hidden elements are **saved with the model** (`visibility.json` / live sidecar) and restored on open.
+- **F12 screenshot** to Pictures\BimGo (scene only, PNG encoded on a worker thread).
+- **Version 1.0.0** on all assemblies (`Version`, `AssemblyVersion`, `FileVersion`); version strings are now `1.0.0`; Options title and F1 help show it.
+
+### 2026-10-10: v7: linked models
+
+- **Options → LINKED MODELS:** every link instance, grouped by file (a file tick box sets all its instances); none ticked by default; unloaded links greyed out; the choice is saved per host model and reused by F5 / Send a fresh snapshot. The footer estimate counts the ticked links.
+- **Extraction:** ticked instances are extracted with the host's categories and triangle limit, through their total transform, in the link's phase named like the host's new phase (else its last). Per-source material, category and level caches (ids are per document). Link rooms feed the room readout where the host has none. The scene origin takes linked elements into account.
+- **Format (additive):** `model.links[]`, `elements[].link`, `rooms[].link`, `counts.links`.
+- **App:** linked elements are read-only (Demolish refuses with the link's name; Gizmo / Clone show it as the reason), skipped by the id / unique-id / host lookups (no clashes with host ids), and comments on them record no element id. Scan shows a **Model** row; R selects the element inside its link in Revit (older add-ins select the link). Pause menu **LINKED MODELS** toggles per link (render batches are now per model and category, so a hidden link costs nothing). The load toast counts the links.
+
+### 2026-10-09: v6: sun, shadows and time of day
+
+- **Shadows** (O, off by default): cascaded shadow maps (depth texture array, hardware PCF, texel-snapped bounding-sphere cascades, normal-offset bias), cast and received by the static scene, moved / cloned elements and the ground. Only cascades whose fit, the sun or the casters changed re-render; far cascades refresh every 2nd–4th frame while walking. Off frees the maps.
+- **Glass:** a transmittance layer per cascade (glass multiplied in front of the first opaque surface), from each material's transparency and tint, scaled by the glass slider.
+- **Sun panel** (Shift+O or the bottom-right sun icon): shadows and quality, time slider with play, month / day boxes, DST, sun height / bearing, sunlight / sky / shadow / glass intensities. Sky colours, the sun disc, fog and ambient follow the sun's height (night keeps a little sky light).
+- **Solar maths** in Core (`SolarPosition`): Gavin's `SunPosition` with the NOAA declination / equation-of-time series; true north from the extraction-verified shared angle.
+- **Revit:** extraction captures `SiteLocation` and the launch view's sun-study start; Options dialog has **Shadow quality**.
+- Saved with the model (`sun.json`, live sidecar written ~1.5 s after the last change); bookmarks keep the sun time.
+
+### 2026-10-08: v5.1: redo, viewpoint bookmarks, coordinate readout
+
+- **Fix:** `PhaseResolver` no longer uses `ElementOnPhaseStatus.NotApplicable` (not in the Revit API); `None` covers unphased elements and failed lookups.
+- **Redo** (files): Ctrl+Y or Ctrl+Shift+Z puts the last undone edit back (replays that one entry); any new edit ends the redo history; undone clone keys stay reserved so a redo never collides.
+- **Viewpoint bookmarks:** B saves the viewpoint and asks for a name; Ctrl+1–9 jump; pause menu BOOKMARKS list (GO, RENAME, SET HERE, reorder, DELETE, ADD THIS VIEW); blue minimap dots. Saved in `.bimgo` (`bookmarks.json`) or the `<model>.bimgo-bookmarks.json` sidecar in live sessions; count towards unsaved changes in files.
+- **Coordinate readout** (L): shared / project / internal coordinates of the crosshair point (double precision). Extraction now captures the internal → shared transform (`model.site.shared*`); older files fall back to the survey point ("≈").
+- Pause menu buttons tighten on short screens so the extra entry fits above END SESSION.
 
 ### 2026-10-07: v5: push to Revit, existing / new phases, file association, comments QoL, snap defaults
 

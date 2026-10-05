@@ -38,6 +38,14 @@ namespace BimGo.Game
         public static readonly uint COMMENT = Rgba.Hex(0xA78BFA);
         public static readonly uint COMMENT_LABEL = Rgba.Hex(0xC4B5FD);
 
+        public static readonly uint SUN = Rgba.Hex(0xFBBF24);
+        public static readonly uint SUN_LABEL = Rgba.Hex(0xFDE68A);
+
+        public static readonly uint BOOKMARK = Rgba.Hex(0x38BDF8);
+        public static readonly uint BOOKMARK_LABEL = Rgba.Hex(0x7DD3FC);
+
+        public static readonly uint COORDS = Rgba.Hex(0xE5E7EB);
+
         public static readonly uint TELEPORT = Rgba.Hex(0x34D399);
         public static readonly uint TELEPORT_LABEL = Rgba.Hex(0x6EE7B7);
         public static readonly uint TELEPORT_BLOCKED = Rgba.Hex(0xF87171);

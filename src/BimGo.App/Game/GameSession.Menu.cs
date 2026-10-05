@@ -10,7 +10,7 @@ using BimGo.Scene;
 namespace BimGo.Game
 {
     /// <summary>
-    /// The Esc pause menu (immediate-mode widgets) and the in-game comment editor.
+    /// The Esc pause menu (immediate-mode widgets) and the in-game text box (comments and bookmark names).
     /// </summary>
     internal sealed partial class GameSession
     {
@@ -18,13 +18,20 @@ namespace BimGo.Game
 
         private int _activeSlider = -1;
 
+        // SHOW ALL button label, rebuilt only when the count changes
+        private string _showAllLabel;
+        private int _showAllCount = -1;
+
         private bool _editing;
         private Vector3 _editPoint;
         private long _editElement;
         private string _editLevel;
         private readonly char[] _editChars = new char[280];
         private int _editLength;
+        private int _editMax = 280;
         private CommentRecord _editRecord;
+        private BookmarkRecord _editBookmark;
+        private bool _editBookmarkIsNew;
 
         private static readonly string[] COLOUR_OPTIONS = { "Whitecard", "Material" };
         private static readonly string[] MSAA_OPTIONS = { "Off", "2x", "4x" };
@@ -33,7 +40,7 @@ namespace BimGo.Game
 
         #region Comment editor
 
-        /// <summary>True while the comment text box is open.</summary>
+        /// <summary>True while the text box (comment or bookmark name) is open: it takes all keys.</summary>
         public bool IsEditingComment => _editing;
 
         /// <summary>Where the comment being typed will go.</summary>
@@ -46,6 +53,8 @@ namespace BimGo.Game
         {
             _editing = true;
             _editRecord = null;
+            _editBookmark = null;
+            _editMax = _editChars.Length;
             _editPoint = point;
             _editElement = elementId;
             _editLevel = level;
@@ -61,11 +70,33 @@ namespace BimGo.Game
             if (record == null) { return; }
             _editing = true;
             _editRecord = record;
+            _editBookmark = null;
+            _editMax = _editChars.Length;
             _editPoint = record.Local;
             _editElement = record.ElementId;
             _editLevel = string.IsNullOrEmpty(record.Level) ? null : record.Level;
             _editLength = Math.Min(record.Text?.Length ?? 0, _editChars.Length);
             record.Text?.CopyTo(0, _editChars, 0, _editLength);
+            _window.Input.ReleaseAll();
+        }
+
+        /// <summary>
+        /// Opens the text box on a bookmark's name (selected text replaced by typing is not supported: the name is
+        /// ready to extend or Backspace over).
+        /// </summary>
+        /// <param name="record">The bookmark.</param>
+        /// <param name="isNew">True right after B: the bookmark is pending (Enter adds it, Esc throws it away).</param>
+        private void BeginBookmarkRename(BookmarkRecord record, bool isNew)
+        {
+            if (record == null) { return; }
+            _editing = true;
+            _editRecord = null;
+            _editBookmark = record;
+            _editBookmarkIsNew = isNew;
+            _editMax = BookmarkStore.MAX_NAME;
+            _editLevel = string.IsNullOrEmpty(record.Level) ? null : record.Level;
+            _editLength = Math.Min(record.Name?.Length ?? 0, _editMax);
+            record.Name?.CopyTo(0, _editChars, 0, _editLength);
             _window.Input.ReleaseAll();
         }
 
@@ -88,12 +119,21 @@ namespace BimGo.Game
 
                     case (char)27:
                         _editing = false;
-                        Toast(_editRecord != null ? "Edit cancelled" : "Comment cancelled");
+                        if (_editBookmark != null)
+                        {
+                            if (_editBookmarkIsNew && _thumbnailFor == _editBookmark) { _thumbnailFor = null; }
+                            Toast(_editBookmarkIsNew ? "Bookmark cancelled (nothing was saved)" : "Name not changed");
+                        }
+                        else
+                        {
+                            Toast(_editRecord != null ? "Edit cancelled" : "Comment cancelled");
+                        }
                         _editRecord = null;
+                        _editBookmark = null;
                         return;
 
                     default:
-                        if (c >= ' ' && _editLength < _editChars.Length) { _editChars[_editLength++] = c; }
+                        if (c >= ' ' && _editLength < _editMax) { _editChars[_editLength++] = c; }
                         break;
                 }
             }
@@ -104,13 +144,26 @@ namespace BimGo.Game
             _editing = false;
             string text = new string(_editChars, 0, _editLength).Trim();
             CommentRecord editing = _editRecord;
+            BookmarkRecord bookmark = _editBookmark;
             _editRecord = null;
+            _editBookmark = null;
+
+            if (bookmark != null)
+            {
+                // A new bookmark joins the list only now (Esc discarded it); an existing one is renamed
+                if (_editBookmarkIsNew) { Bookmarks.AddPending(bookmark, text); }
+                else if (text.Length > 0) { Bookmarks.Rename(bookmark, text); }
+                Sound.Play(SoundId.Commit);
+                string verb = _editBookmarkIsNew ? "Bookmarked" : "Renamed to";
+                Toast(Bookmarks.LastError ?? $"{verb} “{bookmark.Name}” ({BookmarkHotkey(bookmark)})");
+                return;
+            }
 
             if (editing != null)
             {
                 if (text.Length == 0)
                 {
-                    Toast("Empty text: comment not changed (RMB on the marker removes it)");
+                    Toast("The text is empty, so the comment was not changed (RMB on the marker deletes it)");
                     return;
                 }
                 Comments.Update(editing, text);
@@ -121,7 +174,7 @@ namespace BimGo.Game
 
             if (text.Length == 0)
             {
-                Toast("Empty comment discarded");
+                Toast("Empty comment not saved");
                 return;
             }
 
@@ -141,9 +194,12 @@ namespace BimGo.Game
             float h = S(96) + textHeight;
             float x = _window.Width * 0.5f - w * 0.5f, y = _window.Height * 0.5f + S(48);
 
-            _ui.Panel(x, y, w, h, UiTheme.PANEL_STRONG, UiTheme.COMMENT);
-            Text.Clear().Append(_editRecord != null ? "EDIT COMMENT · " : "NEW COMMENT · ").Append(_editLevel ?? "—");
-            _ui.Text(f.Small, x + S(14), y + S(12), Text.Span, UiTheme.COMMENT_LABEL, S(1f));
+            bool naming = _editBookmark != null;
+            uint frame = naming ? UiTheme.BOOKMARK : UiTheme.COMMENT;
+            uint label = naming ? UiTheme.BOOKMARK_LABEL : UiTheme.COMMENT_LABEL;
+            _ui.Panel(x, y, w, h, UiTheme.PANEL_STRONG, frame);
+            Text.Clear().Append(naming ? "BOOKMARK NAME · " : _editRecord != null ? "EDIT COMMENT · " : "NEW COMMENT · ").Append(_editLevel ?? "—");
+            _ui.Text(f.Small, x + S(14), y + S(12), Text.Span, label, S(1f));
 
             float boxY = y + S(32);
             float boxH = textHeight + S(16);
@@ -155,11 +211,11 @@ namespace BimGo.Game
             {
                 CaretPosition(f.Body, w - S(48), out float caretX, out float caretLine);
                 float lineHeight = f.Body.LineHeight * 1.15f;
-                _ui.Rect(x + S(24) + caretX + S(1), boxY + S(8) + caretLine * lineHeight + S(2), S(1.5f), f.Body.LineHeight - S(2), UiTheme.COMMENT_LABEL);
+                _ui.Rect(x + S(24) + caretX + S(1), boxY + S(8) + caretLine * lineHeight + S(2), S(1.5f), f.Body.LineHeight - S(2), label);
             }
 
-            _ui.Text(f.Body, x + S(14), y + h - S(26), "ENTER save · ESC cancel", UiTheme.TEXT_MUTED);
-            Text.Clear().Append(_editLength).Append(" / ").Append(_editChars.Length);
+            _ui.Text(f.Body, x + S(14), y + h - S(26), naming && _editBookmarkIsNew ? "ENTER save the bookmark · ESC cancel it" : "ENTER save · ESC cancel", UiTheme.TEXT_MUTED);
+            Text.Clear().Append(_editLength).Append(" / ").Append(_editMax);
             _ui.TextRight(f.Mono, x + w - S(14), y + h - S(25), Text.Span, UiTheme.TEXT_MUTED);
         }
 
@@ -193,6 +249,11 @@ namespace BimGo.Game
                 BuildCommentsPanel();
                 return;
             }
+            if (IsBookmarksPanelOpen)
+            {
+                BuildBookmarksPanel();
+                return;
+            }
 
             FontAtlas f = _ui.Atlas;
             InputState input = _window.Input;
@@ -213,46 +274,64 @@ namespace BimGo.Game
             _ui.Text(f.Title, leftX, y, "PAUSED", UiTheme.TEXT, S(2.4f));
             y += S(64);
 
-            float step = S(54);
-            if (MenuButton(f, leftX, y, leftW, "RESUME", primary: true, danger: false)) { SetPaused(false); return; }
+            // Button pitch: 54 px, tightened when the column would run into END SESSION (small or high-DPI screens)
+            float endY = height - pad - S(48);
+            int hiddenThings = HiddenThingsCount();
+            int buttons = (IsFileMode ? 9 : 7) + (hiddenThings > 0 ? 1 : 0);
+            float step = Math.Clamp((endY - S(12) - y) / buttons, S(40), S(54));
+            float buttonH = step - S(6);
+            if (MenuButton(f, leftX, y, leftW, "RESUME", primary: true, danger: false, height: buttonH)) { SetPaused(false); return; }
             y += step;
-            if (MenuButton(f, leftX, y, leftW, "RETURN HOME", false, false)) { _player.GoHome(); SetPaused(false); return; }
+            if (MenuButton(f, leftX, y, leftW, "RETURN HOME", false, false, height: buttonH)) { _player.GoHome(); SetPaused(false); return; }
             y += step;
-            if (MenuButton(f, leftX, y, leftW, "SET HOME HERE", false, false)) { _player.SetHome(); Toast("Home set here"); }
+            if (MenuButton(f, leftX, y, leftW, _clock < _homeSetUntil ? "HOME SAVED HERE" : "SET HOME HERE", false, false, height: buttonH)) { SetHomeHere(); }
             y += step;
 
             // Saving: back to the open file, or (Revit) a snapshot + session journal as a new .bimgo
             if (IsFileMode)
             {
-                if (MenuButton(f, leftX, y, leftW, IsDirty ? "SAVE *" : "SAVE", false, false)) { Save(saveAs: false); return; }
+                if (MenuButton(f, leftX, y, leftW, IsDirty ? "SAVE *" : "SAVE", false, false, height: buttonH)) { Save(saveAs: false); return; }
                 y += step;
-                if (MenuButton(f, leftX, y, leftW, "SAVE AS…", false, false)) { Save(saveAs: true); return; }
+                if (MenuButton(f, leftX, y, leftW, "SAVE AS…", false, false, height: buttonH)) { Save(saveAs: true); return; }
                 y += step;
 
                 // Edits made offline go into the Revit model they came from
-                if (MenuButton(f, leftX, y, leftW, PushMenuLabel(), false, false)) { OpenPush(); return; }
+                if (MenuButton(f, leftX, y, leftW, PushMenuLabel(), false, false, height: buttonH)) { OpenPush(); return; }
                 y += step;
             }
             else
             {
-                if (MenuButton(f, leftX, y, leftW, "SAVE AS .BIMGO…", false, false)) { Save(saveAs: true); return; }
+                if (MenuButton(f, leftX, y, leftW, "SAVE AS .BIMGO…", false, false, height: buttonH)) { Save(saveAs: true); return; }
                 y += step;
             }
 
-            if (MenuButton(f, leftX, y, leftW, CommentsMenuLabel(), false, false)) { OpenComments(); return; }
+            if (MenuButton(f, leftX, y, leftW, CommentsMenuLabel(), false, false, height: buttonH)) { OpenComments(); return; }
+            y += step;
+            if (MenuButton(f, leftX, y, leftW, BookmarksMenuLabel(), false, false, height: buttonH)) { OpenBookmarks(); return; }
             y += step;
 
-            if (MenuButton(f, leftX, y, leftW, "CLEAR MARKERS", false, false))
+            // Walkthrough-only hiding (Scan I / Shift+I, category and link toggles)
+            if (hiddenThings > 0)
+            {
+                if (_showAllCount != hiddenThings)
+                {
+                    _showAllCount = hiddenThings;
+                    _showAllLabel = $"SHOW ALL ({hiddenThings} HIDDEN)";
+                }
+                if (MenuButton(f, leftX, y, leftW, _showAllLabel, false, false, height: buttonH)) { ShowAll(); }
+                y += step;
+            }
+
+            if (MenuButton(f, leftX, y, leftW, "CLEAR MARKERS", false, false, height: buttonH))
             {
                 // Every gun's markers except comments (persistent: use X with the Comment gun)
                 foreach (Gun gun in _guns)
                 {
                     if (gun != _commentGun) { gun.ClearMarkers(); }
                 }
-                Toast("Markers cleared (comments kept)");
+                Toast("Markers cleared (comments are kept)");
             }
 
-            float endY = height - pad - S(48);
             if (MenuButton(f, leftX, endY, leftW, _live != null ? "LEAVE SESSION" : _options.InApp ? "CLOSE MODEL" : "END SESSION", false, danger: true)) { _endRequested = true; return; }
 
             // ---- Middle: geometry toggles
@@ -348,14 +427,72 @@ namespace BimGo.Game
             }
 
             _ui.Text(f.Body, x, cardTop + tallest + S(12), IsFileMode
-                ? "Groups not in this file are greyed out. Export again from Revit to include them."
-                : "Groups not loaded at launch are greyed out. Tick them and press Go in Revit again to include them.", UiTheme.TEXT_MUTED);
+                ? "Categories not in this file are greyed out. Export again from Revit with them ticked to include them."
+                : "Categories not loaded are greyed out. Tick them in Revit's Options and press Go again to include them.", UiTheme.TEXT_MUTED);
+
+            if (Scene.Links.Length > 0 && BuildLinkCard(f, input, x, cardTop + tallest + S(48), width)) { changed = true; }
 
             if (changed)
             {
                 RefreshMasks();
+                VisibilityChanged();
                 Sound.Play(SoundId.UiClick);
             }
+        }
+
+        /// <summary>
+        /// The linked models extracted with the host, each with a show / hide toggle (drawing, picking, collision and
+        /// shadows). Rows that don't fit above the bottom of the screen are summarised.
+        /// </summary>
+        /// <returns>True if a toggle changed.</returns>
+        private bool BuildLinkCard(FontAtlas f, InputState input, float x, float top, float width)
+        {
+            LinkInfo[] links = Scene.Links;
+            float row = S(22);
+            int fit = Math.Max(1, (int)((_window.Height - S(48) - top - S(70)) / row));
+            int rows = Math.Min(links.Length, fit);
+            bool changed = false;
+
+            _ui.Text(f.Small, x, top + S(2), "LINKED MODELS (READ-ONLY)", UiTheme.TEXT_MUTED, S(1.8f));
+            float cardTop = top + S(26);
+            float cardH = S(20) + rows * row + (rows < links.Length ? row : 0f);
+            _ui.Panel(x, cardTop, width, cardH, UiTheme.CARD, UiTheme.CARD_BORDER);
+
+            float ry = cardTop + S(10);
+            for (int i = 0; i < rows; i++)
+            {
+                LinkInfo link = links[i];
+                bool on = _linkVisible[i + 1];
+                bool hover = Hover(input, x + S(8), ry - S(3), width - S(16), row);
+
+                float box = S(14);
+                float bx = x + S(14), by = ry + S(1);
+                _ui.Rect(bx, by, box, box, on ? UiTheme.ACCENT : UiTheme.CONTROL);
+                _ui.Outline(bx, by, box, box, MathF.Max(1f, UiScale), on ? UiTheme.ACCENT : UiTheme.CONTROL_BORDER);
+                if (on)
+                {
+                    _ui.Line(bx + box * 0.22f, by + box * 0.52f, bx + box * 0.42f, by + box * 0.72f, S(2), UiTheme.SCAN_TAG_TEXT);
+                    _ui.Line(bx + box * 0.42f, by + box * 0.72f, bx + box * 0.8f, by + box * 0.28f, S(2), UiTheme.SCAN_TAG_TEXT);
+                }
+
+                _ui.TextWrapped(f.Body, bx + box + S(10), ry, width - S(130), link.Name, hover ? UiTheme.ACCENT : UiTheme.TEXT, maxLines: 1);
+                Text.Clear().AppendGrouped(link.ElementCount);
+                _ui.TextRight(f.Mono, x + width - S(14), ry + S(1), Text.Span, UiTheme.TEXT_FAINT);
+
+                if (hover && input.LeftPressed)
+                {
+                    _linkVisible[i + 1] = !on;
+                    changed = true;
+                }
+                ry += row;
+            }
+
+            if (rows < links.Length)
+            {
+                Text.Clear().Append('+').Append(links.Length - rows).Append(" more (make the window taller to list them)");
+                _ui.Text(f.Body, x + S(14), ry, Text.Span, UiTheme.TEXT_MUTED);
+            }
+            return changed;
         }
 
         /// <summary>
@@ -458,10 +595,11 @@ namespace BimGo.Game
         /// <summary>
         /// A full-width menu button. A disabled button is drawn faded and never reports a click.
         /// </summary>
-        private bool MenuButton(FontAtlas f, float x, float y, float w, string label, bool primary, bool danger, bool enabled = true)
+        /// <param name="height">Button height in pixels (0 = the standard 48 px, scaled).</param>
+        private bool MenuButton(FontAtlas f, float x, float y, float w, string label, bool primary, bool danger, bool enabled = true, float height = 0f)
         {
             InputState input = _window.Input;
-            float h = S(48);
+            float h = height > 0f ? height : S(48);
             bool hover = enabled && Hover(input, x, y, w, h);
             float alpha = enabled ? 1f : 0.4f;
 

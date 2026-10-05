@@ -71,7 +71,7 @@
                     <Button x:Name="ButtonCancel" Content="Cancel" Style="{StaticResource SecondaryButton}" IsCancel="True" Margin="0,0,10,0" Click="ButtonCancel_Click"/>
                     <Button x:Name="ButtonLaunch" Content="Launch BimGo" Style="{StaticResource PrimaryButton}" IsDefault="True" Click="ButtonLaunch_Click"/>
                 </StackPanel>
-                <TextBlock x:Name="TextEstimate" VerticalAlignment="Center" FontSize="12" Foreground="{StaticResource Muted}" Text="Est. 0 elements"/>
+                <TextBlock x:Name="TextEstimate" VerticalAlignment="Center" FontSize="12" Foreground="{StaticResource Muted}" Text="About 0 elements"/>
             </DockPanel>
         </Border>
 
@@ -85,6 +85,11 @@
                         <Run x:Name="RunSpawn" Text="—"/>
                     </TextBlock>
                 </Border>
+
+                <!-- Active view only -->
+                <TextBlock Style="{StaticResource SectionHeader}" Text="WHAT TO LOAD"/>
+                <CheckBox x:Name="CheckViewOnly" FontWeight="SemiBold" Content="Only elements visible in the active view" Click="CheckViewOnly_Click"/>
+                <TextBlock x:Name="TextViewOnly" Margin="22,4,0,16" FontSize="12" Foreground="{StaticResource Muted}" TextWrapping="Wrap" Text="—"/>
 
                 <!-- Categories -->
                 <TextBlock Style="{StaticResource SectionHeader}" Text="CATEGORIES TO LOAD"/>
@@ -103,12 +108,13 @@
                         <RowDefinition Height="34"/>
                         <RowDefinition Height="34"/>
                         <RowDefinition Height="38"/>
+                        <RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
 
                     <TextBlock Grid.Row="0" Style="{StaticResource FieldLabel}" Text="Triangle limit per element"/>
                     <StackPanel Grid.Row="0" Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
                         <TextBox x:Name="TextThreshold" Style="{StaticResource MonoBox}"/>
-                        <TextBlock Margin="8,0,0,0" VerticalAlignment="Center" FontSize="12" Foreground="{StaticResource Muted}" Text="FFE &amp; Services only"/>
+                        <TextBlock Margin="8,0,0,0" VerticalAlignment="Center" FontSize="12" Foreground="{StaticResource Muted}" Text="Applies to FFE and services, not walls, floors or structure"/>
                     </StackPanel>
 
                     <TextBlock Grid.Row="1" Style="{StaticResource FieldLabel}" Text="Over the limit"/>
@@ -127,6 +133,13 @@
                     <StackPanel Grid.Row="3" Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
                         <TextBox x:Name="TextStep" Style="{StaticResource MonoBox}"/>
                         <TextBlock Margin="8,0,0,0" VerticalAlignment="Center" FontSize="12" Foreground="{StaticResource Muted}" Text="mm"/>
+                    </StackPanel>
+
+                    <TextBlock Grid.Row="4" Style="{StaticResource FieldLabel}" VerticalAlignment="Top" Margin="0,6,0,0" Text="Helper geometry"/>
+                    <StackPanel Grid.Row="4" Grid.Column="1" Margin="0,6,0,0">
+                        <CheckBox x:Name="CheckSkipHelpers" Content="Leave out light sources (IES cones) and any subcategory whose name contains:" Click="CheckSkipHelpers_Click"/>
+                        <TextBox x:Name="TextHelperKeywords" Height="28" Margin="22,6,0,0" Padding="6,0" VerticalContentAlignment="Center" BorderBrush="#B7BDC4"
+                                 ToolTip="Comma-separated, case-insensitive parts of subcategory names (e.g. clearance, zone, cone)"/>
                     </StackPanel>
                 </Grid>
 
@@ -150,8 +163,18 @@
                     <ComboBox x:Name="ComboNewPhase" Grid.Row="1" Grid.Column="1" Width="260" Height="28" HorizontalAlignment="Left" VerticalContentAlignment="Center"/>
 
                     <TextBlock x:Name="TextPhaseHint" Grid.Row="2" Grid.ColumnSpan="2" Margin="0,6,0,0" FontSize="12" Foreground="{StaticResource Muted}" TextWrapping="Wrap"
-                               Text="The walkthrough shows the model as it stands in the new phase. The hammer demolishes existing elements in the new phase; new work can only be deleted. Clones are created in the new phase."/>
+                               Text="The walkthrough shows the model as it stands in the new phase. The Demolish gun demolishes existing elements in the new phase; new work can only be deleted. Clones are created in the new phase."/>
                 </Grid>
+
+                <!-- Linked models -->
+                <TextBlock Style="{StaticResource SectionHeader}" Text="LINKED MODELS (READ-ONLY IN THE WALKTHROUGH)"/>
+                <Border Style="{StaticResource Card}" Margin="0,0,0,18">
+                    <StackPanel>
+                        <StackPanel x:Name="PanelLinks"/>
+                        <TextBlock x:Name="TextLinkSummary" Margin="0,8,0,0" FontSize="12" Foreground="{StaticResource Muted}" TextWrapping="Wrap"
+                                   Text="Ticked links come in with the same categories, shown in their phase with the same name as the new phase (else their last phase). In the walkthrough their elements can be scanned, measured and commented on, but not demolished, moved or copied."/>
+                    </StackPanel>
+                </Border>
 
                 <!-- Extra parameters -->
                 <TextBlock Style="{StaticResource SectionHeader}" Text="EXTRA PARAMETERS (SHOWN BY THE SCAN GUN, SAVED IN .BIMGO FILES)"/>
@@ -179,6 +202,7 @@
                         <RowDefinition Height="34"/>
                         <RowDefinition Height="34"/>
                         <RowDefinition Height="34"/>
+                        <RowDefinition Height="38"/>
                         <RowDefinition Height="38"/>
                     </Grid.RowDefinitions>
 
@@ -213,7 +237,17 @@
                         <CheckBox x:Name="CheckSnap" Content="Snap moves and rotations" VerticalAlignment="Center" Margin="0,0,16,0"/>
                         <ComboBox x:Name="ComboSnapMove" Width="90" Height="28" VerticalContentAlignment="Center" Margin="0,0,8,0" ToolTip="Move increment"/>
                         <ComboBox x:Name="ComboSnapAngle" Width="70" Height="28" VerticalContentAlignment="Center" ToolTip="Rotation increment"/>
-                        <TextBlock Margin="10,0,0,0" VerticalAlignment="Center" FontSize="12" Foreground="{StaticResource Muted}" Text="G toggles in the walkthrough"/>
+                        <TextBlock Margin="10,0,0,0" VerticalAlignment="Center" FontSize="12" Foreground="{StaticResource Muted}" Text="G turns snap on/off in the walkthrough"/>
+                    </StackPanel>
+
+                    <TextBlock Grid.Row="5" Style="{StaticResource FieldLabel}" Text="Shadow quality"/>
+                    <StackPanel Grid.Row="5" Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                        <ComboBox x:Name="ComboShadowQuality" Width="140" Height="28" VerticalContentAlignment="Center">
+                            <ComboBoxItem Content="Low"/>
+                            <ComboBoxItem Content="Medium"/>
+                            <ComboBoxItem Content="High"/>
+                        </ComboBox>
+                        <TextBlock Margin="10,0,0,0" VerticalAlignment="Center" FontSize="12" Foreground="{StaticResource Muted}" Text="O toggles shadows · Shift+O opens the sun panel"/>
                     </StackPanel>
                 </Grid>
 

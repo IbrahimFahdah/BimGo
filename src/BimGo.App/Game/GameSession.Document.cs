@@ -9,7 +9,7 @@ using BimGo.Sources;
 namespace BimGo.Game
 {
     /// <summary>
-    /// The edit journal and the document side of a session: replaying a file's edits, recording new ones, undo,
+    /// The edit journal and the document side of a session: replaying a file's edits, recording new ones, undo / redo,
     /// saving as .bimgo, unsaved-change tracking and the window title.
     ///
     /// The journal is the source of truth for edits: the geometry is never changed, so the walkthrough state can
@@ -22,6 +22,7 @@ namespace BimGo.Game
         private readonly EditJournal _journal;
         private int _savedJournalRevision;
         private int _savedCommentRevision;
+        private int _savedBookmarkRevision;
         private float _noticeTimer;
         private string _lastTitle;
 
@@ -38,9 +39,9 @@ namespace BimGo.Game
         /// <summary>The open file's path (standalone), or null.</summary>
         public string DocumentPath { get; private set; }
 
-        /// <summary>True if a standalone file has edits or comments that are not saved yet.</summary>
-        public bool IsDirty => IsFileMode && Comments != null &&
-            (_journal.Revision != _savedJournalRevision || Comments.Revision != _savedCommentRevision);
+        /// <summary>True if a standalone file has edits, comments or bookmarks that are not saved yet.</summary>
+        public bool IsDirty => IsFileMode && Comments != null && Bookmarks != null &&
+            (_journal.Revision != _savedJournalRevision || Comments.Revision != _savedCommentRevision || Bookmarks.Revision != _savedBookmarkRevision || SunDirty || VisibilityDirty);
 
         /// <summary>The document's display name (file name, or the Revit model title).</summary>
         public string DocumentName => IsFileMode && !string.IsNullOrEmpty(DocumentPath) ? Path.GetFileName(DocumentPath) : Scene.ModelTitle;
@@ -52,6 +53,9 @@ namespace BimGo.Game
         {
             _savedJournalRevision = _journal.Revision;
             _savedCommentRevision = Comments?.Revision ?? 0;
+            _savedBookmarkRevision = Bookmarks?.Revision ?? 0;
+            _savedSunRevision = _sunRevision;
+            _savedVisibilityRevision = _visibilityRevision;
             UpdateTitle();
         }
 
@@ -70,7 +74,7 @@ namespace BimGo.Game
 
         #endregion
 
-        #region Journal: record, replay, undo
+        #region Journal: record, replay, undo, redo
 
         /// <summary>
         /// Records an accepted edit. Targets are stored by stable identity (UniqueId, or clone key for clones made
@@ -316,7 +320,52 @@ namespace BimGo.Game
             ReplayJournal();
             UpdateTitle();
             Sound.Play(SoundId.Remove);
-            Toast(string.IsNullOrEmpty(last.Label) ? "Undone" : $"Undone: {last.Label}");
+            Toast(string.IsNullOrEmpty(last.Label) ? "Undone (Ctrl+Y redoes)" : $"Undone: {last.Label} (Ctrl+Y redoes)");
+        }
+
+        /// <summary>
+        /// Ctrl+Y / Ctrl+Shift+Z: puts the last undone edit back (standalone files only). Replaying a single entry on top
+        /// of the current state gives the same walkthrough as a full replay, because undo rebuilt it from the entries
+        /// before this one. The redo history ends as soon as a new edit is made.
+        /// </summary>
+        private void Redo()
+        {
+            if (!IsFileMode)
+            {
+                Toast("Edits are in Revit: redo them there, then press F5 to refresh");
+                return;
+            }
+            if (_guns[_activeGun].CapturesInput || IsPushPanelOpen) { return; }
+
+            JournalEntry entry = _journal.Redo();
+            if (entry == null)
+            {
+                Toast("Nothing to redo");
+                return;
+            }
+
+            bool applied;
+            try
+            {
+                applied = ApplyEntry(entry);
+            }
+            catch (Exception ex)
+            {
+                Utilities.Log_Utils.Write($"Redo of entry {entry.Seq} ({entry.Op}) failed: {ex.Message}");
+                applied = false;
+            }
+            _nextCloneKey = Math.Max(_nextCloneKey, _journal.MaxCloneKey());
+            UpdateTitle();
+
+            if (!applied)
+            {
+                Sound.Play(SoundId.Error);
+                Toast("Redone in the file, but its element is not in this walkthrough", 4f);
+                return;
+            }
+            Sound.Play(SoundId.Commit);
+            string more = _journal.RedoCount > 0 ? $" ({_journal.RedoCount} more)" : string.Empty;
+            Toast((string.IsNullOrEmpty(entry.Label) ? "Redone" : $"Redone: {entry.Label}") + more);
         }
 
         #endregion
@@ -344,21 +393,31 @@ namespace BimGo.Game
                 if (!BimGoFormat.HasExtension(path)) { path += BimGoFormat.EXTENSION; }
             }
 
-            DrawLoadingFrame("Saving…");
             var document = new BimGoDocument
             {
                 Scene = Scene,
                 Comments = Comments.ToDocument(),
                 Journal = _journal,
+                Bookmarks = Bookmarks.ToDocument(),
+                Sun = _sun?.Copy(),
+                Visibility = ToVisibilitySettings(),
                 CreatedUtc = _options.Document?.CreatedUtc ?? Scene.Provenance?.ExtractedUtc ?? DateTime.UtcNow,
                 Path = path
             };
             string kind = IsFileMode ? FileKinds.SAVE : FileKinds.SESSION_SAVE;
 
-            if (!BimGoWriter.Write(path, document, _options.Writer, kind, out string error))
+            // Written on a worker thread with a progress bar; a cancelled save leaves the file on disk untouched
+            var progress = new Utilities.OperationProgress();
+            progress.Begin("Writing the .bimgo file", 0.0, 1.0);
+            string error = null;
+            bool written = ProgressScreen.Run(_window, _ui, $"Saving {Path.GetFileName(path)}", progress,
+                () => BimGoWriter.Write(path, document, _options.Writer, kind, out error, progress: progress), cancelOnClose: false);
+            _window.Input.ReleaseAll();
+            if (!written)
             {
-                Sound.Play(SoundId.Error);
-                Toast($"Could not save: {error}", 5f);
+                bool cancelled = progress.CancelRequested;
+                Sound.Play(cancelled ? SoundId.UiClick : SoundId.Error);
+                Toast(cancelled ? "Save cancelled: the file on disk was not changed." : $"The model could not be saved: {error}", 5f);
                 return false;
             }
 
@@ -387,7 +446,7 @@ namespace BimGo.Game
             _window.Input.ReleaseAll();
 
             FileDialogs.Answer answer = FileDialogs.AskYesNoCancel(_window.Handle,
-                $"Save changes to {DocumentName}?\n\n{_journal.Count} edit(s), {Comments.Comments.Count} comment(s).", "BimGo");
+                $"Save changes to {DocumentName}?\n\n{_journal.Count} edit(s), {Comments.Comments.Count} comment(s), {Bookmarks.Bookmarks.Count} bookmark(s).", "BimGo");
             return answer switch
             {
                 FileDialogs.Answer.Yes => Save(saveAs: false),
@@ -435,6 +494,9 @@ namespace BimGo.Game
         {
             UpdateLive();
             UpdatePush(dt);
+            UpdateSun(dt);
+            UpdateScreenshot();
+            UpdateVisibilitySidecar(dt);
 
             while (_window.TryTakeDroppedFile(out string dropped))
             {

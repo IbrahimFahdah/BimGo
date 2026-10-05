@@ -18,6 +18,9 @@ namespace BimGo.Format
     /// geometry.bin      header + SceneVertex[] (28 B each) + uint[] indices, little-endian
     /// comments.json     comment markers
     /// journal.json      ordered edits (replayed on load; never baked into the geometry)
+    /// bookmarks.json    saved viewpoints and the home viewpoint (optional; only written when there are some)
+    /// sun.json          sun / shadow state: on/off, date, time, intensities (optional)
+    /// visibility.json   hidden categories, links and elements (optional; only written when something is hidden)
     /// </code>
     /// </summary>
     public static class BimGoFormat
@@ -37,6 +40,15 @@ namespace BimGo.Format
         /// <summary>The comment sidecar suffix used beside a Revit model.</summary>
         public const string SIDECAR_SUFFIX = ".bimgo-comments.json";
 
+        /// <summary>The bookmark sidecar suffix used beside a Revit model (next to the comments sidecar).</summary>
+        public const string BOOKMARK_SIDECAR_SUFFIX = ".bimgo-bookmarks.json";
+
+        /// <summary>The sun-state sidecar suffix used beside a Revit model (next to the comments sidecar).</summary>
+        public const string SUN_SIDECAR_SUFFIX = ".bimgo-sun.json";
+
+        /// <summary>The visibility sidecar suffix used beside a Revit model (next to the comments sidecar).</summary>
+        public const string VISIBILITY_SIDECAR_SUFFIX = ".bimgo-visibility.json";
+
         /// <summary>The pre-BimGo sidecar suffix (migrated on first use).</summary>
         public const string LEGACY_SIDECAR_SUFFIX = ".rvtgo.json";
 
@@ -52,6 +64,9 @@ namespace BimGo.Format
         internal const string ENTRY_GEOMETRY = "geometry.bin";
         internal const string ENTRY_COMMENTS = "comments.json";
         internal const string ENTRY_JOURNAL = "journal.json";
+        internal const string ENTRY_BOOKMARKS = "bookmarks.json";
+        internal const string ENTRY_SUN = "sun.json";
+        internal const string ENTRY_VISIBILITY = "visibility.json";
 
         /// <summary>geometry.bin magic ("BGEO", little-endian).</summary>
         internal const uint GEOMETRY_MAGIC = 0x4F454742;

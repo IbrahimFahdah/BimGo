@@ -23,7 +23,7 @@ Follows `ai/261006_V4/0_BimGo v4_Handoff.md`. Written without a .NET SDK or the 
   - **New**: created in the new phase (or temporary) → delete only.
   - **Between**: built after the existing phase, before the new one → delete only.
   - **Unphased**: no phase status → delete only.
-- Extraction keeps what stands in the new phase (status Existing / New / None / NotApplicable). Before v5 *every* demolished element was dropped, including those demolished in a later phase.
+- Extraction keeps what stands in the new phase (status Existing / New / None). Before v5 *every* demolished element was dropped, including those demolished in a later phase.
 - `RevitEditor`: demolish checks `PhaseResolver.DemolishBlockReason` (already demolished → "already applied" on push), then sets `PHASE_DEMOLISHED` = new phase. Copies get `PHASE_CREATED` = new phase and any inherited demolition cleared (best effort, logged on failure).
 - App: the hammer refuses demolish up front for new / between / unphased elements and clones ("press T to delete it instead"); its panel shows "Demolish · Existing → New" and warns on hover. Scan shows the phase role. Home screen shows "Existing → New". `scene.PhaseNote` is toasted once when a saved name was missing.
 - Format (additive, `formatVersion` stays 1): `model.existingPhaseId/Name`, `model.phaseNote`, `elements[].phase` (`new` / `between` / `unphased`, omitted for existing). Older files read as "all existing". `session.json` and `hello.ack` gained `existingPhaseName`.
@@ -58,7 +58,7 @@ Follows `ai/261006_V4/0_BimGo v4_Handoff.md`. Written without a .NET SDK or the 
 
 ## To verify when building
 
-- `ElementOnPhaseStatus` member names (None, Past, Existing, Demolished, New, Temporary, Future, NotApplicable) and `Element.GetPhaseStatus` on 2025–2027.
+- `ElementOnPhaseStatus` member names (None, Past, Existing, Demolished, New, Temporary, Future; there is no NotApplicable: None covers unphased and lookup failures) and `Element.GetPhaseStatus` on 2025–2027.
 - `TransactionGroup.Assimilate` / `HasStarted` / `HasEnded`; `DBEvents.UndoOperation.TransactionGroupRolledBack` / `TransactionRolledBack`.
 - `Document.GetElement(string uniqueId)` overload.
 - COM interop in `FileAssociation` (`[ComImport]` class + `IShellLinkW` vtable order; `IPersistFile` from `System.Runtime.InteropServices.ComTypes`).

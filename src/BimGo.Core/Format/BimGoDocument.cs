@@ -19,6 +19,15 @@ namespace BimGo.Format
         /// <summary>The ordered edits (may be empty, never null).</summary>
         public EditJournal Journal { get; init; } = new();
 
+        /// <summary>Saved viewpoints (may be empty, never null).</summary>
+        public BookmarkDocument Bookmarks { get; init; } = new();
+
+        /// <summary>The sun / shadow state, or null if the file has none (defaults then come from the site).</summary>
+        public SunSettings Sun { get; init; }
+
+        /// <summary>What the walkthrough hides (categories, links, elements), or null if nothing.</summary>
+        public VisibilitySettings Visibility { get; init; }
+
         /// <summary>When the geometry was extracted (UTC); kept across saves.</summary>
         public DateTime CreatedUtc { get; init; }
 

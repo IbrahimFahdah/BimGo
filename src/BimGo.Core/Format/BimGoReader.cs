@@ -44,8 +44,12 @@ namespace BimGo.Format
         /// in-game settings always come from the person opening the file.
         /// </param>
         /// <param name="error">A short reason on failure.</param>
+        /// <param name="progress">
+        /// Optional progress / cancellation (the caller starts the stage with <see cref="Utilities.OperationProgress.Begin"/>).
+        /// A cancelled read returns null with "Cancelled.".
+        /// </param>
         /// <returns>The document, or null.</returns>
-        public static BimGoDocument Read(string path, LaunchSettings settings, out string error)
+        public static BimGoDocument Read(string path, LaunchSettings settings, out string error, Utilities.OperationProgress progress = null)
         {
             error = null;
             try
@@ -68,20 +72,29 @@ namespace BimGo.Format
                 ParametersDto parameters = ReadJson<ParametersDto>(zip, BimGoFormat.ENTRY_PARAMETERS, required: false);
                 CommentDocument comments = ReadJson<CommentDocument>(zip, BimGoFormat.ENTRY_COMMENTS, required: false) ?? new CommentDocument();
                 JournalDto journal = ReadJson<JournalDto>(zip, BimGoFormat.ENTRY_JOURNAL, required: false) ?? new JournalDto();
-                ReadGeometry(zip, out SceneVertex[] vertices, out uint[] indices);
+                BookmarkDocument bookmarks = (ReadJson<BookmarkDocument>(zip, BimGoFormat.ENTRY_BOOKMARKS, required: false) ?? new BookmarkDocument()).Clean();
+                SunSettings sun = ReadJson<SunSettings>(zip, BimGoFormat.ENTRY_SUN, required: false)?.Clean();
+                VisibilitySettings visibility = ReadJson<VisibilitySettings>(zip, BimGoFormat.ENTRY_VISIBILITY, required: false)?.Clean();
+                progress?.Step(0.1);
+                progress?.ThrowIfCancelled();
+                ReadGeometry(zip, out SceneVertex[] vertices, out uint[] indices, progress);
+                progress?.ThrowIfCancelled();
 
                 SceneData scene = BuildScene(path, manifest, model, elements, parameters, vertices, indices, settings ?? new LaunchSettings());
                 comments.Comments ??= new List<CommentRecord>();
                 comments.Comments.RemoveAll(c => c == null || string.IsNullOrWhiteSpace(c.Text));
 
                 Utilities.Log_Utils.Write($"Read {path}: {scene.Elements.Length} elements, {scene.TriangleCount} triangles, " +
-                    $"{comments.Comments.Count} comments, {journal.Entries?.Count ?? 0} journal entries (format {manifest.FormatVersion}).");
+                    $"{comments.Comments.Count} comments, {journal.Entries?.Count ?? 0} journal entries, {bookmarks.Bookmarks.Count} bookmarks (format {manifest.FormatVersion}).");
 
                 return new BimGoDocument
                 {
                     Scene = scene,
                     Comments = comments,
                     Journal = new EditJournal(journal.Entries),
+                    Bookmarks = bookmarks,
+                    Sun = sun,
+                    Visibility = visibility,
                     CreatedUtc = manifest.CreatedUtc,
                     Kind = manifest.Kind,
                     Path = path,
@@ -120,6 +133,10 @@ namespace BimGo.Format
                 if (fileCategories[i]?.Loaded == true) { loaded[categoryMap[i]] = true; }
             }
 
+            // Links: renumbered 1..n in file order (element / room link numbers outside that range read as host)
+            LinkInfo[] links = (model.Links ?? new List<LinkInfo>()).Where(l => l != null).ToArray();
+            for (int i = 0; i < links.Length; i++) { links[i].Index = i + 1; }
+
             // Elements (index ranges validated against the geometry)
             List<ElementDto> list = elementsDto.Elements ?? new List<ElementDto>();
             var records = new ElementRecord[list.Count];
@@ -149,7 +166,8 @@ namespace BimGo.Format
                     Movable = dto.Movable,
                     MoveBlockReason = dto.Movable ? null : (dto.MoveBlockReason ?? "Not movable"),
                     Pivot = dto.Pivot,
-                    Phase = BimGoFormat.ParsePhaseRole(dto.Phase)
+                    Phase = BimGoFormat.ParsePhaseRole(dto.Phase),
+                    Link = ValidLink(dto.Link, links.Length)
                 };
                 counts[category]++;
                 loaded[category] = true;
@@ -197,7 +215,8 @@ namespace BimGo.Format
                     Min = min,
                     Max = max,
                     BottomZ = room.BottomZ,
-                    TopZ = room.TopZ
+                    TopZ = room.TopZ,
+                    Link = ValidLink(room.Link, links.Length)
                 });
             }
 
@@ -225,6 +244,7 @@ namespace BimGo.Format
                 Elements = records,
                 Levels = levels,
                 Rooms = rooms.ToArray(),
+                Links = links,
                 PhaseId = model.PhaseId,
                 PhaseName = model.PhaseName,
                 ExistingPhaseId = model.ExistingPhaseId,
@@ -241,11 +261,17 @@ namespace BimGo.Format
                 CategoryLoaded = loaded,
                 CategoryElementCounts = counts,
                 Settings = settings,
+                SourceView = extraction.ActiveView,
                 ProxyCount = extraction.ProxyCount,
                 SkippedCount = extraction.SkippedCount,
                 ExtractionTime = TimeSpan.FromSeconds(Math.Max(0, extraction.ExtractionSeconds))
             };
         }
+
+        /// <summary>
+        /// A link number from the file, or 0 (host) when absent or out of range.
+        /// </summary>
+        private static int ValidLink(int? link, int linkCount) => link is int n && n > 0 && n <= linkCount ? n : 0;
 
         /// <summary>
         /// A [start, count] pair clamped to the index buffer (and to whole triangles); empty if invalid.
@@ -273,7 +299,7 @@ namespace BimGo.Format
 
         #region Entries
 
-        private static void ReadGeometry(ZipArchive zip, out SceneVertex[] vertices, out uint[] indices)
+        private static void ReadGeometry(ZipArchive zip, out SceneVertex[] vertices, out uint[] indices, Utilities.OperationProgress progress)
         {
             ZipArchiveEntry entry = zip.GetEntry(BimGoFormat.ENTRY_GEOMETRY) ?? throw new InvalidDataException("The file has no geometry.");
             using Stream stream = entry.Open();
@@ -292,14 +318,17 @@ namespace BimGo.Format
 
             vertices = new SceneVertex[vertexCount];
             indices = new uint[indexCount];
-            ReadChunked(stream, MemoryMarshal.AsBytes(vertices.AsSpan()));
-            ReadChunked(stream, MemoryMarshal.AsBytes(indices.AsSpan()));
+            // Geometry is most of the work: it fills the bar from 10 % to 92 %
+            long total = (long)vertexCount * SceneVertex.SIZE + (long)indexCount * sizeof(uint);
+            long done = 0;
+            ReadChunked(stream, MemoryMarshal.AsBytes(vertices.AsSpan()), progress, ref done, total);
+            ReadChunked(stream, MemoryMarshal.AsBytes(indices.AsSpan()), progress, ref done, total);
         }
 
         /// <summary>
         /// Fills a span from a stream (deflate streams return partial reads).
         /// </summary>
-        private static void ReadChunked(Stream stream, Span<byte> bytes)
+        private static void ReadChunked(Stream stream, Span<byte> bytes, Utilities.OperationProgress progress, ref long done, long total)
         {
             const int CHUNK = 1 << 20;
             while (bytes.Length > 0)
@@ -307,6 +336,12 @@ namespace BimGo.Format
                 int length = Math.Min(CHUNK, bytes.Length);
                 stream.ReadExactly(bytes[..length]);
                 bytes = bytes[length..];
+                done += length;
+                if (progress != null)
+                {
+                    progress.Step(0.1 + 0.82 * (total <= 0 ? 1.0 : (double)done / total));
+                    progress.ThrowIfCancelled();
+                }
             }
         }
 
@@ -330,6 +365,7 @@ namespace BimGo.Format
         /// </summary>
         private static string Describe(Exception ex) => ex switch
         {
+            OperationCanceledException => "Cancelled.",
             InvalidDataException => ex.Message,
             FileNotFoundException => "The file does not exist.",
             DirectoryNotFoundException => "The folder does not exist.",

@@ -65,7 +65,7 @@ namespace BimGo.Rendering
     internal sealed unsafe class FontAtlas : IDisposable
     {
         /// <summary>Extra non-Latin-1 characters used by the HUD.</summary>
-        private static readonly char[] EXTRA = { 'Δ', '−', '—', '–', '…', '•', '↑', '↓', '←', '→', '“', '”', '’' };
+        private static readonly char[] EXTRA = { 'Δ', '−', '—', '–', '…', '•', '↑', '↓', '←', '→', '“', '”', '’', '≈' };
 
         /// <summary>The GL texture.</summary>
         public uint Texture { get; private set; }

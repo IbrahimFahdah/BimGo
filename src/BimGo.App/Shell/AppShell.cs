@@ -136,11 +136,17 @@ namespace BimGo.Shell
                 return null;
             }
 
-            _home.DrawStatus($"Opening {name}", "Reading geometry…");
-            BimGoDocument document = BimGoReader.Read(path, LaunchSettings.LoadOrDefault(), out string error);
+            // Read on a worker thread with a progress bar (Esc cancels)
+            var progress = new Utilities.OperationProgress();
+            progress.Begin("Reading the model", 0.0, 1.0);
+            LaunchSettings settings = LaunchSettings.LoadOrDefault();
+            string error = null;
+            BimGoDocument document = ProgressScreen.Run(_window, _ui, $"Opening {name}", progress,
+                () => BimGoReader.Read(path, settings, out error, progress));
             if (document == null)
             {
-                _home.SetMessage($"Could not open {name}: {error}", error: true);
+                bool cancelled = progress.CancelRequested;
+                _home.SetMessage(cancelled ? $"Opening {name} was cancelled." : $"{name} could not be opened: {error}", error: !cancelled);
                 return null;
             }
 
@@ -173,15 +179,20 @@ namespace BimGo.Shell
             }
 
             string title = string.IsNullOrWhiteSpace(info.DocTitle) ? "Revit model" : info.DocTitle;
-            _home.DrawStatus($"Joining {title}", target.Pose == null ? "Reading the Revit snapshot…" : "Reloading the new snapshot…");
-
-            // Attach first so nothing Revit sends from now on is missed, then read the snapshot
+            // Attach first so nothing Revit sends from now on is missed, then read the snapshot (Esc cancels)
             var source = new LiveSessionSource(info, Program.Version);
-            BimGoDocument document = BimGoReader.Read(info.LatestSnapshot, LaunchSettings.LoadOrDefault(), out string error);
+            var progress = new Utilities.OperationProgress();
+            progress.Begin(target.Pose == null ? "Reading the Revit snapshot" : "Reading the new snapshot", 0.0, 1.0);
+            LaunchSettings settings = LaunchSettings.LoadOrDefault();
+            string snapshot = info.LatestSnapshot;
+            string error = null;
+            BimGoDocument document = ProgressScreen.Run(_window, _ui, target.Pose == null ? $"Joining {title}" : $"Reloading {title}", progress,
+                () => BimGoReader.Read(snapshot, settings, out error, progress));
             if (document == null)
             {
                 source.Close(sayGoodbye: true);
-                _home.SetMessage($"Could not read the snapshot of {title}: {error}", error: true);
+                bool cancelled = progress.CancelRequested;
+                _home.SetMessage(cancelled ? $"Joining {title} was cancelled. Join it again from the home screen." : $"The snapshot of {title} could not be read: {error}", error: !cancelled);
                 return SessionEndReason.EndedByUser;
             }
             _home.SetMessage(null, error: false);
@@ -254,7 +265,7 @@ namespace BimGo.Shell
         {
             if (!BimGoFormat.HasExtension(path)) { return $"{Path.GetFileName(path)} is not a .bimgo file"; }
             _openQueue.Enqueue(OpenTarget.File(path));
-            return $"{Path.GetFileName(path)} will open when you close this model (Esc → Close model)";
+            return $"{Path.GetFileName(path)} will open when you close this model (Esc → CLOSE MODEL)";
         }
 
         /// <summary>

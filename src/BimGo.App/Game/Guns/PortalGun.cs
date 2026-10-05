@@ -264,7 +264,7 @@ namespace BimGo.Game.Guns
 
             bool linked = _portals[0].Active && _portals[1].Active;
             ui.TextWrapped(f.Body, x, y + S(2), width,
-                linked ? "Linked. Walk through to travel. X clears both." : "Place both portals to link them.",
+                linked ? "Connected. Walk into one to come out of the other. X clears both." : "Place both portals to connect them.",
                 UiTheme.TEXT_MUTED, maxLines: 2);
         }
 

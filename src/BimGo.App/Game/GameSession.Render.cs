@@ -18,21 +18,29 @@ namespace BimGo.Game
         private readonly Vector4[] _mapPlanes = new Vector4[6];
         private readonly List<Highlight> _highlights = new();
 
+        // Help panel column widths (measured from the text; recomputed when the UI scale changes)
+        private float _helpScale = -1f, _helpKeyWidth, _helpActionWidth;
+
         private static readonly (string Key, string Action)[] HELP_ROWS =
         {
             ("WASD", "Move"),
             ("SPACE / CTRL", "Jump / Crouch"),
             ("SHIFT", "Run"),
-            ("V", "Fly / no-clip"),
+            ("V", "Fly / walk (no-clip)"),
             ("PGUP / PGDN", "Level up / down"),
-            ("H / SHIFT+H", "Home / Set home"),
+            ("H · SHIFT+H", "Go home · Set home here"),
             ("1–8 · WHEEL", "Select gun"),
-            ("X", "Clear gun markers"),
-            ("CTRL+S / Z", "Save / Undo (file)"),
-            ("F5", "Refresh from Revit (live)"),
-            ("TAB · ESC", "Map · Pause"),
-            ("F11", "Fullscreen"),
-            ("F1", "Hide help")
+            ("I · SHIFT+I", "Scan gun: hide target · isolate its category"),
+            ("X", "Clear this gun's markers"),
+            ("B · CTRL+1–9", "Bookmark this view · Go to bookmark"),
+            ("L", "Coordinate readout"),
+            ("O · SHIFT+O", "Shadows on/off · Sun panel"),
+            ("[ ]", "Sun time −/+ 5 min (Shift: 1 min)"),
+            ("CTRL+S · Z · Y", "Save · Undo · Redo (files)"),
+            ("F5", "Refresh from Revit (live sessions)"),
+            ("TAB · ESC", "Minimap · Pause menu"),
+            ("F11 · F12", "Fullscreen · Screenshot"),
+            ("F1", "Hide help · BimGo " + Program.Version)
         };
 
         #endregion
@@ -44,10 +52,20 @@ namespace BimGo.Game
         {
             int width = _window.Width, height = _window.Height;
 
+            // ---- Sun lighting and shadow maps (only changed cascades re-render)
+            _renderer.Lighting = CurrentLighting();
+            string shadowError = _renderer.UpdateShadows(Camera, Scene.Bounds, ShadowSceneKey(), _groupVisible, Dynamics, _whitecard,
+                ShadowMaps.PresetFor(_shadowQuality));
+            if (shadowError != null)
+            {
+                OnShadowFailure(shadowError);
+                _renderer.Lighting = CurrentLighting();
+            }
+
             // ---- 3D scene into the (optionally multisampled) target
             _target.Ensure(width, height, _msaa);
             _target.Bind();
-            Vector3 fog = SceneRenderer.FOG_COLOUR;
+            Vector3 fog = _renderer.FogColour;
             Gl.ClearColor(fog.X, fog.Y, fog.Z, 1f);
             Gl.Clear(Gl.COLOR_BUFFER_BIT | Gl.DEPTH_BUFFER_BIT);
             Gl.Enable(Gl.DEPTH_TEST);
@@ -65,10 +83,11 @@ namespace BimGo.Game
                 Whitecard = _whitecard,
                 Plan = false,
                 ClipZ = new Vector2(-1e7f, 1e7f),
-                FogDensity = 0.0022f
+                FogDensity = 0.0022f,
+                Sun = true
             };
 
-            _renderer.DrawStatic(p, _categoryVisible, transparent: false);
+            _renderer.DrawStatic(p, _groupVisible, transparent: false);
             _renderer.DrawDynamic(p, Dynamics, transparent: false);
             _renderer.DrawGround(Camera, _groundZ);
 
@@ -91,7 +110,7 @@ namespace BimGo.Game
             Gl.Enable(Gl.BLEND);
             Gl.BlendFunc(Gl.SRC_ALPHA, Gl.ONE_MINUS_SRC_ALPHA);
             Gl.DepthMask(false);
-            _renderer.DrawStatic(p, _categoryVisible, transparent: true);
+            _renderer.DrawStatic(p, _groupVisible, transparent: true);
             _renderer.DrawDynamic(p, Dynamics, transparent: true);
             Gl.DepthMask(true);
             Gl.Disable(Gl.BLEND);
@@ -103,6 +122,8 @@ namespace BimGo.Game
             _overlay.Draw(Camera, depthTest: false, alpha: 0.16f, additive: false);
 
             _target.BlitToWindow();
+            if (_thumbnailFor != null) { CaptureThumbnail(width, height); }
+            if (_screenshotRequested) { CaptureScreenshot(width, height); }
 
             // ---- Window pass: minimap 3D, then all 2D UI in one batch
             Gl.Viewport(0, 0, width, height);
@@ -178,7 +199,7 @@ namespace BimGo.Game
                 FogDensity = 0f
             };
             Gl.Enable(Gl.DEPTH_TEST);
-            _renderer.DrawStatic(p, _categoryVisible, transparent: false);
+            _renderer.DrawStatic(p, _groupVisible, transparent: false);
             _renderer.DrawDynamic(p, Dynamics, transparent: false);
 
             Gl.Disable(Gl.SCISSOR_TEST);
@@ -224,6 +245,11 @@ namespace BimGo.Game
             {
                 if (LevelIndexAt(record.Local.Z - 0.5f) != levelIndex) { continue; }
                 MapDot(record.Local, UiTheme.COMMENT, S(3.5f));
+            }
+            foreach (BookmarkRecord bookmark in Bookmarks.Bookmarks)
+            {
+                if (LevelIndexAt(bookmark.Local.Z) != levelIndex) { continue; }
+                MapDot(bookmark.Local, UiTheme.BOOKMARK, S(3f));
             }
 
             // View cone and player arrow (north up, screen Y down)
@@ -280,7 +306,7 @@ namespace BimGo.Game
             _ui.Rect(cx + gap, cy - t1 * 0.5f, arm, t1, UiTheme.TEXT);
             _ui.Circle(cx, cy, S(1.8f), active.Colour, 10);
 
-            if (!_window.IsCaptured && !IsEditingComment)
+            if (!_window.IsCaptured && !IsEditingComment && !_sunPanelOpen)
             {
                 const string hint = "Click to look around";
                 float hintWidth = UiBatch.Measure(f.Body, hint) + S(24);
@@ -289,14 +315,22 @@ namespace BimGo.Game
             }
 
             BuildStatusPanel(f);
+            BuildCoordinatePanel(f, S(20), S(20) + S(146) + S(10));
 
             // Minimap and the gun's context panel beneath it
             if (_showMap) { DrawMinimapOverlay(mapX, mapY); }
-            float panelTop = _showMap ? mapY + S(208) + S(12) : S(20);
-            float panelWidth = S(260), panelX = width - S(20) - panelWidth;
-            float panelHeight = S(active.PanelHeight) + S(24);
-            _ui.Panel(panelX, panelTop, panelWidth, panelHeight, UiTheme.PANEL, UiTheme.PANEL_BORDER);
-            active.DrawPanel(_ui, panelX + S(14), panelTop + S(12), panelWidth - S(28));
+            // (hidden while the sun panel is open: the two would overlap on smaller screens)
+            if (!_sunPanelOpen)
+            {
+                float panelTop = _showMap ? mapY + S(208) + S(12) : S(20);
+                float panelWidth = S(260), panelX = width - S(20) - panelWidth;
+                float panelHeight = S(active.PanelHeight) + S(24);
+                _ui.Panel(panelX, panelTop, panelWidth, panelHeight, UiTheme.PANEL, UiTheme.PANEL_BORDER);
+                active.DrawPanel(_ui, panelX + S(14), panelTop + S(12), panelWidth - S(28));
+            }
+
+            BuildSunIcon(f, _window.Input);
+            if (_sunPanelOpen) { BuildSunPanel(f, _window.Input); }
 
             BuildHelp(f, height);
             BuildGunBar(f, width, height, active);
@@ -366,7 +400,7 @@ namespace BimGo.Game
             }
             else
             {
-                _ui.Text(f.Body, valueX, rowY, Scene.Rooms.Length == 0 ? "No rooms in model" : "—", UiTheme.TEXT_MUTED);
+                _ui.Text(f.Body, valueX, rowY, Scene.Rooms.Length == 0 ? "No rooms in this model" : "—", UiTheme.TEXT_MUTED);
             }
             rowY += row;
 
@@ -391,11 +425,24 @@ namespace BimGo.Game
                 return;
             }
 
+            // Columns sized to the widest key and action (measured once per UI scale)
+            if (_helpScale != UiScale)
+            {
+                _helpScale = UiScale;
+                _helpKeyWidth = 0f;
+                _helpActionWidth = 0f;
+                foreach ((string key, string action) in HELP_ROWS)
+                {
+                    _helpKeyWidth = MathF.Max(_helpKeyWidth, UiBatch.Measure(f.Mono, key));
+                    _helpActionWidth = MathF.Max(_helpActionWidth, UiBatch.Measure(f.Body, action));
+                }
+            }
+
             float row = S(17);
             float h = HELP_ROWS.Length * row + S(20);
             float y = height - S(20) - h;
-            float keyWidth = S(118);
-            _ui.Panel(x, y, keyWidth + S(140), h, Rgba.Hex(0x0C0E12, 0.66f), Rgba.Hex(0xFFFFFF, 0.1f));
+            float keyWidth = _helpKeyWidth + S(16);
+            _ui.Panel(x, y, S(12) + keyWidth + _helpActionWidth + S(14), h, Rgba.Hex(0x0C0E12, 0.66f), Rgba.Hex(0xFFFFFF, 0.1f));
 
             float rowY = y + S(10);
             for (int i = 0; i < HELP_ROWS.Length; i++)

@@ -40,6 +40,12 @@ namespace BimGo.Live
         /// <summary>Asks Revit to select and show elements.</summary>
         /// <returns>False if not connected.</returns>
         bool ShowElements(IReadOnlyList<long> elementIds);
+
+        /// <summary>Asks Revit to select and show an element inside a linked model (older add-ins select the link).</summary>
+        /// <param name="linkInstanceId">The RevitLinkInstance's id in the host.</param>
+        /// <param name="elementId">The element's id in the linked model.</param>
+        /// <returns>False if not connected.</returns>
+        bool ShowLinkedElement(long linkInstanceId, long elementId);
     }
 
     /// <summary>
@@ -197,6 +203,18 @@ namespace BimGo.Live
             return _channel.Send(MessageTypes.SELECT, new SelectPayload { ElementIds = elementIds.ToArray() }) != null;
         }
 
+        /// <inheritdoc/>
+        public bool ShowLinkedElement(long linkInstanceId, long elementId)
+        {
+            if (!Connected || linkInstanceId <= 0) { return false; }
+            var payload = new SelectPayload
+            {
+                ElementIds = new[] { linkInstanceId },
+                Linked = elementId > 0 ? new[] { new LinkedElementRef { LinkInstanceId = linkInstanceId, ElementId = elementId } } : null
+            };
+            return _channel.Send(MessageTypes.SELECT, payload) != null;
+        }
+
         #endregion
 
         #region Messages
@@ -289,7 +307,7 @@ namespace BimGo.Live
             _closed = true;
             Refreshing = false;
             FailPending(reason);
-            _notices.Enqueue($"{reason}. The walkthrough is now read-only; save it as a .bimgo to keep working.");
+            _notices.Enqueue($"{reason}. The walkthrough is now read-only: save it as a .bimgo file to keep working.");
         }
 
         /// <summary>

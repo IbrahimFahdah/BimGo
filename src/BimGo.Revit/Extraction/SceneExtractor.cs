@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Numerics;
 using BimGo.Format;
 using BimGo.Scene;
+using BimGo.Utilities;
 
 // The class belongs to the Extraction namespace
 namespace BimGo.Extraction
@@ -31,6 +32,7 @@ namespace BimGo.Extraction
         private readonly Document _doc;
         private readonly LaunchSettings _settings;
         private readonly Options _geometryOptions;
+        private readonly OperationProgress _progress;
         private Vector3 _origin;
         private PhasePair _phases = new();
 
@@ -49,10 +51,12 @@ namespace BimGo.Extraction
         private bool _thresholdActive;
 
 
-        // Caches
-        private readonly Dictionary<long, uint> _materialColours = new();
-        private readonly Dictionary<long, uint> _categoryColours = new();
-        private readonly Dictionary<long, string> _levelNames = new();
+        // The model being extracted (the host, or one link instance) and the extracted link instances
+        private SourceModel _src;
+        private readonly List<LinkInfo> _links = new();
+
+        // Helper geometry (IES light-source cones, clearance zones…): lower-case subcategory name fragments, or null when off
+        private readonly string[] _helperKeywords;
 
         // Optional extra parameters (null when none were picked)
         private readonly string[] _extraParameters;
@@ -69,10 +73,11 @@ namespace BimGo.Extraction
         /// </summary>
         /// <param name="doc">The document to extract.</param>
         /// <param name="settings">The launch settings.</param>
-        private SceneExtractor(Document doc, LaunchSettings settings)
+        private SceneExtractor(Document doc, LaunchSettings settings, OperationProgress progress)
         {
             _doc = doc;
             _settings = settings;
+            _progress = progress;
             if (settings.ExtraParameters != null && settings.ExtraParameters.Count > 0)
             {
                 _extraParameters = settings.ExtraParameters.ToArray();
@@ -84,6 +89,13 @@ namespace BimGo.Extraction
                 ComputeReferences = false,
                 IncludeNonVisibleObjects = false
             };
+            if (settings.SkipHelperGeometry)
+            {
+                _helperKeywords = (settings.HelperSubcategoryKeywords ?? new List<string>())
+                    .Select(k => k.Trim().ToLowerInvariant())
+                    .Where(k => k.Length > 0)
+                    .ToArray();
+            }
         }
 
         #region Public API
@@ -93,10 +105,14 @@ namespace BimGo.Extraction
         /// </summary>
         /// <param name="uiDoc">The active UIDocument.</param>
         /// <param name="settings">The launch settings.</param>
+        /// <param name="progress">
+        /// Optional progress / cancellation: the extraction fills the bar up to 85 % (the caller writes the file after
+        /// it). Cancelling throws <see cref="OperationCanceledException"/>; nothing in the model is changed.
+        /// </param>
         /// <returns>The SceneData.</returns>
-        public static SceneData Extract(UIDocument uiDoc, LaunchSettings settings)
+        public static SceneData Extract(UIDocument uiDoc, LaunchSettings settings, OperationProgress progress = null)
         {
-            var extractor = new SceneExtractor(uiDoc.Document, settings);
+            var extractor = new SceneExtractor(uiDoc.Document, settings, progress);
             return extractor.Run(uiDoc);
         }
 
@@ -132,47 +148,128 @@ namespace BimGo.Extraction
             // The existing / new phases first: the walkthrough shows the model as it stands in the new phase
             _phases = PhaseResolver.Resolve(_doc, uiDoc.ActiveView, _settings);
 
-            // Gather candidate elements per enabled definition first (needed for the origin)
-            var work = new List<(CategoryDef Def, List<Element> Elements)>();
-            foreach (CategoryDef def in catalog)
+            // Active-view-only: the view decides what comes in (null = extract by category)
+            DB.View view = _settings.ActiveViewOnly ? ViewScope.Resolve(uiDoc, _doc) : null;
+            if (_settings.ActiveViewOnly)
             {
-                if (!enabled.Contains(def.Key)) { continue; }
-                FilteredElementCollector collector = CategoryResolver.Collect(_doc, def);
-                if (collector == null) { continue; }
-
-                var elements = new List<Element>();
-                foreach (Element element in collector)
-                {
-                    if (IsExtractable(element, _phases)) { elements.Add(element); }
-                }
-                work.Add((def, elements));
+                Utilities.Log_Utils.Write(view != null
+                    ? $"Active view only: “{view.Name}” ({view.ViewType})."
+                    : "Active view only: no view that shows model elements is available; extracting by category instead.");
             }
 
-            // Scene origin: median of element centres, rounded to whole metres (robust against outliers)
-            _origin = ComputeOrigin(work.SelectMany(w => w.Elements));
-
-            // Level names and elevations, and the new phase's rooms
-            LevelInfo[] levels = CollectLevels();
-            Phase phase = _phases.New;
-            RoomInfo[] rooms = CollectRooms(phase);
-
-            // Extract geometry
-            int[] counts = new int[catalog.Count];
-            bool[] loaded = new bool[catalog.Count];
-            foreach ((CategoryDef def, List<Element> elements) in work)
+            // The host, then the link instances ticked for this model in the Options dialog (none by default).
+            // In a 3D view the host's geometry is read through the view (its subcategory visibility and detail level).
+            var host = new SourceModel
             {
-                loaded[def.Index] = true;
-                foreach (Element element in elements)
+                Doc = _doc,
+                Phases = _phases,
+                GeometryOptions = view is View3D ? new Options { View = view, ComputeReferences = false, IncludeNonVisibleObjects = false } : _geometryOptions
+            };
+            _src = host;
+            var sources = new List<SourceModel> { host };
+            foreach (LinkCandidate candidate in LinkResolver.Selected(_doc, _settings))
+            {
+                if (view != null && ViewScope.HidesLink(view, candidate.InstanceId))
                 {
+                    Utilities.Log_Utils.Write($"Link “{candidate.Name}” is hidden in the active view: skipped.");
+                    continue;
+                }
+                sources.Add(CreateLinkSource(candidate, sources.Count));
+            }
+
+            // Gather candidate elements per source and enabled definition first (needed for the origin)
+            var work = new List<(SourceModel Source, CategoryDef Def, List<Element> Elements)>();
+            _progress?.Begin("Finding elements", 0.0, 0.08);
+            int sourceNumber = 0;
+            foreach (SourceModel source in sources)
+            {
+                _progress?.Step(sourceNumber++, sources.Count);
+                _progress?.Detail(source.Link == 0 ? _doc.Title : source.Info.Label);
+                _progress?.ThrowIfCancelled();
+                if (view != null)
+                {
+                    GatherVisible(source, view, work);
+                    continue;
+                }
+
+                foreach (CategoryDef def in catalog)
+                {
+                    if (!enabled.Contains(def.Key)) { continue; }
                     try
                     {
-                        if (ExtractElement(element, def)) { counts[def.Index]++; }
+                        FilteredElementCollector collector = CategoryResolver.Collect(source.Doc, def);
+                        if (collector == null) { continue; }
+
+                        var elements = new List<Element>();
+                        foreach (Element element in collector)
+                        {
+                            if (IsExtractable(element, source.Phases)) { elements.Add(element); }
+                        }
+                        work.Add((source, def, elements));
                     }
                     catch (Exception ex)
                     {
-                        Utilities.Log_Utils.Write($"Element {element.Id.Value} skipped: {ex.Message}");
+                        Utilities.Log_Utils.Write($"{source.Describe()}: {def.Key} skipped: {ex.Message}");
                     }
                 }
+            }
+
+            // Scene origin: median of element centres, rounded to whole metres (robust against outliers)
+            _origin = ComputeOrigin(work.SelectMany(w => w.Elements.Select(e => (e, w.Source.Transform))));
+
+            // Level names and elevations (host levels; links only name their elements' levels), and the rooms
+            _progress?.Begin("Reading levels and rooms", 0.08, 0.12);
+            _progress?.ThrowIfCancelled();
+            LevelInfo[] levels = CollectLevels();
+            Phase phase = _phases.New;
+            var rooms = new List<RoomInfo>(CollectRooms(host, phase));
+            foreach (SourceModel source in sources)
+            {
+                if (source.Link == 0) { continue; }
+                CollectLevelNames(source);
+                RoomInfo[] linkRooms = CollectRooms(source, source.Phases.New);
+                source.Info.RoomCount = linkRooms.Length;
+                rooms.AddRange(linkRooms);
+            }
+
+            // Extract geometry (host first: the app looks host elements up by id, so they keep the lower indices)
+            int[] counts = new int[catalog.Count];
+            bool[] loaded = new bool[catalog.Count];
+            int totalElements = work.Sum(w => w.Elements.Count);
+            int processed = 0;
+            _progress?.Begin("Extracting geometry", 0.12, 0.85);
+            foreach ((SourceModel source, CategoryDef def, List<Element> elements) in work)
+            {
+                _src = source;
+                loaded[def.Index] = true;
+                foreach (Element element in elements)
+                {
+                    // Every 32 elements: move the bar and stop here if the user cancelled
+                    if (_progress != null && (processed++ & 31) == 0)
+                    {
+                        _progress.Step(processed, totalElements);
+                        _progress.Detail($"{processed:N0} of {totalElements:N0} elements · {def.Label}{(source.Link == 0 ? string.Empty : " · " + source.Info.Label)}");
+                        _progress.ThrowIfCancelled();
+                    }
+                    try
+                    {
+                        if (ExtractElement(element, def))
+                        {
+                            counts[def.Index]++;
+                            if (source.Info != null) { source.Info.ElementCount++; }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Utilities.Log_Utils.Write($"{source.Describe()}: element {element.Id.Value} skipped: {ex.Message}");
+                    }
+                }
+            }
+            _src = host;
+            _progress?.Step(1.0);
+            foreach (LinkInfo link in _links)
+            {
+                Utilities.Log_Utils.Write($"Link {link.Index} “{link.Name}”: {link.ElementCount} elements, {link.RoomCount} rooms, phases {link.ExistingPhaseName ?? "none"} → {link.PhaseName ?? "none"}.");
             }
 
             // Bounds of everything
@@ -184,7 +281,7 @@ namespace BimGo.Extraction
             if (!bounds.IsValid) { bounds = new Aabb(new Vector3(-10, -10, 0), new Vector3(10, 10, 3)); }
 
             stopwatch.Stop();
-            Utilities.Log_Utils.Write($"Extracted {_elements.Count} elements, {_indices.Count / 3} triangles, {rooms.Length} rooms " +
+            Utilities.Log_Utils.Write($"Extracted {_elements.Count} elements, {_indices.Count / 3} triangles, {rooms.Count} rooms, {_links.Count} links " +
                 $"in {stopwatch.Elapsed.TotalSeconds:F1}s (proxies {_proxyCount}, skipped {_skippedCount}). Phases: {_phases.Existing?.Name ?? "none"} → {phase?.Name ?? "none"}.");
 
             return new SceneData
@@ -193,7 +290,8 @@ namespace BimGo.Extraction
                 Indices = _indices.ToArray(),
                 Elements = _elements.ToArray(),
                 Levels = levels,
-                Rooms = rooms,
+                Rooms = rooms.ToArray(),
+                Links = _links.ToArray(),
                 PhaseId = phase?.Id.Value ?? -1,
                 PhaseName = phase?.Name,
                 ExistingPhaseId = _phases.Existing?.Id.Value ?? -1,
@@ -205,11 +303,12 @@ namespace BimGo.Extraction
                 ModelTitle = _doc.Title,
                 CommentsPath = ResolveCommentsPath(),
                 Provenance = BuildProvenance(),
-                Site = BuildSite(),
+                Site = BuildSite(uiDoc),
                 Parameters = _parameters?.Build() ?? ParameterTable.Empty,
                 CategoryLoaded = loaded,
                 CategoryElementCounts = counts,
                 Settings = _settings,
+                SourceView = view?.Name,
                 ProxyCount = _proxyCount,
                 SkippedCount = _skippedCount,
                 ExtractionTime = stopwatch.Elapsed
@@ -239,16 +338,19 @@ namespace BimGo.Extraction
         /// <summary>
         /// Computes the scene origin as the rounded median of element bounding-box centres.
         /// </summary>
-        private static Vector3 ComputeOrigin(IEnumerable<Element> elements)
+        /// <param name="elements">Each element with its model's transform into the host (null for host elements).</param>
+        private static Vector3 ComputeOrigin(IEnumerable<(Element Element, Transform Transform)> elements)
         {
             var xs = new List<double>();
             var ys = new List<double>();
-            foreach (Element element in elements)
+            foreach ((Element element, Transform transform) in elements)
             {
                 BoundingBoxXYZ box = element.get_BoundingBox(null);
                 if (box == null) { continue; }
-                xs.Add((box.Min.X + box.Max.X) * 0.5 * FT);
-                ys.Add((box.Min.Y + box.Max.Y) * 0.5 * FT);
+                XYZ centre = (box.Min + box.Max) * 0.5;
+                if (transform != null) { centre = transform.OfPoint(centre); }
+                xs.Add(centre.X * FT);
+                ys.Add(centre.Y * FT);
             }
             if (xs.Count == 0) { return Vector3.Zero; }
 
@@ -267,11 +369,208 @@ namespace BimGo.Extraction
             {
                 float elevation = (float)(level.ProjectElevation * FT) - _origin.Z;
                 levels.Add(new LevelInfo(level.Name, elevation));
-                _levelNames[level.Id.Value] = level.Name;
+                _src.LevelNames[level.Id.Value] = level.Name;
             }
             levels.Sort((a, b) => a.Elevation.CompareTo(b.Elevation));
             return levels.ToArray();
         }
+
+        #endregion
+
+        #region Linked models
+
+        /// <summary>
+        /// The model an element is being extracted from: the host, or one link instance (its document, total transform
+        /// and phases), with the per-document caches (material and category colours, level names).
+        /// </summary>
+        private sealed class SourceModel
+        {
+            /// <summary>The document.</summary>
+            public Document Doc { get; init; }
+
+            /// <summary>Link coordinates → host internal coordinates (feet), or null for the host.</summary>
+            public Transform Transform { get; init; }
+
+            /// <summary>0 for the host, n for <c>Links[n - 1]</c>.</summary>
+            public int Link { get; init; }
+
+            /// <summary>The phases the model is shown in (a link's phases are matched to the host's by name).</summary>
+            public PhasePair Phases { get; init; } = new();
+
+            /// <summary>The link's record in the snapshot (null for the host).</summary>
+            public LinkInfo Info { get; init; }
+
+            /// <summary>Why linked elements can't be moved or copied (shown by the Gizmo / Clone guns).</summary>
+            public string ReadOnlyReason { get; init; }
+
+            /// <summary>Material colours by material id (ids are per document).</summary>
+            public Dictionary<long, uint> MaterialColours { get; } = new();
+
+            /// <summary>Category colours by category id.</summary>
+            public Dictionary<long, uint> CategoryColours { get; } = new();
+
+            /// <summary>Level names by level id.</summary>
+            public Dictionary<long, string> LevelNames { get; } = new();
+
+            /// <summary>Helper-geometry verdicts by graphics style id.</summary>
+            public Dictionary<long, bool> HelperStyles { get; } = new();
+
+            /// <summary>The geometry options (a 3D view's for the host in active-view-only mode), or null for the defaults.</summary>
+            public Options GeometryOptions { get; init; }
+
+            /// <summary>The RevitLinkInstance's id in the host (links only).</summary>
+            public long LinkInstanceId { get; init; }
+
+            /// <summary>"Host" or "Link n “name”", for the log.</summary>
+            public string Describe() => Info == null ? "Host" : $"Link {Info.Index} “{Info.Name}”";
+        }
+
+        /// <summary>
+        /// Prepares a ticked link instance: its phases (by the host's phase names, else the link's last phase and the
+        /// one before) and its <see cref="LinkInfo"/> record.
+        /// </summary>
+        /// <param name="candidate">The loaded link instance.</param>
+        /// <param name="index">Its link number (1-based).</param>
+        private SourceModel CreateLinkSource(LinkCandidate candidate, int index)
+        {
+            Document linkDoc = candidate.Document;
+            PhasePair phases = PhaseResolver.Resolve(linkDoc, activeView: null, _phases.Existing?.Name, _phases.New?.Name);
+            Transform transform = candidate.Transform ?? Transform.Identity;
+
+            var info = new LinkInfo
+            {
+                Index = index,
+                Name = candidate.Name,
+                Title = linkDoc.Title ?? candidate.FileName,
+                InstanceId = candidate.InstanceId,
+                InstanceUniqueId = candidate.UniqueId,
+                OriginX = transform.Origin.X * FT,
+                OriginY = transform.Origin.Y * FT,
+                OriginZ = transform.Origin.Z * FT,
+                BasisX = ToVector(transform.BasisX),
+                BasisY = ToVector(transform.BasisY),
+                BasisZ = ToVector(transform.BasisZ),
+                PhaseName = phases.New?.Name,
+                ExistingPhaseName = phases.Existing?.Name
+            };
+            try { info.ModelKey = linkDoc.ProjectInformation?.UniqueId ?? string.Empty; }
+            catch { /* leave empty */ }
+            try { info.ModelPath = linkDoc.IsModelInCloud ? string.Empty : linkDoc.PathName ?? string.Empty; }
+            catch { /* leave empty */ }
+
+            _links.Add(info);
+            return new SourceModel
+            {
+                Doc = linkDoc,
+                Transform = transform.IsIdentity ? null : transform,
+                Link = index,
+                Phases = phases,
+                Info = info,
+                LinkInstanceId = candidate.InstanceId,
+                ReadOnlyReason = $"In linked model “{info.Label}” (read-only)"
+            };
+        }
+
+        /// <summary>
+        /// Names a link's levels (its elements show their own level; the walkthrough's level list stays the host's).
+        /// </summary>
+        private static void CollectLevelNames(SourceModel source)
+        {
+            try
+            {
+                foreach (Level level in new FilteredElementCollector(source.Doc).OfClass(typeof(Level)).Cast<Level>())
+                {
+                    source.LevelNames[level.Id.Value] = level.Name;
+                }
+            }
+            catch (Exception ex)
+            {
+                Utilities.Log_Utils.Write($"{source.Describe()}: level names unavailable: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Active-view-only: buckets every model element the view shows (of the host, or of a link through the host
+        /// view) by catalog definition, ignoring category ticks, phases and design options. Categories the catalog
+        /// doesn't list go to "Other (active view)".
+        /// </summary>
+        private void GatherVisible(SourceModel source, DB.View view, List<(SourceModel Source, CategoryDef Def, List<Element> Elements)> work)
+        {
+            FilteredElementCollector collector = source.Link == 0
+                ? ViewScope.CollectHost(_doc, view)
+                : ViewScope.CollectLink(_doc, view, source.LinkInstanceId);
+            if (collector == null)
+            {
+                Utilities.Log_Utils.Write($"{source.Describe()}: the active view can't list its elements (needs Revit 2024+ for links): skipped.");
+                return;
+            }
+
+            var buckets = new Dictionary<int, List<Element>>();
+            int skipped = 0;
+            try
+            {
+                foreach (Element element in collector)
+                {
+                    CategoryDef def = ViewScope.DefinitionOf(element);
+                    if (def == null) { skipped++; continue; }
+                    if (!buckets.TryGetValue(def.Index, out List<Element> list)) { buckets[def.Index] = list = new List<Element>(); }
+                    list.Add(element);
+                }
+            }
+            catch (Exception ex)
+            {
+                Utilities.Log_Utils.Write($"{source.Describe()}: active view collection failed: {ex.Message}");
+            }
+
+            foreach (CategoryDef def in CategoryCatalog.All)
+            {
+                if (buckets.TryGetValue(def.Index, out List<Element> elements)) { work.Add((source, def, elements)); }
+            }
+            Utilities.Log_Utils.Write($"{source.Describe()}: {buckets.Values.Sum(b => b.Count)} elements visible in the view ({skipped} not model geometry).");
+        }
+
+        /// <summary>
+        /// True if a geometry object sits on helper geometry: the Light Source subcategory (IES / photometric cones),
+        /// or a subcategory whose name contains one of the keywords (clearance zones, spray cones…). Cached per style.
+        /// </summary>
+        private bool IsHelperStyle(ElementId styleId)
+        {
+            if (styleId == null || styleId == ElementId.InvalidElementId) { return false; }
+            long key = styleId.Value;
+            if (_src.HelperStyles.TryGetValue(key, out bool cached)) { return cached; }
+
+            bool helper = false;
+            try
+            {
+                Category category = (_src.Doc.GetElement(styleId) as GraphicsStyle)?.GraphicsStyleCategory;
+                if (category != null)
+                {
+                    if (category.Id.Value == (long)BuiltInCategory.OST_LightingFixtureSource)
+                    {
+                        helper = true;
+                    }
+                    else if (category.Parent != null)
+                    {
+                        // Keywords only match subcategories, never a whole category
+                        string name = category.Name?.ToLowerInvariant() ?? string.Empty;
+                        foreach (string keyword in _helperKeywords)
+                        {
+                            if (name.Contains(keyword, StringComparison.Ordinal)) { helper = true; break; }
+                        }
+                    }
+                    if (helper) { Utilities.Log_Utils.Write($"{_src.Describe()}: helper geometry on “{category.Parent?.Name}: {category.Name}” left out."); }
+                }
+            }
+            catch
+            {
+                helper = false;
+            }
+
+            _src.HelperStyles[key] = helper;
+            return helper;
+        }
+
+        private static Vector3 ToVector(XYZ v) => v == null ? Vector3.Zero : new Vector3((float)v.X, (float)v.Y, (float)v.Z);
 
         #endregion
 
@@ -283,7 +582,7 @@ namespace BimGo.Extraction
         /// <returns>True if a record was added.</returns>
         private bool ExtractElement(Element element, CategoryDef def)
         {
-            GeometryElement geometry = element.get_Geometry(_geometryOptions);
+            GeometryElement geometry = element.get_Geometry(_src.GeometryOptions ?? _geometryOptions);
             if (geometry == null) { return false; }
 
             // Reset per-element state
@@ -295,7 +594,7 @@ namespace BimGo.Extraction
             _thresholdActive = def.ThresholdApplies;
 
             uint fallback = FallbackColour(element);
-            Walk(geometry, Transform.Identity, fallback);
+            Walk(geometry, _src.Transform ?? Transform.Identity, fallback);
 
             bool isProxy = false;
             if (_overLimit)
@@ -353,7 +652,8 @@ namespace BimGo.Extraction
                 Movable = blockReason == null,
                 MoveBlockReason = blockReason,
                 Pivot = pivot,
-                Phase = PhaseResolver.RoleOf(element, _phases)
+                Phase = PhaseResolver.RoleOf(element, _src.Phases),
+                Link = _src.Link
             };
 
             if (_parameters != null) { AddParameters(element); }
@@ -370,6 +670,7 @@ namespace BimGo.Extraction
             foreach (GeometryObject geometryObject in geometry)
             {
                 if (_overLimit) { return; }
+                if (_helperKeywords != null && IsHelperStyle(geometryObject.GraphicsStyleId)) { continue; }
 
                 switch (geometryObject)
                 {
@@ -544,6 +845,7 @@ namespace BimGo.Extraction
 
             Aabb bounds = Aabb.Empty;
             Transform transform = box.Transform ?? Transform.Identity;
+            if (_src.Transform != null) { transform = _src.Transform.Multiply(transform); }
             for (int i = 0; i < 8; i++)
             {
                 var corner = new XYZ(
@@ -609,10 +911,10 @@ namespace BimGo.Extraction
             if (materialId == null || materialId == ElementId.InvalidElementId) { return fallback; }
 
             long key = materialId.Value;
-            if (_materialColours.TryGetValue(key, out uint cached)) { return cached; }
+            if (_src.MaterialColours.TryGetValue(key, out uint cached)) { return cached; }
 
             uint colour = fallback;
-            if (_doc.GetElement(materialId) is Material material)
+            if (_src.Doc.GetElement(materialId) is Material material)
             {
                 DB.Color c = material.Color;
                 if (c != null && c.IsValid)
@@ -622,7 +924,7 @@ namespace BimGo.Extraction
                 }
             }
 
-            _materialColours[key] = colour;
+            _src.MaterialColours[key] = colour;
             return colour;
         }
 
@@ -635,7 +937,7 @@ namespace BimGo.Extraction
             if (category == null) { return DEFAULT_COLOUR; }
 
             long key = category.Id.Value;
-            if (_categoryColours.TryGetValue(key, out uint cached)) { return cached; }
+            if (_src.CategoryColours.TryGetValue(key, out uint cached)) { return cached; }
 
             uint colour = DEFAULT_COLOUR;
             try
@@ -650,7 +952,7 @@ namespace BimGo.Extraction
                 // Some categories throw on Material; keep the default
             }
 
-            _categoryColours[key] = colour;
+            _src.CategoryColours[key] = colour;
             return colour;
         }
 
@@ -677,7 +979,7 @@ namespace BimGo.Extraction
                 {
                     return $"{instance.Symbol.FamilyName}: {instance.Symbol.Name}";
                 }
-                if (_doc.GetElement(element.GetTypeId()) is ElementType type)
+                if (_src.Doc.GetElement(element.GetTypeId()) is ElementType type)
                 {
                     return string.IsNullOrEmpty(type.FamilyName) ? type.Name : $"{type.FamilyName}: {type.Name}";
                 }
@@ -705,15 +1007,17 @@ namespace BimGo.Extraction
                 }
             }
 
-            if (levelId != null && _levelNames.TryGetValue(levelId.Value, out string name)) { return name; }
+            if (levelId != null && _src.LevelNames.TryGetValue(levelId.Value, out string name)) { return name; }
             return "—";
         }
 
         /// <summary>
-        /// The host's ElementId value (doors and windows in walls, face-hosted families...), or 0.
+        /// The host's ElementId value (doors and windows in walls, face-hosted families...), or 0. Always 0 for linked
+        /// elements (read-only: nothing cascades from them, and their ids live in another model's namespace).
         /// </summary>
-        private static long HostIdOf(Element element)
+        private long HostIdOf(Element element)
         {
+            if (_src.Link > 0) { return 0; }
             try
             {
                 if (element is FamilyInstance instance && instance.Host is Element host && host is not RevitLinkInstance)
@@ -746,7 +1050,7 @@ namespace BimGo.Extraction
                         if (!typeLooked)
                         {
                             ElementId typeId = element.GetTypeId();
-                            type = typeId != null && typeId != ElementId.InvalidElementId ? _doc.GetElement(typeId) : null;
+                            type = typeId != null && typeId != ElementId.InvalidElementId ? _src.Doc.GetElement(typeId) : null;
                             typeLooked = true;
                         }
                         parameter = type?.LookupParameter(name);
@@ -781,7 +1085,7 @@ namespace BimGo.Extraction
                 case StorageType.ElementId:
                     ElementId id = parameter.AsElementId();
                     if (id == null || id == ElementId.InvalidElementId) { return string.Empty; }
-                    return _doc.GetElement(id)?.Name ?? id.Value.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                    return _src.Doc.GetElement(id)?.Name ?? id.Value.ToString(System.Globalization.CultureInfo.InvariantCulture);
                 default:
                     return string.Empty;
             }
@@ -834,23 +1138,80 @@ namespace BimGo.Extraction
         }
 
         /// <summary>
-        /// True north, project base point and survey point.
+        /// True north, project base point, survey point and the internal → shared transform (double precision: the
+        /// shared position of the internal origin and the rotation, for the coordinate readout).
         /// </summary>
-        private SiteInfo BuildSite()
+        private SiteInfo BuildSite(UIDocument uiDoc)
         {
             var site = new SiteInfo();
+            CaptureLocation(site, uiDoc);
+            site.ProjectBasePoint = SitePointOf(() => BasePoint.GetProjectBasePoint(_doc));
+            site.SurveyPoint = SitePointOf(() => BasePoint.GetSurveyPoint(_doc));
+
             try
             {
-                site.TrueNorthAngle = (float)_doc.ActiveProjectLocation.GetProjectPosition(XYZ.Zero).Angle;
+                ProjectPosition position = _doc.ActiveProjectLocation.GetProjectPosition(XYZ.Zero);
+                site.TrueNorthAngle = (float)position.Angle;
+                site.SharedEast = position.EastWest * FT;
+                site.SharedNorth = position.NorthSouth * FT;
+                site.SharedElevation = position.Elevation * FT;
+                site.SharedAngle = position.Angle;
+                site.HasSharedTransform = true;
+
+                // The angle's sign convention is checked against the survey / base point (flipped if they disagree)
+                if (SiteCoordinates.VerifySharedAngle(site)) { Utilities.Log_Utils.Write("Shared coordinates: rotation sign flipped to match the survey point."); }
             }
             catch (Exception ex)
             {
-                Utilities.Log_Utils.Write($"True north unavailable: {ex.Message}");
+                Utilities.Log_Utils.Write($"Shared coordinates unavailable: {ex.Message}");
+            }
+            return site;
+        }
+
+        /// <summary>
+        /// The site location (latitude, longitude, time zone, place name) and the launch view's sun-study start time,
+        /// for the walkthrough's sun and shadows. Best effort: anything missing is left empty and logged.
+        /// </summary>
+        private void CaptureLocation(SiteInfo site, UIDocument uiDoc)
+        {
+            try
+            {
+                SiteLocation location = _doc.SiteLocation;
+                if (location != null)
+                {
+                    // Revit stores latitude / longitude in radians, east and north positive; the time zone in hours
+                    site.Latitude = location.Latitude * 180.0 / Math.PI;
+                    site.Longitude = location.Longitude * 180.0 / Math.PI;
+                    site.TimeZone = location.TimeZone;
+                    site.PlaceName = location.PlaceName ?? string.Empty;
+                    site.HasLocation = double.IsFinite(site.Latitude) && double.IsFinite(site.Longitude);
+                }
+            }
+            catch (Exception ex)
+            {
+                Utilities.Log_Utils.Write($"Site location unavailable: {ex.Message}");
             }
 
-            site.ProjectBasePoint = SitePointOf(() => BasePoint.GetProjectBasePoint(_doc));
-            site.SurveyPoint = SitePointOf(() => BasePoint.GetSurveyPoint(_doc));
-            return site;
+            try
+            {
+                DB.View view = uiDoc?.ActiveView;
+                SunAndShadowSettings sun = view?.SunAndShadowSettings;
+                if (sun != null)
+                {
+                    // Revit hands the study time back as UTC on some versions: convert it to the site's clock time
+                    DateTime start = sun.StartDateAndTime;
+                    if (start.Kind == DateTimeKind.Utc && site.HasLocation) { start = start.AddHours(site.TimeZone); }
+                    site.SunStart = start.ToString("yyyy-MM-ddTHH:mm", System.Globalization.CultureInfo.InvariantCulture);
+                }
+            }
+            catch (Exception ex)
+            {
+                Utilities.Log_Utils.Write($"Sun settings unavailable: {ex.Message}");
+            }
+
+            Utilities.Log_Utils.Write(site.HasLocation
+                ? $"Site: {site.PlaceName} ({site.Latitude:0.####}°, {site.Longitude:0.####}°, UTC{site.TimeZone:+0.##;-0.##}); sun start {(string.IsNullOrEmpty(site.SunStart) ? "none" : site.SunStart)}."
+                : "Site: no location.");
         }
 
         private static SitePoint SitePointOf(Func<BasePoint> get)
@@ -885,6 +1246,7 @@ namespace BimGo.Extraction
         private string MoveBlockReasonOf(Element element, out Vector3 pivot)
         {
             pivot = Vector3.Zero;
+            if (_src.Link > 0) { return _src.ReadOnlyReason; }
             try
             {
                 if (element is not FamilyInstance instance) { return "Not a loadable family"; }
@@ -910,11 +1272,14 @@ namespace BimGo.Extraction
         #region Phase and rooms
 
         /// <summary>
-        /// Collects placed, bounded rooms (finish boundaries, arcs tessellated) for the HUD readout.
+        /// Collects a model's placed, bounded rooms (finish boundaries, arcs tessellated) for the HUD readout.
         /// Rooms of the working phase are preferred; if none match, all placed rooms are used.
         /// </summary>
-        private RoomInfo[] CollectRooms(Phase phase)
+        /// <param name="source">The host or a link (its rooms are transformed into the host and tagged with the link).</param>
+        /// <param name="phase">The source's new phase, or null.</param>
+        private RoomInfo[] CollectRooms(SourceModel source, Phase phase)
         {
+            _src = source;
             var all = new List<(RoomInfo Room, long PhaseId)>();
             try
             {
@@ -923,7 +1288,7 @@ namespace BimGo.Extraction
                     SpatialElementBoundaryLocation = SpatialElementBoundaryLocation.Finish
                 };
 
-                var collector = new FilteredElementCollector(_doc).OfCategory(BuiltInCategory.OST_Rooms).WhereElementIsNotElementType();
+                var collector = new FilteredElementCollector(source.Doc).OfCategory(BuiltInCategory.OST_Rooms).WhereElementIsNotElementType();
                 foreach (Element element in collector)
                 {
                     if (element is not Autodesk.Revit.DB.Architecture.Room room) { continue; }
@@ -936,13 +1301,13 @@ namespace BimGo.Extraction
                     }
                     catch (Exception ex)
                     {
-                        Utilities.Log_Utils.Write($"Room {room.Id.Value} skipped: {ex.Message}");
+                        Utilities.Log_Utils.Write($"{source.Describe()}: room {room.Id.Value} skipped: {ex.Message}");
                     }
                 }
             }
             catch (Exception ex)
             {
-                Utilities.Log_Utils.Write($"Room collection failed: {ex.Message}");
+                Utilities.Log_Utils.Write($"{source.Describe()}: room collection failed: {ex.Message}");
             }
 
             if (phase != null && all.Any(r => r.PhaseId == phase.Id.Value))
@@ -979,7 +1344,7 @@ namespace BimGo.Extraction
                     // Each curve's last point is the next curve's first: skip it
                     for (int i = 0; i < tessellated.Count - 1; i++)
                     {
-                        Vector3 p = ToScenePoint(tessellated[i]);
+                        Vector3 p = ToScenePoint(_src.Transform == null ? tessellated[i] : _src.Transform.OfPoint(tessellated[i]));
                         var p2 = new Vector2(p.X, p.Y);
                         points.Add(p2);
                         min = Vector2.Min(min, p2);
@@ -991,16 +1356,18 @@ namespace BimGo.Extraction
             if (loops.Count == 0) { return null; }
 
             // Vertical extent from the room's bounding box (accounts for base offset and upper limit)
+            // (Links only rotate in plan, so a link's transform shifts heights by its origin's Z.)
+            double linkZ = _src.Transform?.Origin.Z ?? 0.0;
             BoundingBoxXYZ box = room.get_BoundingBox(null);
             float bottom, top;
             if (box != null)
             {
-                bottom = (float)(box.Min.Z * FT) - _origin.Z;
-                top = (float)(box.Max.Z * FT) - _origin.Z;
+                bottom = (float)((box.Min.Z + linkZ) * FT) - _origin.Z;
+                top = (float)((box.Max.Z + linkZ) * FT) - _origin.Z;
             }
             else
             {
-                double baseZ = (room.Level?.ProjectElevation ?? 0.0) + room.BaseOffset;
+                double baseZ = (room.Level?.ProjectElevation ?? 0.0) + room.BaseOffset + linkZ;
                 bottom = (float)(baseZ * FT) - _origin.Z;
                 top = bottom + (float)(room.UnboundedHeight * FT);
             }
@@ -1015,7 +1382,8 @@ namespace BimGo.Extraction
                 Min = min,
                 Max = max,
                 BottomZ = bottom,
-                TopZ = top
+                TopZ = top,
+                Link = _src.Link
             };
         }
 

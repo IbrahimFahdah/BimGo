@@ -17,6 +17,21 @@ namespace BimGo.Scene
     }
 
     /// <summary>
+    /// Shadow-map quality: resolution, number of cascades and edge softening (see the renderer's presets).
+    /// </summary>
+    public enum ShadowQuality
+    {
+        /// <summary>One 2048 px map near the player, hard edges.</summary>
+        Low = 0,
+
+        /// <summary>Three 2048 px cascades, softened edges.</summary>
+        Medium = 1,
+
+        /// <summary>Four 3072 px cascades, softer edges, longer shadow distance.</summary>
+        High = 2
+    }
+
+    /// <summary>
     /// How geometry is coloured.
     /// </summary>
     public enum ColourMode
@@ -36,6 +51,24 @@ namespace BimGo.Scene
     {
         /// <summary>Keys of the enabled category definitions.</summary>
         public List<string> EnabledCategories { get; set; } = Scene.CategoryCatalog.DefaultEnabledKeys();
+
+        /// <summary>
+        /// Extract only what the active view shows (off by default): every model element visible in the view comes in,
+        /// whatever its category tick, phase or design option; ticked links contribute what the view shows of them.
+        /// </summary>
+        public bool ActiveViewOnly { get; set; }
+
+        /// <summary>
+        /// Leave out helper geometry: the Light Source subcategory (IES / photometric cones) and any subcategory whose
+        /// name contains one of <see cref="HelperSubcategoryKeywords"/> (clearance zones, spray cones…). On by default.
+        /// </summary>
+        public bool SkipHelperGeometry { get; set; } = true;
+
+        /// <summary>Subcategory name fragments (case-insensitive) treated as helper geometry.</summary>
+        public List<string> HelperSubcategoryKeywords { get; set; } = DefaultHelperKeywords();
+
+        /// <summary>The default helper subcategory keywords.</summary>
+        public static List<string> DefaultHelperKeywords() => new() { "light source", "clearance", "zone", "cone", "photometric" };
 
         /// <summary>Triangle threshold per element (FFE and Services only).</summary>
         public int TriangleThreshold { get; set; } = 20000;
@@ -97,6 +130,52 @@ namespace BimGo.Scene
         /// Phase Demolished to it and clones are created in it. Empty = the launch view's phase, else the last phase.
         /// </summary>
         public string NewPhase { get; set; } = string.Empty;
+
+        /// <summary>
+        /// Linked models to extract with each host model: host model key (<c>ProjectInformation.UniqueId</c>) → the
+        /// UniqueIds of the ticked RevitLinkInstances. A model with no entry extracts no links (the default); the
+        /// Options dialog pre-ticks the saved choice and Refresh (F5) reuses it.
+        /// </summary>
+        public Dictionary<string, List<string>> LinkedModels { get; set; } = new(StringComparer.Ordinal);
+
+        /// <summary>Most host models remembered in <see cref="LinkedModels"/> (oldest entries are dropped).</summary>
+        public const int MAX_LINKED_MODEL_ENTRIES = 200;
+
+        /// <summary>
+        /// The link instances (UniqueIds) ticked for a host model; empty when none (never null).
+        /// </summary>
+        /// <param name="hostModelKey">The host model key.</param>
+        public IReadOnlyList<string> LinksFor(string hostModelKey)
+        {
+            if (string.IsNullOrEmpty(hostModelKey) || LinkedModels == null) { return Array.Empty<string>(); }
+            return LinkedModels.TryGetValue(hostModelKey, out List<string> links) && links != null ? links : Array.Empty<string>();
+        }
+
+        /// <summary>
+        /// Remembers the link instances ticked for a host model (an empty choice removes the entry).
+        /// </summary>
+        /// <param name="hostModelKey">The host model key.</param>
+        /// <param name="linkInstanceIds">The ticked RevitLinkInstance UniqueIds.</param>
+        public void SetLinksFor(string hostModelKey, IEnumerable<string> linkInstanceIds)
+        {
+            if (string.IsNullOrEmpty(hostModelKey)) { return; }
+            LinkedModels ??= new Dictionary<string, List<string>>(StringComparer.Ordinal);
+            List<string> links = (linkInstanceIds ?? Enumerable.Empty<string>())
+                .Where(id => !string.IsNullOrWhiteSpace(id))
+                .Distinct(StringComparer.Ordinal)
+                .ToList();
+
+            // Keep the list bounded (models not seen for a long time lose their choice: none, the default)
+            LinkedModels.Remove(hostModelKey);
+            if (links.Count > 0) { LinkedModels[hostModelKey] = links; }
+            while (LinkedModels.Count > MAX_LINKED_MODEL_ENTRIES) { LinkedModels.Remove(LinkedModels.Keys.First()); }
+        }
+
+        /// <summary>Shadow-map quality on this machine (the sun panel and the Options dialog change it).</summary>
+        public ShadowQuality ShadowQuality { get; set; } = ShadowQuality.Medium;
+
+        /// <summary>The walkthrough's coordinate readout (L cycles it; remembered between sessions).</summary>
+        public CoordinateReadout CoordinateReadout { get; set; } = CoordinateReadout.Off;
 
         /// <summary>Move increments offered for gizmo snapping (mm).</summary>
         public static readonly float[] SNAP_MOVE_STEPS_MM = { 5f, 10f, 25f, 50f, 100f, 250f, 500f, 1000f };
@@ -214,8 +293,21 @@ namespace BimGo.Scene
                 .Distinct(StringComparer.Ordinal)
                 .Take(MAX_EXTRA_PARAMETERS)
                 .ToList();
+            LinkedModels = LinkedModels == null
+                ? new Dictionary<string, List<string>>(StringComparer.Ordinal)
+                : LinkedModels
+                    .Where(p => !string.IsNullOrEmpty(p.Key) && p.Value != null && p.Value.Count > 0)
+                    .ToDictionary(p => p.Key, p => p.Value.Where(id => !string.IsNullOrWhiteSpace(id)).Distinct(StringComparer.Ordinal).ToList(), StringComparer.Ordinal);
+            HelperSubcategoryKeywords = (HelperSubcategoryKeywords ?? DefaultHelperKeywords())
+                .Where(k => !string.IsNullOrWhiteSpace(k))
+                .Select(k => k.Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Take(40)
+                .ToList();
             ExistingPhase = ExistingPhase?.Trim() ?? string.Empty;
             NewPhase = NewPhase?.Trim() ?? string.Empty;
+            if (!Enum.IsDefined(CoordinateReadout)) { CoordinateReadout = CoordinateReadout.Off; }
+            if (!Enum.IsDefined(ShadowQuality)) { ShadowQuality = ShadowQuality.Medium; }
             TriangleThreshold = Math.Clamp(TriangleThreshold, 100, 5_000_000);
             Msaa = Msaa >= 4 ? 4 : Msaa >= 2 ? 2 : 0;
             MouseSensitivity = Math.Clamp(MouseSensitivity, 0.1f, 3f);

@@ -22,9 +22,24 @@ namespace BimGo.Physics
     }
 
     /// <summary>
-    /// A deterministic capsule controller: gravity, jump, crouch, step-up and ground snapping,
+    /// A deterministic capsule controller: gravity, jump, crouch, stair climbing and ground snapping,
     /// resolved by iterative depenetration against BVH triangles.
     /// Positions are the capsule's feet (bottom). Z is up.
+    ///
+    /// Stairs are climbed in two ways:
+    /// <list type="bullet">
+    /// <item><b>Edge riding</b> (most stairs): a contact on the capsule's rounded bottom that sits no higher than
+    /// <see cref="StepHeight"/> above the feet (a nosing, the top of a riser, a kerb, a stringer edge…) lifts the
+    /// capsule straight up instead of pushing it back, so the round bottom rolls up over the edge like a short ramp.
+    /// This works whatever the riser looks like (square, sloped, rounded nosings, open risers) and at any walking
+    /// angle, and needs no separate "am I blocked?" test.</item>
+    /// <item><b>Step-up with look-ahead</b> (risers taller than the capsule's rounded bottom can ride, i.e. a step
+    /// height setting above ~0.27 m): when blocked, the controller probes a capsule radius ahead at step height and,
+    /// if there is a floor to land on, lifts the feet to it.</item>
+    /// </list>
+    /// Earlier versions only had the step-up, probing one tick ahead (~3 cm): the round bottom still hung on the
+    /// nosing, the landing contact read as a wall, and the climb was refused — which is why the step height setting
+    /// seemed to make no difference.
     /// </summary>
     internal sealed class CharacterController
     {
@@ -40,6 +55,12 @@ namespace BimGo.Physics
         private const float SUBSTEP = 0.08f;
         private const float WALKABLE = 0.7f;
         private const int ITERATIONS = 4;
+
+        /// <summary>Contacts this far above the feet or less are the floor itself, not a step edge.</summary>
+        private const float EDGE_MIN_RISE = 0.004f;
+
+        /// <summary>A step edge must sit at least this far below the bottom sphere's centre (else it's a wall).</summary>
+        private const float EDGE_BELOW_CENTRE = 0.02f;
 
         #endregion
 
@@ -136,22 +157,34 @@ namespace BimGo.Physics
                 float wanted = delta.Length();
                 float got = Flat(moved - Feet).Length();
 
-                if (wasGrounded && !jumped && got < wanted * 0.8f && StepHeight > 0f)
+                // Blocked by something taller than the round bottom can ride (edge riding handles ordinary
+                // risers inside Resolve): probe a capsule radius ahead at step height for a floor to land on
+                if (wasGrounded && !jumped && got < wanted * 0.5f && StepHeight > 0f)
                 {
                     Vector3 raised = Feet + new Vector3(0f, 0f, StepHeight);
                     if (!Overlaps(raised, Height))
                     {
+                        Vector3 direction = delta / wanted;
+                        float probe = MathF.Max(wanted, RADIUS + 0.05f);
                         var r2 = new MoveResult();
-                        Vector3 across = Move(raised, delta, ref r2);
+                        Vector3 across = Move(raised, direction * probe, ref r2);
                         var r3 = new MoveResult();
                         Vector3 landed = Move(across, new Vector3(0f, 0f, -StepHeight - 0.01f), ref r3);
-                        float gotStep = Flat(landed - Feet).Length();
+                        float rise = landed.Z - Feet.Z;
+                        float probed = Flat(landed - Feet).Length();
 
-                        if (r3.Ground && gotStep > got + 0.002f && landed.Z - Feet.Z <= StepHeight + 0.01f)
+                        // A real step: we got clearly further, landed on a floor, and it's up (not back down)
+                        if (r3.Ground && probed > got + probe * 0.5f && rise > 0.01f && rise <= StepHeight + 0.01f)
                         {
-                            moved = landed;
-                            result = r2;
-                            SteppedThisTick = landed.Z - Feet.Z > 0.01f;
+                            // Lift to the step's height, then make only this tick's move (no forward jump)
+                            Vector3 lifted = Feet + new Vector3(0f, 0f, rise);
+                            if (!Overlaps(lifted, Height))
+                            {
+                                var r4 = new MoveResult();
+                                moved = Move(lifted, delta, ref r4);
+                                result = r4;
+                                SteppedThisTick = true;
+                            }
                         }
                     }
                 }
@@ -316,12 +349,36 @@ namespace BimGo.Physics
         /// Resolves one triangle contact.
         /// </summary>
         /// <returns>True if the capsule was moved.</returns>
-        private static bool PushOut(ref Vector3 feet, float height, Vector3 a, Vector3 b, Vector3 c, ref MoveResult result)
+        private bool PushOut(ref Vector3 feet, float height, Vector3 a, Vector3 b, Vector3 c, ref MoveResult result)
         {
             Vector3 p = feet + new Vector3(0f, 0f, RADIUS);
             Vector3 q = feet + new Vector3(0f, 0f, height - RADIUS);
             float distanceSquared = GeoMath.ClosestSegmentTriangle(p, q, a, b, c, out Vector3 onSegment, out Vector3 onTriangle);
             if (distanceSquared >= RADIUS * RADIUS) { return false; }
+
+            // Edge riding: a contact on the round bottom, below its centre and no higher than a step above the feet,
+            // lifts the capsule straight up until the sphere just clears it (it rolls up nosings and riser tops).
+            // The whole triangle must be within step height too: a steep slope or a wall reaching higher is a wall
+            // (otherwise the round bottom would ride up any steep face).
+            float rise = onTriangle.Z - feet.Z;
+            float top = MathF.Max(a.Z, MathF.Max(b.Z, c.Z)) - feet.Z;
+            if (rise > EDGE_MIN_RISE && rise <= StepHeight && top <= StepHeight + 0.01f
+                && onTriangle.Z < p.Z - EDGE_BELOW_CENTRE && onSegment.Z <= p.Z + 1e-4f)
+            {
+                float dx = p.X - onTriangle.X, dy = p.Y - onTriangle.Y;
+                float horizontalSquared = dx * dx + dy * dy;
+                if (horizontalSquared < RADIUS * RADIUS)
+                {
+                    float centreZ = onTriangle.Z + MathF.Sqrt(RADIUS * RADIUS - horizontalSquared) + 0.0005f;
+                    float lift = centreZ - p.Z;
+                    if (lift > 0f)
+                    {
+                        feet.Z += lift;
+                        result.Ground = true;
+                        return true;
+                    }
+                }
+            }
 
             float distance = MathF.Sqrt(distanceSquared);
             Vector3 normal;

@@ -94,6 +94,9 @@ namespace BimGo.Format
         public int ProxyCount { get; set; }
         public int SkippedCount { get; set; }
         public double ExtractionSeconds { get; set; }
+
+        /// <summary>The view the elements came from (active-view-only extraction), or null (by category).</summary>
+        public string ActiveView { get; set; }
     }
 
     /// <summary>
@@ -108,6 +111,10 @@ namespace BimGo.Format
         public int Rooms { get; set; }
         public int Comments { get; set; }
         public int JournalEntries { get; set; }
+        public int Bookmarks { get; set; }
+
+        /// <summary>Linked models extracted with the host (v7; 0 in older files).</summary>
+        public int Links { get; set; }
     }
 
     #endregion
@@ -150,6 +157,12 @@ namespace BimGo.Format
 
         /// <summary>The category definitions the elements refer to (by position).</summary>
         public List<CategoryDto> Categories { get; set; } = new();
+
+        /// <summary>
+        /// The link instances extracted with the host (v7, optional): <c>elements[].link</c> = n refers to
+        /// <c>links[n - 1]</c>. Absent when only the host was extracted.
+        /// </summary>
+        public List<LinkInfo> Links { get; set; }
     }
 
     public sealed class SpawnDto
@@ -174,6 +187,9 @@ namespace BimGo.Format
         public string Name { get; set; }
         public float BottomZ { get; set; }
         public float TopZ { get; set; }
+
+        /// <summary>The link the room comes from (v7): n = <c>model.links[n - 1]</c>; absent for host rooms.</summary>
+        public int? Link { get; set; }
 
         /// <summary>Boundary loops in plan, each flattened as [x0, y0, x1, y1, ...] (scene-local metres).</summary>
         public List<float[]> Loops { get; set; } = new();
@@ -222,6 +238,12 @@ namespace BimGo.Format
         /// The phase role: "new", "between" or "unphased"; omitted for existing elements (and in older files).
         /// </summary>
         public string Phase { get; set; }
+
+        /// <summary>
+        /// The linked model the element comes from (v7): n = <c>model.links[n - 1]</c>; absent for host elements.
+        /// Ids and unique ids are only unique within one model.
+        /// </summary>
+        public int? Link { get; set; }
 
         public Vector3 BoundsMin { get; set; }
         public Vector3 BoundsMax { get; set; }

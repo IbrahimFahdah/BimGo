@@ -72,5 +72,27 @@ namespace BimGo.Rendering
             if (MathF.Abs(value).TryFormat(_chars.AsSpan(_length), out int written, format, CultureInfo.InvariantCulture)) { _length += written; }
             return this;
         }
+
+        /// <summary>
+        /// Appends a double with fixed decimals (for large values such as grid coordinates, where a float would lose
+        /// the millimetres); negatives use a true minus sign, and an optional plus for positives.
+        /// </summary>
+        public TextBuffer Append(double value, int decimals, bool plusSign = false)
+        {
+            if (double.IsNaN(value) || double.IsInfinity(value)) { return Append("—"); }
+
+            if (value < 0.0 && Math.Abs(value) >= 0.5 * Math.Pow(10.0, -decimals)) { Append('−'); }
+            else if (plusSign) { Append('+'); }
+
+            ReadOnlySpan<char> format = decimals switch
+            {
+                0 => "F0",
+                1 => "F1",
+                2 => "F2",
+                _ => "F3"
+            };
+            if (Math.Abs(value).TryFormat(_chars.AsSpan(_length), out int written, format, CultureInfo.InvariantCulture)) { _length += written; }
+            return this;
+        }
     }
 }

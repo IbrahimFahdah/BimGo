@@ -41,6 +41,13 @@ namespace BimGo.Forms
         private readonly PhaseChoices _phases;
         private const string NO_PHASE = "(none)";
 
+        // Linked models: the host's link instances and their tick boxes (by instance UniqueId)
+        private readonly LinkChoices _links;
+
+        // The active view (for "only elements visible in the active view")
+        private readonly ViewChoice _view;
+        private readonly Dictionary<string, Wpf.CheckBox> _linkChecks = new(StringComparer.Ordinal);
+
         #endregion
 
         /// <summary>
@@ -52,15 +59,20 @@ namespace BimGo.Forms
         /// <param name="scanParameterNames">Lists the model's parameter names (runs on the Revit thread), or null.</param>
         /// <param name="primaryButtonText">The confirm button's text ("Launch BimGo", "Export…").</param>
         /// <param name="phases">The model's phases and their defaults.</param>
+        /// <param name="links">The model's link instances and the key the choice is saved under.</param>
+        /// <param name="view">The active view (name and how many elements it shows).</param>
         internal OptionsWindow(LaunchSettings settings, string spawnDescription, int[] counts,
-            Func<List<string>> scanParameterNames, string primaryButtonText, PhaseChoices phases)
+            Func<List<string>> scanParameterNames, string primaryButtonText, PhaseChoices phases, LinkChoices links, ViewChoice view)
         {
             _settings = settings;
             _counts = counts;
             _scanParameterNames = scanParameterNames;
             _phases = phases ?? new PhaseChoices();
+            _links = links ?? new LinkChoices();
+            _view = view ?? new ViewChoice();
 
             InitializeComponent();
+            Title = $"BimGo {Globals.ADDIN_VERSION} — Options";
 
             // The BimGo ">>" icon (same image as the Go button)
             try { Icon = UtilRib.GetImageSource("BimGo_Launch", resolution: 32); }
@@ -70,6 +82,7 @@ namespace BimGo.Forms
             if (!string.IsNullOrEmpty(primaryButtonText)) { ButtonLaunch.Content = primaryButtonText; }
             ButtonScanParameters.IsEnabled = scanParameterNames != null;
             BuildCategoryCards();
+            BuildLinkList();
             LoadFromSettings();
             UpdateEstimate();
         }
@@ -84,7 +97,7 @@ namespace BimGo.Forms
             for (int g = 0; g < 3; g++)
             {
                 var group = (CategoryGroup)g;
-                List<CategoryDef> defs = CategoryCatalog.All.Where(d => d.Group == group && !d.Heavy).ToList();
+                List<CategoryDef> defs = CategoryCatalog.All.Where(d => d.Group == group && IsOffered(d)).ToList();
 
                 var card = new Wpf.Border
                 {
@@ -173,6 +186,11 @@ namespace BimGo.Forms
             CheckVSync.IsChecked = _settings.VSync;
             CheckComments.IsChecked = _settings.LoadComments;
             LoadSnap();
+            ComboShadowQuality.SelectedIndex = Math.Clamp((int)_settings.ShadowQuality, 0, 2);
+            CheckViewOnly.IsChecked = _settings.ActiveViewOnly && _view.Available;
+            CheckViewOnly.IsEnabled = _view.Available;
+            CheckSkipHelpers.IsChecked = _settings.SkipHelperGeometry;
+            TextHelperKeywords.Text = string.Join(", ", _settings.HelperSubcategoryKeywords ?? LaunchSettings.DefaultHelperKeywords());
             LoadPhases();
 
             foreach (string name in _settings.ExtraParameters ?? new List<string>())
@@ -185,6 +203,7 @@ namespace BimGo.Forms
             _updating = false;
             RefreshGroupChecks();
             UpdateSliderLabels();
+            UpdateViewOnly();
         }
 
         #endregion
@@ -201,7 +220,7 @@ namespace BimGo.Forms
             // Clicking an indeterminate box resolves to "all on"
             bool on = groupCheck.IsChecked != false;
             _updating = true;
-            foreach (CategoryDef def in CategoryCatalog.All.Where(d => d.Group == group && !d.Heavy))
+            foreach (CategoryDef def in CategoryCatalog.All.Where(d => d.Group == group && IsOffered(d)))
             {
                 _categoryChecks[def.Key].IsChecked = on;
             }
@@ -236,27 +255,35 @@ namespace BimGo.Forms
         {
             if (!int.TryParse(TextThreshold.Text.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int threshold) || threshold < 100)
             {
-                Win.MessageBox.Show(this, "Triangle limit must be a whole number of at least 100.", "BimGo", Win.MessageBoxButton.OK, Win.MessageBoxImage.Warning);
+                Win.MessageBox.Show(this, "The triangle limit must be a whole number of at least 100.", "BimGo", Win.MessageBoxButton.OK, Win.MessageBoxImage.Warning);
                 TextThreshold.Focus();
                 return;
             }
             if (!float.TryParse(TextStep.Text.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out float step) || step < 50f || step > 450f)
             {
-                Win.MessageBox.Show(this, "Max step height must be between 50 and 450 mm.", "BimGo", Win.MessageBoxButton.OK, Win.MessageBoxImage.Warning);
+                Win.MessageBox.Show(this, "The max step height must be between 50 and 450 mm.", "BimGo", Win.MessageBoxButton.OK, Win.MessageBoxImage.Warning);
                 TextStep.Focus();
                 return;
             }
 
             if (!ReadPhases(out string existingPhase, out string newPhase)) { return; }
 
+            bool viewOnly = CheckViewOnly.IsChecked == true;
             List<string> enabled = SelectedKeys();
-            if (enabled.Count == 0)
+            if (enabled.Count == 0 && !viewOnly)
             {
-                Win.MessageBox.Show(this, "Tick at least one category to load.", "BimGo", Win.MessageBoxButton.OK, Win.MessageBoxImage.Warning);
+                Win.MessageBox.Show(this, "Tick at least one category to load (or load only what the active view shows).", "BimGo", Win.MessageBoxButton.OK, Win.MessageBoxImage.Warning);
                 return;
             }
 
-            _settings.EnabledCategories = enabled;
+            if (enabled.Count > 0) { _settings.EnabledCategories = enabled; }
+            _settings.ActiveViewOnly = viewOnly;
+            _settings.SkipHelperGeometry = CheckSkipHelpers.IsChecked == true;
+            _settings.HelperSubcategoryKeywords = (TextHelperKeywords.Text ?? string.Empty)
+                .Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries)
+                .Select(k => k.Trim())
+                .Where(k => k.Length > 0)
+                .ToList();
             _settings.TriangleThreshold = threshold;
             _settings.OverLimit = RadioSkip.IsChecked == true ? OverLimitMode.Skip : OverLimitMode.Proxy;
             _settings.Colour = RadioMaterial.IsChecked == true ? ColourMode.Material : ColourMode.Whitecard;
@@ -270,9 +297,11 @@ namespace BimGo.Forms
             _settings.GizmoSnap = CheckSnap.IsChecked == true;
             _settings.SnapMoveMm = LaunchSettings.SNAP_MOVE_STEPS_MM[Math.Max(ComboSnapMove.SelectedIndex, 0)];
             _settings.SnapAngleDeg = LaunchSettings.SNAP_ANGLE_STEPS_DEG[Math.Max(ComboSnapAngle.SelectedIndex, 0)];
+            _settings.ShadowQuality = (BimGo.Scene.ShadowQuality)Math.Clamp(ComboShadowQuality.SelectedIndex, 0, 2);
             _settings.ExistingPhase = existingPhase;
             _settings.NewPhase = newPhase;
             _settings.ExtraParameters = _knownParameters.Where(_pickedParameters.Contains).ToList();
+            _settings.SetLinksFor(_links.HostKey, SelectedLinks());
             _settings.Sanitise();
 
             DialogResult = true;
@@ -376,7 +405,7 @@ namespace BimGo.Forms
             {
                 ComboExistingPhase.IsEnabled = false;
                 ComboNewPhase.IsEnabled = false;
-                TextPhaseHint.Text = "This model has no phases: the hammer can only delete.";
+                TextPhaseHint.Text = "This model has no phases: the Demolish gun can only delete.";
                 return;
             }
 
@@ -446,6 +475,145 @@ namespace BimGo.Forms
 
         #endregion
 
+        #region Active view and helper geometry
+
+        /// <summary>
+        /// The view-only box changed: the category cards don't apply while it is ticked.
+        /// </summary>
+        private void CheckViewOnly_Click(object sender, Win.RoutedEventArgs e)
+        {
+            UpdateViewOnly();
+        }
+
+        /// <summary>
+        /// The helper geometry box changed: the keywords only apply while it is ticked.
+        /// </summary>
+        private void CheckSkipHelpers_Click(object sender, Win.RoutedEventArgs e)
+        {
+            TextHelperKeywords.IsEnabled = CheckSkipHelpers.IsChecked == true;
+        }
+
+        /// <summary>
+        /// Enables / disables the category cards and describes the active view.
+        /// </summary>
+        private void UpdateViewOnly()
+        {
+            bool viewOnly = CheckViewOnly.IsChecked == true;
+            GridGroups.IsEnabled = !viewOnly;
+            CheckHeavy.IsEnabled = !viewOnly;
+            TextHelperKeywords.IsEnabled = CheckSkipHelpers.IsChecked == true;
+
+            if (!_view.Available)
+            {
+                TextViewOnly.Text = "The active view doesn't show model elements. Open a 3D view, plan or section to use this.";
+            }
+            else
+            {
+                string hint = _view.Is3D ? string.Empty : " A 3D view works best: plans and sections only include what their view range or far clip reaches.";
+                TextViewOnly.Text = $"“{_view.Name}” shows about {_view.ElementCount:N0} elements. When ticked, everything visible there comes in " +
+                    "(its visibility/graphics, filters, section box, hidden elements and design options apply; the category ticks, " +
+                    "phase and design option rules below don't). Ticked links add what the view shows of them." + hint;
+            }
+            UpdateEstimate();
+        }
+
+        /// <summary>
+        /// True for catalog definitions the category cards offer (not the heavy set, which has its own box, and not
+        /// the active-view-only "other" bucket).
+        /// </summary>
+        private static bool IsOffered(CategoryDef def) => !def.Heavy && def.BuiltInCategoryNames.Length > 0;
+
+        #endregion
+
+        #region Linked models
+
+        /// <summary>
+        /// One row per link instance, grouped under its file (a file with several instances gets a tick box that sets
+        /// them all). Unloaded links are listed but can't be ticked. Ticks come from the saved choice for this model.
+        /// </summary>
+        private void BuildLinkList()
+        {
+            PanelLinks.Children.Clear();
+            _linkChecks.Clear();
+            if (_links.Items.Count == 0)
+            {
+                PanelLinks.Children.Add(new Wpf.TextBlock { Text = "This model has no Revit links.", Foreground = (Media.Brush)FindResource("Muted") });
+                return;
+            }
+
+            var saved = new HashSet<string>(_settings.LinksFor(_links.HostKey), StringComparer.Ordinal);
+            foreach (IGrouping<string, LinkChoice> file in _links.Items.GroupBy(l => l.FileName))
+            {
+                List<LinkChoice> instances = file.ToList();
+                Wpf.CheckBox fileCheck = null;
+                if (instances.Count > 1)
+                {
+                    fileCheck = new Wpf.CheckBox
+                    {
+                        Content = $"{file.Key} ({instances.Count} instances)",
+                        FontWeight = Win.FontWeights.SemiBold,
+                        Margin = new Win.Thickness(0, 4, 0, 2),
+                        IsEnabled = instances.Any(i => i.IsLoaded)
+                    };
+                    PanelLinks.Children.Add(fileCheck);
+                }
+
+                var checks = new List<Wpf.CheckBox>();
+                foreach (LinkChoice link in instances)
+                {
+                    var check = new Wpf.CheckBox
+                    {
+                        Content = link.IsLoaded ? link.Name : $"{link.Name} (not loaded)",
+                        Tag = link.UniqueId,
+                        IsEnabled = link.IsLoaded,
+                        IsChecked = link.IsLoaded && saved.Contains(link.UniqueId),
+                        Margin = new Win.Thickness(fileCheck == null ? 0 : 22, 2, 0, 2),
+                        FontWeight = fileCheck == null ? Win.FontWeights.SemiBold : Win.FontWeights.Normal,
+                        ToolTip = link.IsLoaded ? null : "Load this link in Revit (Manage Links) to include it."
+                    };
+                    check.Click += (_, _) =>
+                    {
+                        if (fileCheck != null) { RefreshFileCheck(fileCheck, checks); }
+                        UpdateEstimate();
+                    };
+                    checks.Add(check);
+                    _linkChecks[link.UniqueId] = check;
+                    PanelLinks.Children.Add(check);
+                }
+
+                if (fileCheck != null)
+                {
+                    fileCheck.Click += (_, _) =>
+                    {
+                        // Clicking an indeterminate box resolves to "all on"
+                        bool on = fileCheck.IsChecked != false;
+                        foreach (Wpf.CheckBox check in checks.Where(c => c.IsEnabled)) { check.IsChecked = on; }
+                        RefreshFileCheck(fileCheck, checks);
+                        UpdateEstimate();
+                    };
+                    RefreshFileCheck(fileCheck, checks);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Sets a file's tick box to on / off / indeterminate from its instances.
+        /// </summary>
+        private static void RefreshFileCheck(Wpf.CheckBox fileCheck, List<Wpf.CheckBox> checks)
+        {
+            int enabled = checks.Count(c => c.IsEnabled);
+            int on = checks.Count(c => c.IsEnabled && c.IsChecked == true);
+            fileCheck.IsChecked = on == 0 ? false : on == enabled ? true : (bool?)null;
+        }
+
+        /// <summary>
+        /// The ticked link instances (UniqueIds).
+        /// </summary>
+        private List<string> SelectedLinks() =>
+            _linkChecks.Where(p => p.Value.IsEnabled && p.Value.IsChecked == true).Select(p => p.Key).ToList();
+
+        #endregion
+
         #region Helpers
 
         /// <summary>
@@ -469,7 +637,7 @@ namespace BimGo.Forms
             _updating = true;
             for (int g = 0; g < 3; g++)
             {
-                var defs = CategoryCatalog.All.Where(d => (int)d.Group == g && !d.Heavy).ToList();
+                var defs = CategoryCatalog.All.Where(d => (int)d.Group == g && IsOffered(d)).ToList();
                 int on = defs.Count(d => _categoryChecks[d.Key].IsChecked == true);
                 _groupChecks[g].IsChecked = on == 0 ? false : on == defs.Count ? true : (bool?)null;
             }
@@ -481,12 +649,17 @@ namespace BimGo.Forms
         /// </summary>
         private void UpdateEstimate()
         {
+            if (TextEstimate == null || CheckViewOnly == null) { return; }
             int total = 0;
             foreach (string key in SelectedKeys())
             {
                 if (CategoryCatalog.Find(key) is CategoryDef def) { total += _counts[def.Index]; }
             }
-            TextEstimate.Text = $"Est. {total:N0} elements";
+            if (CheckViewOnly.IsChecked == true) { total = _view.ElementCount; }
+            int links = SelectedLinks().Count;
+            TextEstimate.Text = links == 0
+                ? $"About {total:N0} elements"
+                : $"About {total:N0} elements + {links} linked model{(links == 1 ? string.Empty : "s")}";
         }
 
         /// <summary>
@@ -544,6 +717,54 @@ namespace BimGo.Forms
         }
 
         #endregion
+    }
+
+    /// <summary>
+    /// The active view, as the Options dialog describes it.
+    /// </summary>
+    internal sealed class ViewChoice
+    {
+        /// <summary>False when the active view can't show model elements (schedules, sheets, legends…).</summary>
+        public bool Available { get; init; }
+
+        /// <summary>The view's name.</summary>
+        public string Name { get; init; } = string.Empty;
+
+        /// <summary>True for a 3D view.</summary>
+        public bool Is3D { get; init; }
+
+        /// <summary>Roughly how many model elements the view shows.</summary>
+        public int ElementCount { get; init; }
+    }
+
+    /// <summary>
+    /// One link instance the Options dialog offers.
+    /// </summary>
+    internal sealed class LinkChoice
+    {
+        /// <summary>The RevitLinkInstance UniqueId (saved).</summary>
+        public string UniqueId { get; init; } = string.Empty;
+
+        /// <summary>The instance name.</summary>
+        public string Name { get; init; } = string.Empty;
+
+        /// <summary>The linked file (rows are grouped by it).</summary>
+        public string FileName { get; init; } = string.Empty;
+
+        /// <summary>False when the link isn't loaded (shown, can't be ticked).</summary>
+        public bool IsLoaded { get; init; }
+    }
+
+    /// <summary>
+    /// The link instances the Options dialog offers and the host model key the choice is saved under.
+    /// </summary>
+    internal sealed class LinkChoices
+    {
+        /// <summary>The host model key (<see cref="LaunchSettings.LinkedModels"/>).</summary>
+        public string HostKey { get; init; } = string.Empty;
+
+        /// <summary>The link instances, sorted by file then name.</summary>
+        public List<LinkChoice> Items { get; init; } = new();
     }
 
     /// <summary>

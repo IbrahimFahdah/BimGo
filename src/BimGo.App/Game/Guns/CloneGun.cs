@@ -85,7 +85,7 @@ namespace BimGo.Game.Guns
             DynamicInstance clone = Session.CreateClone(aim.Hit.Element, source);
             _gizmo.Begin(clone);
             Session.Sound.Play(SoundId.Grab);
-            Session.Toast("Clone made: move it, then RMB to commit (Esc discards)");
+            Session.Toast("Clone made: move it, then RMB commits it (Esc discards it)");
         }
 
         public override void OnSecondary(in AimInfo aim)
@@ -151,7 +151,7 @@ namespace BimGo.Game.Guns
                 Session.Toast($"{Session.EditTargetName} refused the copy ({result.Message}). Clone removed.", 4f);
             });
 
-            if (!sent) { Session.Toast($"Clone of {record.Name} kept in the walkthrough only (no Revit link)"); }
+            if (!sent) { Session.Toast($"Clone of {record.Name} kept in the walkthrough only (not connected to Revit)"); }
         }
 
         #endregion

@@ -31,6 +31,9 @@ namespace BimGo.Game
         private const float TICK = 1f / 120f;
         private const float PICK_DISTANCE = 250f;
 
+        /// <summary>How far the default ground plane sits below the lowest level (clear of slab faces at that level).</summary>
+        private const float GROUND_BELOW_LOWEST_LEVEL = 0.1f;
+
         #endregion
 
         #region Systems
@@ -80,6 +83,8 @@ namespace BimGo.Game
         #region Runtime settings and state
 
         private readonly bool[] _categoryVisible;
+        private readonly bool[] _linkVisible;
+        private readonly bool[] _groupVisible;
         private readonly string[] _levelNamesUpper;
         private readonly bool[] _pickMask;
         private readonly bool[] _collisionMask;
@@ -101,6 +106,8 @@ namespace BimGo.Game
         private int _activeGun;
         private AimInfo _aim;
         private bool _endRequested;
+        private bool _startedAtSavedHome;
+        private float _homeSetUntil = -1f;
         private SessionEndReason _endReason = SessionEndReason.EndedByUser;
 
         // Timing
@@ -134,13 +141,20 @@ namespace BimGo.Game
             int categories = CategoryCatalog.All.Count;
             _categoryVisible = new bool[categories];
             for (int i = 0; i < categories; i++) { _categoryVisible[i] = scene.CategoryLoaded[i]; }
+            _linkVisible = new bool[scene.Links.Length + 1];
+            Array.Fill(_linkVisible, true);
+            _groupVisible = new bool[SceneBatches.GroupCount(scene)];
+            UpdateGroupVisibility();
             _pickMask = new bool[scene.Elements.Length];
             _collisionMask = new bool[scene.Elements.Length];
             _hidden = new bool[scene.Elements.Length];
+            _userHidden = new bool[scene.Elements.Length];
             _elementIndexById = new Dictionary<long, int>(scene.Elements.Length);
             for (int e = 0; e < scene.Elements.Length; e++)
             {
+                // Only host elements are looked up by id: linked models have their own id namespaces and are read-only
                 ElementRecord record = scene.Elements[e];
+                if (record.IsLinked) { continue; }
                 _elementIndexById.TryAdd(record.ElementId, e);
                 if (!string.IsNullOrEmpty(record.UniqueId)) { _elementIndexByUniqueId.TryAdd(record.UniqueId, e); }
                 if (record.HostId > 0)
@@ -163,6 +177,7 @@ namespace BimGo.Game
             GizmoSnap = settings.GizmoSnap;
             SnapMoveMm = LaunchSettings.NearestStep(LaunchSettings.SNAP_MOVE_STEPS_MM, settings.SnapMoveMm);
             SnapAngleDeg = LaunchSettings.NearestStep(LaunchSettings.SNAP_ANGLE_STEPS_DEG, settings.SnapAngleDeg);
+            InitialiseCoordinates(settings.CoordinateReadout);
         }
 
         #region Setup
@@ -175,11 +190,20 @@ namespace BimGo.Game
             UiScale = _window.DpiScale;
             _ui = new UiBatch();
             _ui.Initialise(UiScale);
-            DrawLoadingFrame("Building scene…");
-
+            // Sorting and the collision tree on a worker thread with a progress bar (Esc cancels back to the home screen)
             var stopwatch = Stopwatch.StartNew();
-            _batches = new SceneBatches(Scene);
-            _bvh = new Bvh(Scene);
+            var progress = new Utilities.OperationProgress();
+            progress.Begin("Sorting the geometry for drawing", 0.0, 0.45);
+            ProgressScreen.Run(_window, _ui, $"Preparing {DocumentName}", progress, () =>
+            {
+                _batches = new SceneBatches(Scene);
+                progress.ThrowIfCancelled();
+                progress.Begin("Building collision and picking", 0.45, 1.0);
+                _bvh = new Bvh(Scene);
+                progress.Step(1.0);
+                progress.ThrowIfCancelled();
+                return true;
+            });
             Utilities.Log_Utils.Write($"Batches {_batches.Batches.Length} / chunks {_batches.Chunks.Length}, BVH nodes {_bvh.NodeCount} in {stopwatch.ElapsedMilliseconds} ms. GL {_window.GlVersion}: {Native.Gl.GetString(Native.Gl.RENDERER)}");
 
             DrawLoadingFrame("Uploading geometry…");
@@ -189,7 +213,7 @@ namespace BimGo.Game
             _target.Ensure(_window.Width, _window.Height, _msaa);
 
             // Systems
-            Dynamics = new DynamicSet(_bvh, Scene.Elements, _categoryVisible);
+            Dynamics = new DynamicSet(_bvh, Scene.Elements, _groupVisible);
             var controller = new CharacterController(_bvh)
             {
                 StepHeight = Scene.Settings.MaxStepHeightMm / 1000f,
@@ -200,7 +224,7 @@ namespace BimGo.Game
             RefreshMasks();
 
             // Ground: just below the lowest level (or the model)
-            _groundDefault = Scene.Levels.Length > 0 ? Scene.Levels[0].Elevation - 0.05f : Scene.Bounds.Min.Z - 0.05f;
+            _groundDefault = (Scene.Levels.Length > 0 ? Scene.Levels[0].Elevation : Scene.Bounds.Min.Z) - GROUND_BELOW_LOWEST_LEVEL;
             _groundZ = _groundDefault;
             controller.GroundZ = _groundZ;
 
@@ -218,6 +242,9 @@ namespace BimGo.Game
                 if (Scene.Settings.LoadComments) { Comments.Load(); }
             }
             Comments.Changed += UpdateTitle;
+            InitialiseBookmarks();
+            InitialiseSun();
+            InitialiseVisibility();
 
             _portalGun = new PortalGun(this);
             _commentGun = new CommentGun(this);
@@ -237,12 +264,15 @@ namespace BimGo.Game
             UpdateTitle();
 
             if (Comments.LastError != null) { Toast(Comments.LastError); }
+            else if (Bookmarks.LastError != null) { Toast(Bookmarks.LastError); }
             else if (!string.IsNullOrEmpty(Scene.PhaseNote)) { Toast(Scene.PhaseNote, 6f); }
             else if (replayFailures > 0) { Toast($"{replayFailures} saved edit{(replayFailures == 1 ? " refers" : "s refer")} to elements not in this file and {(replayFailures == 1 ? "was" : "were")} skipped.", 5f); }
             else
             {
                 string edits = _journal.Count > 0 ? $" · {_journal.Count} edit{(_journal.Count == 1 ? string.Empty : "s")}" : string.Empty;
-                Toast($"{Scene.Elements.Length:N0} elements · {Scene.TriangleCount:N0} triangles{edits}. Click to look around.");
+                string links = Scene.Links.Length > 0 ? $" · {Scene.Links.Length} linked model{(Scene.Links.Length == 1 ? string.Empty : "s")}" : string.Empty;
+                string start = _startedAtSavedHome ? " Starting at your saved home (Shift+H sets it)." : string.Empty;
+                Toast($"{Scene.Elements.Length:N0} elements · {Scene.TriangleCount:N0} triangles{links}{edits}.{start} Click to look around.", _startedAtSavedHome ? 4f : 2.6f);
             }
         }
 
@@ -265,14 +295,23 @@ namespace BimGo.Game
         }
 
         /// <summary>
-        /// Places the player: where they stood before a reload, else the active 3D view eye, else a random valid
-        /// point on the ground.
+        /// Places the player: where they stood before a reload, else the saved home (Shift+H / SET HOME HERE, kept with
+        /// the model), else the active 3D view eye, else a random valid point on the ground.
         /// </summary>
         private void Spawn()
         {
             if (_options.Pose is SessionPose pose)
             {
                 ApplyPose(pose);
+                return;
+            }
+
+            if (Bookmarks?.Home is Format.BookmarkRecord home)
+            {
+                if (home.Flying != _player.Flying) { _player.ToggleFly(); }
+                _player.TeleportTo(home.Local, home.Yaw, Math.Clamp(home.Pitch, -1.5f, 1.5f));
+                _player.SetHome();
+                _startedAtSavedHome = true;
                 return;
             }
 
@@ -332,17 +371,32 @@ namespace BimGo.Game
         }
 
         /// <summary>
-        /// Rebuilds the per-element pick and collision masks from category visibility.
+        /// Rebuilds the per-element pick and collision masks from category and link visibility.
         /// </summary>
         private void RefreshMasks()
         {
+            _sceneRevision++;
+            UpdateGroupVisibility();
             ElementRecord[] elements = Scene.Elements;
             for (int e = 0; e < elements.Length; e++)
             {
-                bool visible = _categoryVisible[elements[e].CategoryIndex] && !_hidden[e];
+                bool visible = _groupVisible[SceneBatches.GroupOf(elements[e])] && !_hidden[e] && !_userHidden[e];
                 _pickMask[e] = visible;
                 // Doors render as modelled but are always no-clip, so openings stay walkable
                 _collisionMask[e] = visible && elements[e].CategoryIndex != _doorCategory;
+            }
+        }
+
+        /// <summary>
+        /// Combines the category and link toggles into the per-group array the renderer and dynamics read
+        /// (the array is shared, so it is filled in place).
+        /// </summary>
+        private void UpdateGroupVisibility()
+        {
+            int categories = _categoryVisible.Length;
+            for (int g = 0; g < _groupVisible.Length; g++)
+            {
+                _groupVisible[g] = _categoryVisible[g % categories] && _linkVisible[g / categories];
             }
         }
 
@@ -357,7 +411,15 @@ namespace BimGo.Game
         /// <returns>Why the session ended.</returns>
         public SessionEndReason Run()
         {
-            Initialise();
+            try
+            {
+                Initialise();
+            }
+            catch (OperationCanceledException)
+            {
+                Utilities.Log_Utils.Write("Walkthrough cancelled while the scene was being prepared.");
+                return SessionEndReason.EndedByUser;
+            }
 
             var clock = Stopwatch.StartNew();
             double previous = clock.Elapsed.TotalSeconds;
@@ -445,6 +507,14 @@ namespace BimGo.Game
                 return;
             }
 
+            // The sun panel has the cursor: the player stands still and its keys take over
+            if (_sunPanelOpen && !_paused)
+            {
+                if (input.IsPressed(Vk.VK_F11)) { _window.ToggleFullscreen(); }
+                UpdateSunPanelKeys(input);
+                return;
+            }
+
             // A gun that has taken over the movement keys (Gizmo / Clone): Esc cancels it instead of pausing,
             // and the player's own keys are ignored until it lets go.
             Gun current = _guns[_activeGun];
@@ -454,14 +524,15 @@ namespace BimGo.Game
             if (input.IsPressed(Vk.VK_ESCAPE))
             {
                 if (captured) { current.OnCancel(); }
-                else if (_paused && (ClosePush() || CloseComments())) { /* back to the pause menu */ }
+                else if (_paused && (ClosePush() || CloseComments() || CloseBookmarks())) { /* back to the pause menu */ }
                 else { SetPaused(!_paused); }
             }
             if (input.IsPressed(Vk.VK_F1)) { _showHelp = !_showHelp; }
             if (input.IsPressed(Vk.VK_F5) && !captured) { RefreshFromRevit(); }
             if (input.IsPressed(Vk.VK_F11)) { _window.ToggleFullscreen(); }
+            if (input.IsPressed(Vk.VK_F12)) { RequestScreenshot(); }
 
-            // Document shortcuts (Ctrl+S save, Ctrl+Shift+S save as, Ctrl+Z undo in files)
+            // Document shortcuts (Ctrl+S save, Ctrl+Shift+S save as, Ctrl+Z undo, Ctrl+Y / Ctrl+Shift+Z redo in files)
             if (input.IsDown(Vk.VK_CONTROL) && !captured)
             {
                 if (input.IsPressed('S'))
@@ -471,8 +542,27 @@ namespace BimGo.Game
                 }
                 if (input.IsPressed('Z'))
                 {
-                    Undo();
+                    if (input.IsDown(Vk.VK_SHIFT)) { Redo(); }
+                    else { Undo(); }
                     return;
+                }
+                if (input.IsPressed('Y'))
+                {
+                    Redo();
+                    return;
+                }
+
+                // Ctrl+1..9: jump to a bookmark (instead of selecting a gun)
+                if (!_paused)
+                {
+                    for (int i = 0; i < 9; i++)
+                    {
+                        if (input.IsPressed('1' + i))
+                        {
+                            GoToBookmarkAt(i);
+                            return;
+                        }
+                    }
                 }
             }
             if (_paused) { return; }
@@ -495,11 +585,7 @@ namespace BimGo.Game
             }
             if (input.IsPressed('H'))
             {
-                if (input.IsDown(Vk.VK_SHIFT))
-                {
-                    _player.SetHome();
-                    Toast("Home set here");
-                }
+                if (input.IsDown(Vk.VK_SHIFT)) { SetHomeHere(); }
                 else
                 {
                     _player.GoHome();
@@ -508,6 +594,20 @@ namespace BimGo.Game
             if (input.IsPressed(Vk.VK_PRIOR)) { TeleportLevel(+1); }
             if (input.IsPressed(Vk.VK_NEXT)) { TeleportLevel(-1); }
             if (input.IsPressed('X')) { _guns[_activeGun].ClearMarkers(); }
+            if (input.IsPressed('B'))
+            {
+                AddBookmarkHere();
+                return;
+            }
+            if (input.IsPressed('L')) { CycleCoordinateReadout(); }
+            if (input.IsPressed('O'))
+            {
+                if (input.IsDown(Vk.VK_SHIFT)) { OpenSunPanel(); }
+                else { ToggleShadows(); }
+                return;
+            }
+            if (ShadowsOn && input.IsPressedOrRepeated(Vk.VK_OEM_4)) { StepSunTime(input.IsDown(Vk.VK_SHIFT) ? -1 : -TIME_STEP); }
+            if (ShadowsOn && input.IsPressedOrRepeated(Vk.VK_OEM_6)) { StepSunTime(input.IsDown(Vk.VK_SHIFT) ? 1 : TIME_STEP); }
             if (input.IsPressed(Vk.VK_SPACE) && !_player.Flying) { _player.QueueJump(); }
 
             for (int i = 0; i < _guns.Length; i++)
@@ -531,6 +631,13 @@ namespace BimGo.Game
         {
             if (!_window.IsCaptured && input.LeftPressed && _window.IsActive)
             {
+                // A click on the sun icon (cursor free) opens the sun panel instead of capturing the mouse
+                if (HoverSunIcon(input))
+                {
+                    input.ConsumeClicks();
+                    OpenSunPanel();
+                    return;
+                }
                 _window.SetCaptured(true);
                 input.ConsumeClicks();
             }
@@ -546,7 +653,7 @@ namespace BimGo.Game
         private void FixedUpdate(float dt)
         {
             _player.Controller.GroundZ = _groundZ;
-            bool frozen = IsEditingComment || !_window.IsActive || _guns[_activeGun].CapturesInput;
+            bool frozen = IsEditingComment || _sunPanelOpen || !_window.IsActive || _guns[_activeGun].CapturesInput;
             _player.FixedUpdate(dt, _window.Input, inputEnabled: !frozen);
             _portalGun.CheckTeleport(_player, dt);
         }
@@ -627,8 +734,25 @@ namespace BimGo.Game
         private void SetPaused(bool paused)
         {
             _paused = paused;
-            _window.SetCaptured(!paused && _window.IsActive);
+            _window.SetCaptured(!paused && _window.IsActive && !_sunPanelOpen);
             _window.Input.ReleaseAll();
+        }
+
+        /// <summary>
+        /// Shift+H / SET HOME HERE: home becomes this viewpoint for H and for the next walkthrough of this model (saved
+        /// with the bookmarks: in the .bimgo, or beside the Revit model). Acknowledged with a sound, a flash and a
+        /// note (the pause menu button shows HOME SAVED for a moment).
+        /// </summary>
+        private void SetHomeHere()
+        {
+            _player.SetHome();
+            Bookmarks?.SetHome(_player.Feet, _player.Yaw, _player.Pitch, _player.Flying, CurrentLevelName);
+            _homeSetUntil = _clock + 2f;
+            Sound.Play(SoundId.Commit);
+            Flash(UiTheme.BOOKMARK, 0.2f);
+            if (Bookmarks?.LastError != null) { Toast(Bookmarks.LastError, 4f); }
+            else if (IsFileMode) { Toast("Home set here: H returns here, and this file opens here once saved (Ctrl+S)", 3.5f); }
+            else { Toast("Home set here: H returns here, and this model opens here next time", 3.5f); }
         }
 
         /// <summary>
@@ -743,6 +867,8 @@ namespace BimGo.Game
             settings.GizmoSnap = GizmoSnap;
             settings.SnapMoveMm = SnapMoveMm;
             settings.SnapAngleDeg = SnapAngleDeg;
+            settings.CoordinateReadout = _coordinateReadout;
+            settings.ShadowQuality = _shadowQuality;
             settings.Save();
         }
 
@@ -752,8 +878,11 @@ namespace BimGo.Game
         public void Dispose()
         {
             try { SaveSettings(); } catch { /* logged inside */ }
+            try { FlushSunSidecar(); } catch { /* logged inside */ }
+            try { FlushVisibilitySidecar(); } catch { /* logged inside */ }
             _window.SetCaptured(false);
             _push?.Dispose();
+            try { ReleaseThumbnails(); } catch (Exception ex) { Utilities.Log_Utils.Write($"Thumbnail cleanup failed: {ex.Message}"); }
             Sound.Dispose();
             _renderer?.Dispose();
             _overlay.Dispose();

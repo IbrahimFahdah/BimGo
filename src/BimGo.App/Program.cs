@@ -140,7 +140,7 @@ namespace BimGo
         private static string GetVersion()
         {
             System.Version version = typeof(Program).Assembly.GetName().Version;
-            return version == null ? "3" : $"{version.Major}.{version.Minor:D2}.{version.Build:D2}.{version.Revision:D2}";
+            return version == null ? "1.0" : $"{version.Major}.{version.Minor}.{version.Build}";
         }
     }
 }

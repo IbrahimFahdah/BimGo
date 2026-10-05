@@ -64,7 +64,7 @@ namespace BimGo.Game
                 DynamicInstance instance = Dynamics.Find(dynamicId);
                 return instance != null && Dynamics.IsActive(instance);
             }
-            return element >= 0 && !_hidden[element];
+            return element >= 0 && !_hidden[element] && !_userHidden[element];
         }
 
         /// <summary>
@@ -74,9 +74,10 @@ namespace BimGo.Game
         {
             if (_hidden[element] == hidden) { return; }
             _hidden[element] = hidden;
-            _renderer.SetElementHidden(element, hidden);
+            _sceneRevision++;
+            _renderer.SetElementHidden(element, hidden || _userHidden[element]);
 
-            bool visible = _categoryVisible[Scene.Elements[element].CategoryIndex] && !hidden;
+            bool visible = _groupVisible[Rendering.SceneBatches.GroupOf(Scene.Elements[element])] && !hidden && !_userHidden[element];
             _pickMask[element] = visible;
             _collisionMask[element] = visible && Scene.Elements[element].CategoryIndex != _doorCategory;
         }
@@ -179,7 +180,7 @@ namespace BimGo.Game
         {
             GizmoSnap = !GizmoSnap;
             Sound.Play(Audio.SoundId.UiClick);
-            Toast(GizmoSnap ? $"Snap ON: {DescribeSnap()}" : "Snap OFF: smooth moves (hold Ctrl to snap)");
+            Toast(GizmoSnap ? $"Snap ON: {DescribeSnap()}" : "Snap OFF: smooth moves (hold Ctrl to snap for a moment)");
         }
 
         /// <summary>
@@ -287,17 +288,21 @@ namespace BimGo.Game
         }
 
         /// <summary>
-        /// The smallest room volume containing the point, or -1.
+        /// The smallest room volume containing the point, or -1. Host rooms win: a linked model's rooms only name
+        /// places the host has no room for.
         /// </summary>
         private int FindRoom(Vector3 point)
         {
             int best = -1;
             float bestHeight = float.MaxValue;
+            bool bestIsHost = false;
             RoomInfo[] rooms = Scene.Rooms;
 
             for (int i = 0; i < rooms.Length; i++)
             {
                 RoomInfo room = rooms[i];
+                bool isHost = room.Link == 0;
+                if (bestIsHost && !isHost) { continue; }
                 if (point.Z < room.BottomZ || point.Z > room.TopZ) { continue; }
                 if (point.X < room.Min.X || point.X > room.Max.X || point.Y < room.Min.Y || point.Y > room.Max.Y) { continue; }
 
@@ -310,10 +315,11 @@ namespace BimGo.Game
                 if (!inside) { continue; }
 
                 float height = room.TopZ - room.BottomZ;
-                if (height < bestHeight)
+                if (height < bestHeight || (isHost && !bestIsHost))
                 {
                     best = i;
                     bestHeight = height;
+                    bestIsHost = isHost;
                 }
             }
             return best;

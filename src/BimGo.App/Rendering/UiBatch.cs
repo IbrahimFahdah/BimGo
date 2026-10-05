@@ -329,7 +329,31 @@ namespace BimGo.Rendering
         /// <summary>
         /// Draws everything queued and clears the queue.
         /// </summary>
-        public void Flush(int screenWidth, int screenHeight)
+        public void Flush(int screenWidth, int screenHeight) => Flush(screenWidth, screenHeight, 0);
+
+        /// <summary>
+        /// Draws a texture (e.g. a bookmark thumbnail) as a rectangle, in order with everything batched so far: what
+        /// was queued before is drawn first (under it), what is queued after is drawn over it.
+        /// </summary>
+        /// <param name="texture">The GL texture (RGBA, top row first).</param>
+        /// <param name="tint">Multiplied colour (white = as is).</param>
+        public void Image(uint texture, float x, float y, float w, float h, int screenWidth, int screenHeight, uint tint = 0xFFFFFFFF)
+        {
+            if (texture == 0) { return; }
+            Flush(screenWidth, screenHeight, 0);
+            Push(x, y, 0f, 0f, tint);
+            Push(x + w, y, 1f, 0f, tint);
+            Push(x + w, y + h, 1f, 1f, tint);
+            Push(x, y, 0f, 0f, tint);
+            Push(x + w, y + h, 1f, 1f, tint);
+            Push(x, y + h, 0f, 1f, tint);
+            Flush(screenWidth, screenHeight, texture);
+        }
+
+        /// <summary>
+        /// Draws what has been queued with the atlas (texture 0) or another texture.
+        /// </summary>
+        private void Flush(int screenWidth, int screenHeight, uint texture)
         {
             if (_count == 0) { return; }
 
@@ -349,7 +373,7 @@ namespace BimGo.Rendering
             Gl.Uniform2(_screen, screenWidth, screenHeight);
             Gl.Uniform1(_atlasUniform, 0);
             Gl.ActiveTexture(Gl.TEXTURE0);
-            Gl.BindTexture(Gl.TEXTURE_2D, Atlas.Texture);
+            Gl.BindTexture(Gl.TEXTURE_2D, texture != 0 ? texture : Atlas.Texture);
 
             Gl.Disable(Gl.DEPTH_TEST);
             Gl.Enable(Gl.BLEND);

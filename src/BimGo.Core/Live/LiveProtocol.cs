@@ -352,6 +352,21 @@ namespace BimGo.Live
     public sealed class SelectPayload
     {
         public long[] ElementIds { get; set; } = Array.Empty<long>();
+
+        /// <summary>
+        /// Optional (v7, additive): elements inside linked models to select by link reference. <see cref="ElementIds"/>
+        /// then holds their link instances, which is what an older add-in selects instead.
+        /// </summary>
+        public LinkedElementRef[] Linked { get; set; }
+    }
+
+    /// <summary>
+    /// An element inside a Revit link: the host's RevitLinkInstance id and the element's id in the linked model.
+    /// </summary>
+    public sealed class LinkedElementRef
+    {
+        public long LinkInstanceId { get; set; }
+        public long ElementId { get; set; }
     }
 
     public sealed class ModelChangedPayload

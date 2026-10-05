@@ -144,7 +144,7 @@ namespace BimGo.Game.Guns
                 Session.Toast($"{Session.EditTargetName} refused the move ({result.Message}). Restored.", 4f);
             });
 
-            if (!sent) { Session.Toast($"{record.Name} moved in the walkthrough only (no Revit link)"); }
+            if (!sent) { Session.Toast($"{record.Name} moved in the walkthrough only (not connected to Revit)"); }
         }
 
         #endregion
@@ -233,7 +233,7 @@ namespace BimGo.Game.Guns
                 }
                 else
                 {
-                    ui.Text(f.Body, x, y, "Shift fine · G snap · hold Ctrl", UiTheme.TEXT_MUTED);
+                    ui.Text(f.Body, x, y, "Shift fine · G snap on/off · Ctrl flips snap", UiTheme.TEXT_MUTED);
                 }
                 y += s(18);
                 ui.Text(f.Body, x, y, "Z/X move step · C/V angle step", UiTheme.TEXT_MUTED);
@@ -250,9 +250,9 @@ namespace BimGo.Game.Guns
 
             if (hover < 0)
             {
-                ui.Text(f.Body, x, y, "Aim at furniture / fittings.", UiTheme.TEXT_MUTED);
+                ui.Text(f.Body, x, y, "Aim at furniture or fittings.", UiTheme.TEXT_MUTED);
                 y += s(19);
-                ui.Text(f.Body, x, y, "Loadable families only.", UiTheme.TEXT_MUTED);
+                ui.Text(f.Body, x, y, "Point-based loadable families only.", UiTheme.TEXT_MUTED);
                 return;
             }
 
@@ -261,14 +261,14 @@ namespace BimGo.Game.Guns
             y += s(22);
             ui.TextWrapped(f.Body, x, y, width, hovered.FamilyType, UiTheme.TEXT_SOFT, maxLines: 1);
             y += s(20);
-            if (hovered.Movable) { ui.Text(f.Body, x, y, "Eligible: LMB to lock on", UiTheme.GOOD); }
+            if (hovered.Movable) { ui.Text(f.Body, x, y, "Movable: LMB locks on", UiTheme.GOOD); }
             else
             {
-                TextBuffer reason = session.Text.Clear().Append("Not eligible: ").Append(hovered.MoveBlockReason);
+                TextBuffer reason = session.Text.Clear().Append("Can't move: ").Append(hovered.MoveBlockReason);
                 ui.TextWrapped(f.Body, x, y, width, reason.Span, UiTheme.DANGER, maxLines: 1);
             }
             y += s(20);
-            if (session.EditsLocalOnly) { ui.Text(f.Body, x, y, "No Revit link: in-game only", UiTheme.DANGER); }
+            if (session.EditsLocalOnly) { ui.Text(f.Body, x, y, "Not connected to Revit: walkthrough only", UiTheme.DANGER); }
         }
     }
 }

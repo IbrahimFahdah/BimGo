@@ -155,7 +155,18 @@ namespace BimGo.Game
                 return;
             }
 
+            // A linked element can't be selected on its own: show the link instance it belongs to
             long revitId = Scene.Elements[element].ElementId;
+            LinkInfo link = Scene.LinkOf(Scene.Elements[element]);
+            if (link != null)
+            {
+                if (link.InstanceId <= 0)
+                {
+                    Toast("That element is in a linked model");
+                    return;
+                }
+                revitId = link.InstanceId;
+            }
             if (dynamicId > 0)
             {
                 DynamicInstance instance = Dynamics.Find(dynamicId);
@@ -169,10 +180,13 @@ namespace BimGo.Game
 
             // Let Revit take the foreground when it shows the element
             Win32.AllowSetForegroundWindow(_live.RevitPid);
-            if (_live.ShowElements(new[] { revitId }))
+            bool sent = link != null
+                ? _live.ShowLinkedElement(link.InstanceId, Scene.Elements[element].ElementId)
+                : _live.ShowElements(new[] { revitId });
+            if (sent)
             {
                 Sound.Play(Audio.SoundId.UiClick);
-                Toast("Showing in Revit…");
+                Toast(link != null ? $"Showing it in the link “{link.Label}” in Revit…" : "Showing in Revit…");
             }
         }
 

@@ -15,11 +15,11 @@ namespace BimGo.Native
         public const uint DEPTH_BUFFER_BIT = 0x00000100, COLOR_BUFFER_BIT = 0x00004000;
         public const uint TRIANGLES = 0x0004;
         public const uint NEVER = 0x0200, LESS = 0x0201, LEQUAL = 0x0203, ALWAYS = 0x0207;
-        public const uint SRC_ALPHA = 0x0302, ONE_MINUS_SRC_ALPHA = 0x0303, ONE = 1, ZERO = 0;
+        public const uint SRC_COLOR = 0x0300, SRC_ALPHA = 0x0302, ONE_MINUS_SRC_ALPHA = 0x0303, ONE = 1, ZERO = 0;
         public const uint FRONT = 0x0404, BACK = 0x0405, CCW = 0x0901;
         public const uint CULL_FACE = 0x0B44, DEPTH_TEST = 0x0B71, BLEND = 0x0BE2, SCISSOR_TEST = 0x0C11;
         public const uint POLYGON_OFFSET_FILL = 0x8037, MULTISAMPLE = 0x809D, FRAMEBUFFER_SRGB = 0x8DB9;
-        public const uint UNPACK_ALIGNMENT = 0x0CF5, MAX_SAMPLES = 0x8D57;
+        public const uint UNPACK_ALIGNMENT = 0x0CF5, PACK_ALIGNMENT = 0x0D05, MAX_SAMPLES = 0x8D57;
         public const uint TEXTURE_2D = 0x0DE1;
         public const uint UNSIGNED_BYTE = 0x1401, UNSIGNED_INT = 0x1405, FLOAT = 0x1406;
         public const uint RGBA = 0x1908, RGBA8 = 0x8058, BGRA = 0x80E1;
@@ -36,6 +36,14 @@ namespace BimGo.Native
         public const uint COLOR_ATTACHMENT0 = 0x8CE0, DEPTH_ATTACHMENT = 0x8D00, DEPTH_COMPONENT24 = 0x81A6;
         public const uint FRAMEBUFFER_COMPLETE = 0x8CD5;
         public const uint NO_ERROR = 0;
+
+        // Shadow maps (texture arrays, depth comparison)
+        public const uint TEXTURE_2D_ARRAY = 0x8C1A;
+        public const uint DEPTH_COMPONENT = 0x1902;
+        public const uint TEXTURE_COMPARE_MODE = 0x884C, TEXTURE_COMPARE_FUNC = 0x884D, COMPARE_REF_TO_TEXTURE = 0x884E;
+        public const uint POLYGON_OFFSET_LINE = 0x2A02;
+        public const uint OUT_OF_MEMORY = 0x0505;
+        public const uint NONE = 0;
 
         #endregion
 
@@ -120,6 +128,12 @@ namespace BimGo.Native
         private static delegate* unmanaged<uint, uint, void> _bindRenderbuffer;
         private static delegate* unmanaged<uint, int, uint, int, int, void> _renderbufferStorageMultisample;
         private static delegate* unmanaged<int, int, int, int, int, int, int, int, uint, uint, void> _blitFramebuffer;
+        private static delegate* unmanaged<uint, uint, uint, int, int, void> _framebufferTextureLayer;
+        private static delegate* unmanaged<uint, int, int, int, int, int, int, uint, uint, void*, void> _texImage3D;
+        private static delegate* unmanaged<byte, byte, byte, byte, void> _colorMask;
+        private static delegate* unmanaged<uint, void> _drawBuffer;
+        private static delegate* unmanaged<uint, void> _readBuffer;
+        private static delegate* unmanaged<int, int, int, int, uint, uint, void*, void> _readPixels;
 
         #endregion
 
@@ -232,6 +246,12 @@ namespace BimGo.Native
             _bindRenderbuffer = (delegate* unmanaged<uint, uint, void>)GetProc("glBindRenderbuffer");
             _renderbufferStorageMultisample = (delegate* unmanaged<uint, int, uint, int, int, void>)GetProc("glRenderbufferStorageMultisample");
             _blitFramebuffer = (delegate* unmanaged<int, int, int, int, int, int, int, int, uint, uint, void>)GetProc("glBlitFramebuffer");
+            _framebufferTextureLayer = (delegate* unmanaged<uint, uint, uint, int, int, void>)GetProc("glFramebufferTextureLayer");
+            _texImage3D = (delegate* unmanaged<uint, int, int, int, int, int, int, uint, uint, void*, void>)GetProc("glTexImage3D");
+            _colorMask = (delegate* unmanaged<byte, byte, byte, byte, void>)GetProc("glColorMask");
+            _drawBuffer = (delegate* unmanaged<uint, void>)GetProc("glDrawBuffer");
+            _readBuffer = (delegate* unmanaged<uint, void>)GetProc("glReadBuffer");
+            _readPixels = (delegate* unmanaged<int, int, int, int, uint, uint, void*, void>)GetProc("glReadPixels");
         }
 
         #endregion
@@ -253,6 +273,9 @@ namespace BimGo.Native
         public static void PolygonOffset(float factor, float units) => _polygonOffset(factor, units);
         public static uint GetError() => _getError();
         public static void PixelStore(uint name, int value) => _pixelStorei(name, value);
+
+        public static void ColorMask(bool r, bool g, bool b, bool a)
+            => _colorMask(r ? (byte)1 : (byte)0, g ? (byte)1 : (byte)0, b ? (byte)1 : (byte)0, a ? (byte)1 : (byte)0);
 
         public static int GetInteger(uint name)
         {
@@ -289,6 +312,9 @@ namespace BimGo.Native
 
         public static void TexImage2D(uint target, int level, uint internalFormat, int width, int height, uint format, uint type, void* pixels)
             => _texImage2D(target, level, (int)internalFormat, width, height, 0, format, type, pixels);
+
+        public static void TexImage3D(uint target, int level, uint internalFormat, int width, int height, int depth, uint format, uint type, void* pixels)
+            => _texImage3D(target, level, (int)internalFormat, width, height, depth, 0, format, type, pixels);
 
         #endregion
 
@@ -442,6 +468,13 @@ namespace BimGo.Native
         public static void BindFramebuffer(uint target, uint id) => _bindFramebuffer(target, id);
         public static void FramebufferRenderbuffer(uint target, uint attachment, uint rbTarget, uint renderbuffer) => _framebufferRenderbuffer(target, attachment, rbTarget, renderbuffer);
         public static uint CheckFramebufferStatus(uint target) => _checkFramebufferStatus(target);
+
+        public static void DrawBuffer(uint buffer) => _drawBuffer(buffer);
+        public static void ReadBuffer(uint buffer) => _readBuffer(buffer);
+        public static void ReadPixels(int x, int y, int width, int height, uint format, uint type, void* pixels) => _readPixels(x, y, width, height, format, type, pixels);
+
+        public static void FramebufferTextureLayer(uint target, uint attachment, uint texture, int level, int layer)
+            => _framebufferTextureLayer(target, attachment, texture, level, layer);
 
         public static uint GenRenderbuffer()
         {

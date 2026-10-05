@@ -160,6 +160,16 @@ namespace BimGo.Scene
         /// report every element as existing (Revit still checks on demolition).
         /// </summary>
         public PhaseRole Phase { get; init; }
+
+        /// <summary>
+        /// Which model the element comes from: 0 = the host model, n = <c>SceneData.Links[n - 1]</c>. Linked elements
+        /// have their own ElementId / UniqueId namespace (ids can repeat across models), are never movable or
+        /// demolishable, and never enter the journal.
+        /// </summary>
+        public int Link { get; init; }
+
+        /// <summary>True for an element from a linked model (read-only in the walkthrough).</summary>
+        public bool IsLinked => Link > 0;
     }
 
     /// <summary>
@@ -208,6 +218,9 @@ namespace BimGo.Scene
 
         /// <summary>Top of the room volume (scene Z).</summary>
         public float TopZ { get; init; }
+
+        /// <summary>0 for a host room, n for a room from <c>SceneData.Links[n - 1]</c> (host rooms win in the readout).</summary>
+        public int Link { get; init; }
     }
 
     /// <summary>
@@ -298,6 +311,16 @@ namespace BimGo.Scene
         /// <summary>True north, project base point and survey point.</summary>
         public SiteInfo Site { get; init; } = new();
 
+        /// <summary>
+        /// The link instances whose elements were extracted (picked in the Options dialog), in link order; empty when
+        /// only the host model was extracted. Link n is <c>Links[n - 1]</c> (see <see cref="ElementRecord.Link"/>).
+        /// </summary>
+        public LinkInfo[] Links { get; init; } = Array.Empty<LinkInfo>();
+
+        /// <summary>The link an element comes from, or null for a host element (or an unknown link number).</summary>
+        public LinkInfo LinkOf(ElementRecord record) =>
+            record != null && record.Link > 0 && record.Link <= Links.Length ? Links[record.Link - 1] : null;
+
         /// <summary>Optional extra parameter values per element (names picked in the Options dialog). Never null.</summary>
         public ParameterTable Parameters { get; init; } = ParameterTable.Empty;
 
@@ -309,6 +332,12 @@ namespace BimGo.Scene
 
         /// <summary>The launch settings.</summary>
         public LaunchSettings Settings { get; init; }
+
+        /// <summary>
+        /// The view the elements came from when "only elements visible in the active view" was used, else null
+        /// (extracted by category).
+        /// </summary>
+        public string SourceView { get; init; }
 
         /// <summary>Number of elements replaced by proxies.</summary>
         public int ProxyCount { get; init; }

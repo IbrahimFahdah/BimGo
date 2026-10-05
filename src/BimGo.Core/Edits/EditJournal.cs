@@ -81,18 +81,24 @@ namespace BimGo.Edits
     }
 
     /// <summary>
-    /// The ordered list of committed edits of one model, with a revision counter for dirty tracking.
-    /// Single-threaded (game thread).
+    /// The ordered list of committed edits of one model, with a revision counter for dirty tracking and a redo history
+    /// of undone entries (in memory only: never saved). Single-threaded (game thread).
     /// </summary>
     public sealed class EditJournal
     {
         private readonly List<JournalEntry> _entries = new();
+
+        // Undone entries, most recent last (redo pops from the end). Cleared by any new edit.
+        private readonly List<JournalEntry> _redo = new();
 
         /// <summary>The entries in order (don't modify; use <see cref="Add"/> / <see cref="RemoveLast"/>).</summary>
         public IReadOnlyList<JournalEntry> Entries => _entries;
 
         /// <summary>Number of entries.</summary>
         public int Count => _entries.Count;
+
+        /// <summary>Number of undone entries that <see cref="Redo"/> can restore.</summary>
+        public int RedoCount => _redo.Count;
 
         /// <summary>Increments on every change (compare with a saved value to detect unsaved edits).</summary>
         public int Revision { get; private set; }
@@ -111,26 +117,50 @@ namespace BimGo.Edits
         }
 
         /// <summary>
-        /// Appends an entry (its <see cref="JournalEntry.Seq"/> is assigned here).
+        /// Appends a new edit (its <see cref="JournalEntry.Seq"/> is assigned here). A new edit ends the redo history,
+        /// as in any editor: what was undone can no longer be redone on top of it.
         /// </summary>
         public void Add(JournalEntry entry)
         {
             entry.Seq = _entries.Count + 1;
             _entries.Add(entry);
+            _redo.Clear();
             Revision++;
         }
 
         /// <summary>
-        /// Removes and returns the last entry (undo), or null if empty.
+        /// Removes and returns the last entry (undo), or null if empty. The entry is kept for <see cref="Redo"/>.
         /// </summary>
         public JournalEntry RemoveLast()
         {
             if (_entries.Count == 0) { return null; }
             JournalEntry last = _entries[^1];
             _entries.RemoveAt(_entries.Count - 1);
+            _redo.Add(last);
             Revision++;
             return last;
         }
+
+        /// <summary>
+        /// Puts the most recently undone entry back at the end of the journal (redo), or returns null if there is
+        /// nothing to redo. The entry keeps its content (target, transform, author, time); only its sequence number is
+        /// reassigned.
+        /// </summary>
+        public JournalEntry Redo()
+        {
+            if (_redo.Count == 0) { return null; }
+            JournalEntry entry = _redo[^1];
+            _redo.RemoveAt(_redo.Count - 1);
+            entry.Seq = _entries.Count + 1;
+            _entries.Add(entry);
+            Revision++;
+            return entry;
+        }
+
+        /// <summary>
+        /// The entry <see cref="Redo"/> would restore, or null.
+        /// </summary>
+        public JournalEntry PeekRedo() => _redo.Count == 0 ? null : _redo[^1];
 
         /// <summary>
         /// The largest clone key used by any entry (new clones must use larger keys).
@@ -139,6 +169,12 @@ namespace BimGo.Edits
         {
             int max = 0;
             foreach (JournalEntry entry in _entries)
+            {
+                max = Math.Max(max, Math.Max(entry.NewCloneKey, entry.TargetCloneKey));
+            }
+
+            // Undone clones keep their keys reserved, so a redo never collides with a clone made in between
+            foreach (JournalEntry entry in _redo)
             {
                 max = Math.Max(max, Math.Max(entry.NewCloneKey, entry.TargetCloneKey));
             }

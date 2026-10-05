@@ -32,7 +32,10 @@ namespace BimGo.Game.Guns
         /// <summary>"Existing (phase)" for the panel, built once.</summary>
         private string _existingLabel;
 
-        public override float PanelHeight => 169f + 19f * Math.Min(Session.Scene.Parameters.CountFor(Target), MAX_PARAMETER_ROWS);
+        public override float PanelHeight => 169f + (IsLinkedTarget ? 19f : 0f) + 19f * Math.Min(Session.Scene.Parameters.CountFor(Target), MAX_PARAMETER_ROWS);
+
+        /// <summary>True when the panel shows an element from a linked model (one extra "Model" row).</summary>
+        private bool IsLinkedTarget => Target >= 0 && Session.Scene.Elements[Target].IsLinked;
 
         /// <summary>The element shown in the panel (locked, else hovered), or -1.</summary>
         private int Target => _locked >= 0 ? _locked : _hover;
@@ -55,6 +58,19 @@ namespace BimGo.Game.Guns
             if (input.IsPressed('R') && Target >= 0)
             {
                 Session.ShowInRevit(Target, _locked >= 0 ? _lockedDynamic : _hoverDynamic);
+            }
+
+            // I: hide the target in the walkthrough only; Shift+I: isolate its category (again: restore)
+            if (input.IsPressed('I'))
+            {
+                if (input.IsDown(Native.Win32.VK_SHIFT)) { Session.ToggleIsolateCategory(Target); }
+                else if (Target >= 0)
+                {
+                    int target = Target;
+                    int dynamicId = _locked >= 0 ? _lockedDynamic : _hoverDynamic;
+                    if (_locked >= 0 && dynamicId == 0) { _locked = -1; }
+                    Session.HideElement(target, dynamicId);
+                }
             }
         }
 
@@ -121,6 +137,7 @@ namespace BimGo.Game.Guns
             y += S(24);
 
             float labelWidth = S(84);
+            if (Session.Scene.LinkOf(record) is LinkInfo link) { Row(ui, f, x, ref y, labelWidth, "Model", "Link · " + link.Label); }
             Row(ui, f, x, ref y, labelWidth, "Category", record.CategoryName);
             Row(ui, f, x, ref y, labelWidth, "Family", record.FamilyType);
             if (instance == null) { Session.Text.Clear().Append(record.ElementId); }
@@ -134,7 +151,8 @@ namespace BimGo.Game.Guns
             Row(ui, f, x, ref y, labelWidth, "Level", record.LevelName);
             string group = CategoryCatalog.GROUP_NAMES[(int)CategoryCatalog.All[record.CategoryIndex].Group];
             Row(ui, f, x, ref y, labelWidth, "Group", record.IsProxy ? group + " (proxy)" : group);
-            Row(ui, f, x, ref y, labelWidth, "Phase", instance != null && instance.IsClone ? "New work (clone)" : PhaseText(record.Phase));
+            Row(ui, f, x, ref y, labelWidth, "Phase", instance != null && instance.IsClone ? "New work (clone)"
+                : record.IsLinked && record.Phase == PhaseRole.Existing ? "Existing" : PhaseText(record.Phase));
 
             // Extra parameters (if any were extracted)
             ParameterTable parameters = Session.Scene.Parameters;

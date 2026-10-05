@@ -218,7 +218,10 @@ namespace BimGo.Live
 
                 case MessageTypes.SELECT:
                     SelectPayload select = envelope.Read<SelectPayload>();
-                    host.Send(MessageTypes.SELECT_RESULT, Select(app, host, select?.ElementIds ?? Array.Empty<long>()), envelope.Id);
+                    MessagePayload selected = select?.Linked is { Length: > 0 } linked
+                        ? SelectLinked(app, host, linked) ?? Select(app, host, select.ElementIds ?? Array.Empty<long>())
+                        : Select(app, host, select?.ElementIds ?? Array.Empty<long>());
+                    host.Send(MessageTypes.SELECT_RESULT, selected, envelope.Id);
                     break;
 
                 case MessageTypes.JOURNAL_APPLY:
@@ -250,8 +253,20 @@ namespace BimGo.Live
                 Document doc = host.Document;
                 if (doc == null || !doc.IsValidObject) { throw new InvalidOperationException("The model is no longer open."); }
 
-                SceneData scene = SceneExtractor.Extract(new UIDocument(doc), LaunchSettings.LoadOrDefault());
-                return Announce(host, scene, reason, replyTo);
+                // Progress with Cancel (the walkthrough is told "cancelled in Revit" and keeps the snapshot it has)
+                var progress = new Utilities.OperationProgress();
+                using (Forms.ProgressWindow.Show($"Refreshing {doc.Title}", progress, _revitWindow))
+                {
+                    SceneData scene = SceneExtractor.Extract(new UIDocument(doc), LaunchSettings.LoadOrDefault(), progress);
+                    progress.Begin("Writing the snapshot", 0.85, 1.0);
+                    return Announce(host, scene, reason, replyTo, progress);
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                Utilities.Log_Utils.Write("Refresh cancelled in Revit.");
+                host.Send(MessageTypes.EXTRACT_FAILED, new MessagePayload { Success = false, Message = "The refresh was cancelled in Revit." }, replyTo);
+                return false;
             }
             catch (Exception ex)
             {
@@ -265,9 +280,9 @@ namespace BimGo.Live
         /// Writes a scene as the session's snapshot and tells the app.
         /// </summary>
         /// <returns>True on success.</returns>
-        public static bool Announce(SessionHost host, SceneData scene, string reason, string replyTo)
+        public static bool Announce(SessionHost host, SceneData scene, string reason, string replyTo, Utilities.OperationProgress progress = null)
         {
-            SnapshotReadyPayload ready = host.WriteSnapshot(scene, Commands.Cmds_BimGo.CommandSteps.Writer, reason, out string error);
+            SnapshotReadyPayload ready = host.WriteSnapshot(scene, Commands.Cmds_BimGo.CommandSteps.Writer, reason, out string error, progress);
             if (ready == null)
             {
                 host.Send(MessageTypes.EXTRACT_FAILED, new MessagePayload { Success = false, Message = error ?? "The snapshot could not be written." }, replyTo);
@@ -310,7 +325,7 @@ namespace BimGo.Live
                 .ToList();
             if (elementIds.Count == 0)
             {
-                return new MessagePayload { Success = false, Message = "That element is not in the Revit model any more" };
+                return new MessagePayload { Success = false, Message = "That element is no longer in the Revit model" };
             }
 
             uiDoc.Selection.SetElementIds(elementIds);
@@ -325,6 +340,66 @@ namespace BimGo.Live
             if (_revitWindow != 0) { SetForegroundWindow(_revitWindow); }
 
             return new MessagePayload { Success = true, Message = elementIds.Count == 1 ? "Selected in Revit" : $"Selected {elementIds.Count} elements in Revit" };
+        }
+
+        /// <summary>
+        /// Selects elements inside linked models by link reference and zooms the active view to them.
+        /// </summary>
+        /// <returns>The answer, or null to fall back to selecting the link instances.</returns>
+        private static MessagePayload SelectLinked(UIApplication app, SessionHost host, LinkedElementRef[] linked)
+        {
+            UIDocument uiDoc = app.ActiveUIDocument;
+            if (uiDoc == null || !SameDocument(uiDoc.Document, host.Document)) { return null; }
+
+            try
+            {
+                var references = new List<DB.Reference>();
+                XYZ min = null, max = null;
+                foreach (LinkedElementRef item in linked)
+                {
+                    if (item == null) { continue; }
+                    if (host.Document.GetElement(new ElementId(item.LinkInstanceId)) is not RevitLinkInstance instance) { continue; }
+                    if (instance.GetLinkDocument()?.GetElement(new ElementId(item.ElementId)) is not Element element) { continue; }
+
+                    references.Add(new DB.Reference(element).CreateLinkReference(instance));
+
+                    // The element's box in host coordinates (corners through the link's transform)
+                    BoundingBoxXYZ box = element.get_BoundingBox(null);
+                    if (box == null) { continue; }
+                    Transform transform = instance.GetTotalTransform().Multiply(box.Transform ?? Transform.Identity);
+                    for (int i = 0; i < 8; i++)
+                    {
+                        XYZ corner = transform.OfPoint(new XYZ(
+                            (i & 1) == 0 ? box.Min.X : box.Max.X,
+                            (i & 2) == 0 ? box.Min.Y : box.Max.Y,
+                            (i & 4) == 0 ? box.Min.Z : box.Max.Z));
+                        min = min == null ? corner : new XYZ(Math.Min(min.X, corner.X), Math.Min(min.Y, corner.Y), Math.Min(min.Z, corner.Z));
+                        max = max == null ? corner : new XYZ(Math.Max(max.X, corner.X), Math.Max(max.Y, corner.Y), Math.Max(max.Z, corner.Z));
+                    }
+                }
+                if (references.Count == 0) { return null; }
+
+                uiDoc.Selection.SetReferences(references);
+                if (min != null)
+                {
+                    try
+                    {
+                        UIView view = uiDoc.GetOpenUIViews().FirstOrDefault(v => v.ViewId == uiDoc.ActiveView.Id);
+                        view?.ZoomAndCenterRectangle(min, max);
+                    }
+                    catch (Exception ex)
+                    {
+                        Utilities.Log_Utils.Write($"Zoom to linked element failed: {ex.Message}");
+                    }
+                }
+                if (_revitWindow != 0) { SetForegroundWindow(_revitWindow); }
+                return new MessagePayload { Success = true, Message = "Selected in the linked model in Revit" };
+            }
+            catch (Exception ex)
+            {
+                Utilities.Log_Utils.Write($"Linked selection failed (selecting the link instead): {ex.Message}");
+                return null;
+            }
         }
 
         #endregion

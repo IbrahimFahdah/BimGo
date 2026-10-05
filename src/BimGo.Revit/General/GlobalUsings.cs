@@ -16,3 +16,4 @@ global using UtilRib = BimGo.Utilities.Ribbon_Utils;
 
 // Disambiguation (BimGo types that share a name with Revit API / framework types)
 global using ElementRecord = BimGo.Scene.ElementRecord;
+global using LinkInfo = BimGo.Scene.LinkInfo;

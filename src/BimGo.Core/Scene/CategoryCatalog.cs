@@ -61,6 +61,12 @@ namespace BimGo.Scene
         /// <summary>Key of the Generic models definition (fallback for unknown keys read from a file).</summary>
         public const string KEY_GENERIC = "generic";
 
+        /// <summary>
+        /// Model elements in categories the catalog doesn't list. Only active-view-only extraction fills it (it has no
+        /// categories of its own, so the Options dialog doesn't offer it).
+        /// </summary>
+        public const string KEY_OTHER = "other";
+
         /// <summary>All category definitions, in draw order.</summary>
         public static IReadOnlyList<CategoryDef> All { get; } = Build();
 
@@ -161,6 +167,9 @@ namespace BimGo.Scene
             Add(CategoryGroup.Services, "pipes", "Pipes + fittings", true, "OST_PipeCurves", "OST_PipeFitting", "OST_FlexPipeCurves");
             Add(CategoryGroup.Services, "cabletrays", "Cable trays + fittings", true, "OST_CableTray", "OST_CableTrayFitting");
             Add(CategoryGroup.Services, "conduits", "Conduits + fittings", true, "OST_Conduit", "OST_ConduitFitting");
+
+            // Anything else a view shows (active-view-only extraction): masses, site, parts, accessories…
+            Add(CategoryGroup.Ffe, KEY_OTHER, "Other (active view)", false);
 
             return list;
         }

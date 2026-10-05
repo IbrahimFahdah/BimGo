@@ -95,7 +95,7 @@ namespace BimGo.Physics
     {
         private readonly Bvh _bvh;
         private readonly ElementRecord[] _elements;
-        private readonly bool[] _categoryVisible;
+        private readonly bool[] _groupVisible;
         private readonly bool[] _solo;
         private int[] _query = new int[256];
         private int _nextId = 1;
@@ -108,12 +108,12 @@ namespace BimGo.Physics
         /// </summary>
         /// <param name="bvh">The static BVH (source geometry).</param>
         /// <param name="elements">The scene's elements.</param>
-        /// <param name="categoryVisible">Per category visibility (shared with the session).</param>
-        public DynamicSet(Bvh bvh, ElementRecord[] elements, bool[] categoryVisible)
+        /// <param name="groupVisible">Per visibility group (category × model; shared with the session).</param>
+        public DynamicSet(Bvh bvh, ElementRecord[] elements, bool[] groupVisible)
         {
             _bvh = bvh;
             _elements = elements;
-            _categoryVisible = categoryVisible;
+            _groupVisible = groupVisible;
             _solo = new bool[elements.Length];
         }
 
@@ -180,7 +180,7 @@ namespace BimGo.Physics
         /// <summary>
         /// True if the instance should be drawn / picked / collided.
         /// </summary>
-        public bool IsActive(DynamicInstance instance) => !instance.Hidden && _categoryVisible[_elements[instance.Element].CategoryIndex];
+        public bool IsActive(DynamicInstance instance) => !instance.Hidden && _groupVisible[Rendering.SceneBatches.GroupOf(_elements[instance.Element])];
 
         #endregion
 

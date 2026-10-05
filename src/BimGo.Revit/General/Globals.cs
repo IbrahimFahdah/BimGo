@@ -92,7 +92,7 @@ namespace BimGo
         {
             if (assembly?.GetName()?.Version is Version version)
             {
-                return $"{version.Major}.{version.Minor:D2}.{version.Build:D2}.{version.Revision:D2}";
+                return $"{version.Major}.{version.Minor}.{version.Build}";
             }
             return fallback;
         }

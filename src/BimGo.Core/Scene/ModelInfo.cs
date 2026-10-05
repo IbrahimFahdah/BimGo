@@ -75,6 +75,48 @@ namespace BimGo.Scene
 
         /// <summary>The survey point, or null.</summary>
         public SitePoint SurveyPoint { get; set; }
+
+        /// <summary>
+        /// True when the internal → shared transform below was captured (files from v5.1 on). Older files derive it
+        /// from the survey point (float precision: ~0.5 m on large grid coordinates). See <see cref="SiteCoordinates"/>.
+        /// </summary>
+        public bool HasSharedTransform { get; set; }
+
+        /// <summary>Shared easting of the internal origin (metres, double precision).</summary>
+        public double SharedEast { get; set; }
+
+        /// <summary>Shared northing of the internal origin (metres, double precision).</summary>
+        public double SharedNorth { get; set; }
+
+        /// <summary>Shared elevation of the internal origin (metres).</summary>
+        public double SharedElevation { get; set; }
+
+        /// <summary>
+        /// Rotation about +Z (radians, counter-clockwise) that turns internal axes into shared axes:
+        /// shared = Rz(SharedAngle) · internal + (SharedEast, SharedNorth, SharedElevation).
+        /// </summary>
+        public double SharedAngle { get; set; }
+
+        /// <summary>True when the site location below was captured (files from v6 on).</summary>
+        public bool HasLocation { get; set; }
+
+        /// <summary>Latitude (degrees, north positive), from Revit's SiteLocation.</summary>
+        public double Latitude { get; set; }
+
+        /// <summary>Longitude (degrees, east positive), from Revit's SiteLocation.</summary>
+        public double Longitude { get; set; }
+
+        /// <summary>Standard time zone (hours from UTC), from Revit's SiteLocation.</summary>
+        public double TimeZone { get; set; }
+
+        /// <summary>The site's place name, or empty.</summary>
+        public string PlaceName { get; set; } = string.Empty;
+
+        /// <summary>
+        /// The launch view's sun-study start as local clock time ("yyyy-MM-ddTHH:mm"), or empty when the view had none.
+        /// The walkthrough's sun starts there (else today, 12:00).
+        /// </summary>
+        public string SunStart { get; set; } = string.Empty;
     }
 
     /// <summary>

@@ -113,7 +113,7 @@ namespace BimGo.Live
         /// <param name="writer">Who writes it.</param>
         /// <param name="error">A reason on failure.</param>
         /// <returns>The snapshot payload to announce, or null on failure.</returns>
-        public SnapshotReadyPayload WriteSnapshot(SceneData scene, WriterInfo writer, string reason, out string error)
+        public SnapshotReadyPayload WriteSnapshot(SceneData scene, WriterInfo writer, string reason, out string error, Utilities.OperationProgress progress = null)
         {
             int number;
             lock (_lock) { number = Info.SnapshotNumber + 1; }
@@ -129,7 +129,7 @@ namespace BimGo.Live
                 Path = path
             };
 
-            if (!BimGoWriter.Write(path, document, writer, FileKinds.SNAPSHOT, out error, CompressionLevel.NoCompression)) { return null; }
+            if (!BimGoWriter.Write(path, document, writer, FileKinds.SNAPSHOT, out error, CompressionLevel.NoCompression, progress)) { return null; }
 
             Editor.SetPhases(scene.ExistingPhaseId, scene.PhaseId);
             lock (_lock)

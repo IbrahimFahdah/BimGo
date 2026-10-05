@@ -20,12 +20,19 @@ namespace BimGo.Rendering
     }
 
     /// <summary>
-    /// All chunks of one category in one pass (opaque or transparent): drawn with a single multi-draw call.
+    /// All chunks of one category of one model (host or link) in one pass (opaque or transparent): drawn with a single
+    /// multi-draw call.
     /// </summary>
     internal struct RenderBatch
     {
         /// <summary>Catalog index of the category.</summary>
         public int CategoryIndex;
+
+        /// <summary>
+        /// The visibility group (<see cref="SceneBatches.GroupOf"/>): category and model together, so category and
+        /// link toggles share one lookup.
+        /// </summary>
+        public int Group;
 
         /// <summary>True for the transparent pass.</summary>
         public bool Transparent;
@@ -56,11 +63,20 @@ namespace BimGo.Rendering
     }
 
     /// <summary>
-    /// Re-orders the snapshot's indices into per-category, per-pass batches of spatial chunks.
+    /// Re-orders the snapshot's indices into per-model, per-category, per-pass batches of spatial chunks.
     /// Runs once on the game thread at startup.
     /// </summary>
     internal sealed class SceneBatches
     {
+        /// <summary>
+        /// The visibility group of an element: <c>link × categories + category</c> (the host is link 0). Index the
+        /// session's group visibility array with it (see <see cref="GroupCount"/>).
+        /// </summary>
+        public static int GroupOf(ElementRecord record) => record.Link * CategoryCatalog.All.Count + record.CategoryIndex;
+
+        /// <summary>The number of visibility groups of a scene (categories × (links + 1)).</summary>
+        public static int GroupCount(SceneData scene) => CategoryCatalog.All.Count * (scene.Links.Length + 1);
+
         private const int MAX_ELEMENTS_PER_CHUNK = 48;
         private const int MAX_INDICES_PER_CHUNK = 96_000;
         private const float MAX_CHUNK_EXTENT = 14f;
@@ -96,21 +112,29 @@ namespace BimGo.Rendering
             Vector3 size = Vector3.Max(bounds.Size, new Vector3(1f));
 
             int categoryCount = CategoryCatalog.All.Count;
-            var members = new List<int>();
+            int groupCount = GroupCount(scene);
+            var buckets = new List<int>[groupCount];
 
             for (int pass = 0; pass < 2; pass++)
             {
                 bool transparent = pass == 1;
-                for (int category = 0; category < categoryCount; category++)
+
+                // Bucket the pass's elements by group once (host groups first, then each link's)
+                foreach (List<int> bucket in buckets) { bucket?.Clear(); }
+                for (int e = 0; e < elements.Length; e++)
                 {
-                    members.Clear();
-                    for (int e = 0; e < elements.Length; e++)
-                    {
-                        ElementRecord record = elements[e];
-                        if (record.CategoryIndex != category) { continue; }
-                        if ((transparent ? record.TransparentCount : record.OpaqueCount) > 0) { members.Add(e); }
-                    }
-                    if (members.Count == 0) { continue; }
+                    ElementRecord record = elements[e];
+                    if ((transparent ? record.TransparentCount : record.OpaqueCount) == 0) { continue; }
+                    int g = GroupOf(record);
+                    if ((uint)g >= (uint)groupCount) { continue; }
+                    (buckets[g] ??= new List<int>()).Add(e);
+                }
+
+                for (int group = 0; group < groupCount; group++)
+                {
+                    List<int> members = buckets[group];
+                    if (members == null || members.Count == 0) { continue; }
+                    int category = group % categoryCount;
 
                     // Sort by Morton order of the element centres (z in coarse slabs)
                     ulong[] keys = new ulong[members.Count];
@@ -125,7 +149,7 @@ namespace BimGo.Rendering
                     }
                     Array.Sort(keys, order);
 
-                    var batch = new RenderBatch { CategoryIndex = category, Transparent = transparent, ChunkStart = chunks.Count };
+                    var batch = new RenderBatch { CategoryIndex = category, Group = group, Transparent = transparent, ChunkStart = chunks.Count };
                     RenderChunk chunk = default;
                     int chunkElements = 0;
 

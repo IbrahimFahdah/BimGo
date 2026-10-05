@@ -27,7 +27,7 @@ namespace BimGo.Sources
             DisplayName = displayName ?? "BimGo file";
             foreach (ElementRecord record in scene.Elements)
             {
-                if (record.HostId <= 0) { continue; }
+                if (record.HostId <= 0 || record.IsLinked) { continue; } // linked ids are another model's namespace
                 if (!_hosted.TryGetValue(record.HostId, out List<long> list))
                 {
                     list = new List<long>();

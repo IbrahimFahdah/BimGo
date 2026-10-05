@@ -41,7 +41,7 @@ namespace BimGo.Game.Guns
 
         public override string Name => "DEMOLISH";
         public override string HintPrimary => IsPrimed(_hover) ? (_deleteMode ? "Delete" : "Demolish") : "Prime";
-        public override string HintSecondary => "Un-prime";
+        public override string HintSecondary => "Unprime";
         public override uint Colour => UiTheme.HAMMER;
         public override float PanelHeight => 118f;
 
@@ -78,11 +78,11 @@ namespace BimGo.Game.Guns
                 Session.Sound.Play(SoundId.UiClick);
                 if (Session.EditsGoToRevit)
                 {
-                    Session.Toast(_deleteMode ? "Hammer: DELETE elements (permanent in Revit)" : $"Hammer: demolish by phase ({PhaseLabel})");
+                    Session.Toast(_deleteMode ? "Demolish gun: DELETE mode (removes elements from the Revit model)" : $"Demolish gun: demolish in phase {PhaseLabel}");
                 }
                 else
                 {
-                    Session.Toast(_deleteMode ? "Hammer: delete (recorded in the file)" : $"Hammer: demolish by phase ({PhaseLabel}, recorded in the file)");
+                    Session.Toast(_deleteMode ? "Demolish gun: DELETE mode (recorded in the file)" : $"Demolish gun: demolish in phase {PhaseLabel} (recorded in the file)");
                 }
             }
         }
@@ -97,13 +97,23 @@ namespace BimGo.Game.Guns
 
             var target = new Target(aim.Hit.Element, aim.Hit.DynamicId);
 
+            // Linked models are read-only (demolish or delete them in their own model)
+            ElementRecord hit = Session.Scene.Elements[target.Element];
+            if (hit.IsLinked)
+            {
+                _primed.Remove(target);
+                Session.Sound.Play(SoundId.Error);
+                Session.Toast($"{hit.MoveBlockReason ?? "In a linked model"}: edit it in its own model.", 3.5f);
+                return;
+            }
+
             // Demolition is for existing elements only: say so up front rather than after the round trip
             string blocked = _deleteMode ? null : DemolishBlockReason(target);
             if (blocked != null)
             {
                 _primed.Remove(target);
                 Session.Sound.Play(SoundId.Error);
-                Session.Toast($"{blocked}: can't be demolished. Press T to delete it instead.", 3.5f);
+                Session.Toast($"{blocked}, so it can't be demolished. Press T to delete it instead.", 3.5f);
                 return;
             }
 
@@ -149,9 +159,9 @@ namespace BimGo.Game.Guns
                 case PhaseRole.New:
                     return _blockedNew ??= $"New work in {PhaseLabel}";
                 case PhaseRole.Between:
-                    return _blockedBetween ??= Session.Scene.ExistingPhaseName == null ? "Not existing" : $"Built after {Session.Scene.ExistingPhaseName}";
+                    return _blockedBetween ??= Session.Scene.ExistingPhaseName == null ? "Not in the existing phase" : $"Built after {Session.Scene.ExistingPhaseName}";
                 case PhaseRole.Unphased:
-                    return "Has no phases";
+                    return "It has no phase";
                 default:
                     return null;
             }
@@ -186,7 +196,7 @@ namespace BimGo.Game.Guns
             };
 
             bool sent = Session.SubmitEdit(request, result => OnEditResult(result, target, instance, record));
-            if (!sent) { Session.Toast($"{record.Name} removed in the walkthrough only (no Revit link)"); }
+            if (!sent) { Session.Toast($"{record.Name} removed in the walkthrough only (not connected to Revit)"); }
         }
 
         /// <summary>
@@ -221,7 +231,7 @@ namespace BimGo.Game.Guns
             {
                 highlights.Add(new Highlight(target.Element, target.DynamicId, UiTheme.HAMMER_PRIMED, pulse));
             }
-            if (_hover.Element >= 0 && !IsPrimed(_hover))
+            if (_hover.Element >= 0 && !IsPrimed(_hover) && !Session.Scene.Elements[_hover.Element].IsLinked)
             {
                 highlights.Add(new Highlight(_hover.Element, _hover.DynamicId, UiTheme.HAMMER, 0.22f));
             }
@@ -261,7 +271,7 @@ namespace BimGo.Game.Guns
 
             if (_deleteMode)
             {
-                ui.Text(f.Bold, x, y, Session.EditsGoToRevit ? "Delete from model" : "Delete (in file)", UiTheme.DANGER);
+                ui.Text(f.Bold, x, y, Session.EditsGoToRevit ? "Delete from the Revit model" : "Delete (recorded in the file)", UiTheme.DANGER);
             }
             else
             {
@@ -274,7 +284,7 @@ namespace BimGo.Game.Guns
 
             if (Session.EditsLocalOnly)
             {
-                ui.Text(f.Body, x, y, "No Revit link: in-game only", UiTheme.DANGER);
+                ui.Text(f.Body, x, y, "Not connected to Revit: walkthrough only", UiTheme.DANGER);
                 y += S(19);
             }
 
@@ -286,9 +296,13 @@ namespace BimGo.Game.Guns
             {
                 ElementRecord record = Session.Scene.Elements[_hover.Element];
                 string blocked = _deleteMode ? null : DemolishBlockReason(_hover);
-                if (blocked != null)
+                if (record.IsLinked)
                 {
-                    TextBuffer line = Session.Text.Clear().Append(blocked).Append(": delete only (T)");
+                    ui.TextWrapped(f.Body, x, y, width, record.MoveBlockReason ?? "In a linked model (read-only)", UiTheme.DANGER, maxLines: 1);
+                }
+                else if (blocked != null)
+                {
+                    TextBuffer line = Session.Text.Clear().Append(blocked).Append(": press T to delete instead");
                     ui.TextWrapped(f.Body, x, y, width, line.Span, UiTheme.DANGER, maxLines: 1);
                 }
                 else
@@ -298,7 +312,7 @@ namespace BimGo.Game.Guns
             }
             else
             {
-                ui.Text(f.Body, x, y, "Aim at an element. LMB primes it.", UiTheme.TEXT_MUTED);
+                ui.Text(f.Body, x, y, "Aim at an element. LMB primes it, LMB again removes it.", UiTheme.TEXT_MUTED);
             }
         }
 

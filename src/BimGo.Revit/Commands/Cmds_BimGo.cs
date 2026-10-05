@@ -39,8 +39,32 @@ namespace BimGo.Commands.Cmds_BimGo
                 DefaultNew = defaults.New?.Name
             };
 
+            // The model's link instances (none extracted unless ticked; the choice is remembered per host model)
+            var links = new Forms.LinkChoices
+            {
+                HostKey = LinkResolver.HostKey(doc),
+                Items = LinkResolver.Candidates(doc).Select(c => new Forms.LinkChoice
+                {
+                    UniqueId = c.UniqueId,
+                    Name = c.Name,
+                    FileName = c.FileName,
+                    IsLoaded = c.IsLoaded
+                }).ToList()
+            };
+
+            // The active view (for "only elements visible in the active view")
+            DB.View activeView = uiDoc.ActiveView;
+            bool viewUsable = ViewScope.ShowsModel(activeView);
+            var view = new Forms.ViewChoice
+            {
+                Available = viewUsable,
+                Name = activeView?.Name ?? string.Empty,
+                Is3D = activeView is View3D,
+                ElementCount = viewUsable ? ViewScope.Count(doc, activeView) : 0
+            };
+
             var dialog = new Forms.OptionsWindow(settings, SceneExtractor.DescribeSpawn(uiDoc), counts,
-                () => ParameterScanner.ScanNames(doc), primaryButtonText, phases);
+                () => ParameterScanner.ScanNames(doc), primaryButtonText, phases, links, view);
             new WindowInteropHelper(dialog).Owner = uiApp.MainWindowHandle;
             if (dialog.ShowDialog() != true) { return null; }
 
@@ -56,7 +80,7 @@ namespace BimGo.Commands.Cmds_BimGo
             reason = null;
             if (uiDoc == null || uiDoc.Document.IsFamilyDocument)
             {
-                reason = "BimGo needs an open project document.";
+                reason = "Open a project (not a family) to use BimGo.";
                 return false;
             }
             return true;
@@ -86,7 +110,7 @@ namespace BimGo.Commands.Cmds_BimGo
 
             if (Utilities.App_Utils.FindExe() == null)
             {
-                return FormCallers.Error($"The BimGo app was not found.\n\nBuild or install it to:\n{Utilities.App_Utils.InstalledExePath}");
+                return FormCallers.Error($"The BimGo app was not found.\n\nInstall it (or build it) to:\n{Utilities.App_Utils.InstalledExePath}");
             }
 
             try
@@ -94,18 +118,28 @@ namespace BimGo.Commands.Cmds_BimGo
                 LaunchSettings settings = CommandSteps.ShowOptions(uiApp, "Launch BimGo");
                 if (settings == null) { return Result.Cancelled; }
 
-                // Extraction (Revit API thread)
-                SceneData scene = SceneExtractor.Extract(uiDoc, settings);
+                // Extraction (Revit API thread) and the snapshot, with a progress window and Cancel
+                var progress = new Utilities.OperationProgress();
+                using Forms.ProgressWindow window = Forms.ProgressWindow.Show($"Opening {uiDoc.Document.Title} in BimGo", progress, uiApp.MainWindowHandle);
+
+                SceneData scene = SceneExtractor.Extract(uiDoc, settings, progress);
                 if (scene.Elements.Length == 0)
                 {
-                    return FormCallers.Cancelled("Nothing to walk through: no geometry was found in the ticked categories.");
+                    window?.Dispose();
+                    return FormCallers.Cancelled(settings.ActiveViewOnly
+                        ? "Nothing to walk through: the active view shows no model geometry."
+                        : "Nothing to walk through: the ticked categories have no geometry in this model.");
                 }
 
                 // The document's live session: snapshot + announce (an attached app reloads)
                 Live.LiveDispatcher.EnsureEvent(uiApp);
                 Live.SessionHost host = Live.LiveDispatcher.GetOrCreate(uiDoc.Document);
-                if (!Live.LiveDispatcher.Announce(host, scene, "go", replyTo: null))
+                progress.Begin("Writing the snapshot", 0.85, 1.0);
+                bool announced = Live.LiveDispatcher.Announce(host, scene, "go", replyTo: null, progress);
+                window?.Dispose();
+                if (!announced)
                 {
+                    if (progress.CancelRequested) { return Result.Cancelled; }
                     return FormCallers.Error($"The snapshot could not be written. See the log:\n{Utilities.Log_Utils.LogPath}");
                 }
 
@@ -113,6 +147,11 @@ namespace BimGo.Commands.Cmds_BimGo
                 string error = Utilities.App_Utils.AttachInApp(host.SessionId);
                 if (error != null) { return FormCallers.Error($"BimGo could not be started:\n{error}"); }
                 return Result.Succeeded;
+            }
+            catch (OperationCanceledException)
+            {
+                Utilities.Log_Utils.Write("Go cancelled during extraction.");
+                return Result.Cancelled;
             }
             catch (Exception ex)
             {
@@ -153,7 +192,7 @@ namespace BimGo.Commands.Cmds_BimGo
                     var none = new UI.TaskDialog("BimGo")
                     {
                         MainInstruction = "No live session for this model",
-                        MainContent = "Press Go to open this model in BimGo with edits coming back to Revit." + otherText,
+                        MainContent = "Press Go to walk this model in BimGo, with your edits coming back to Revit." + otherText,
                         CommonButtons = UI.TaskDialogCommonButtons.Close
                     };
                     none.Show();
@@ -166,13 +205,13 @@ namespace BimGo.Commands.Cmds_BimGo
                     : "No snapshot yet";
                 var dialog = new UI.TaskDialog("BimGo")
                 {
-                    MainInstruction = host.AppAttached ? "Live: BimGo is attached" : "Live: waiting for BimGo",
+                    MainInstruction = host.AppAttached ? "Live session: BimGo is connected" : "Live session: waiting for BimGo to connect",
                     MainContent = $"{snapshot}.\nSession {host.SessionId[..8]}." + otherText,
                     CommonButtons = UI.TaskDialogCommonButtons.Close
                 };
                 dialog.AddCommandLink(UI.TaskDialogCommandLinkId.CommandLink1, host.AppAttached ? "Bring BimGo to the front" : "Open this session in BimGo");
-                dialog.AddCommandLink(UI.TaskDialogCommandLinkId.CommandLink2, "Send a fresh snapshot", "Re-extract with the saved options; the app reloads where you stand.");
-                dialog.AddCommandLink(UI.TaskDialogCommandLinkId.CommandLink3, "End the live session", "The app keeps the walkthrough read-only (it can still save a .bimgo).");
+                dialog.AddCommandLink(UI.TaskDialogCommandLinkId.CommandLink2, "Send a fresh snapshot", "Re-extracts the model with the saved options; BimGo reloads it where you stand.");
+                dialog.AddCommandLink(UI.TaskDialogCommandLinkId.CommandLink3, "End the live session", "BimGo keeps the walkthrough open read-only (it can still be saved as a .bimgo file).");
 
                 switch (dialog.Show())
                 {
@@ -233,11 +272,16 @@ namespace BimGo.Commands.Cmds_BimGo
                 string path = AskForPath(doc);
                 if (path == null) { return Result.Cancelled; }
 
-                // Extraction (Revit API thread)
-                SceneData scene = SceneExtractor.Extract(uiDoc, settings);
+                // Extraction (Revit API thread) and writing, with a progress window and Cancel
+                var progress = new Utilities.OperationProgress();
+                using Forms.ProgressWindow window = Forms.ProgressWindow.Show($"Exporting {doc.Title}", progress, uiApp.MainWindowHandle);
+                SceneData scene = SceneExtractor.Extract(uiDoc, settings, progress);
                 if (scene.Elements.Length == 0)
                 {
-                    return FormCallers.Cancelled("Nothing to export: no geometry was found in the ticked categories.");
+                    window?.Dispose();
+                    return FormCallers.Cancelled(settings.ActiveViewOnly
+                        ? "Nothing to export: the active view shows no model geometry."
+                        : "Nothing to export: the ticked categories have no geometry in this model.");
                 }
 
                 // The model's comments travel with the file (the sidecar, or a legacy RvtGo sidecar)
@@ -248,9 +292,15 @@ namespace BimGo.Commands.Cmds_BimGo
                     comments = CommentFiles.Read(scene.CommentsPath, out _);
                 }
 
+                // So do the bookmarks and the saved home of live walkthroughs (the sidecar beside the comments)
+                BookmarkDocument bookmarks = string.IsNullOrEmpty(scene.CommentsPath)
+                    ? null
+                    : BookmarkFiles.Read(BookmarkFiles.SidecarFor(scene.CommentsPath), out _);
+
                 var document = new BimGoDocument
                 {
                     Scene = scene,
+                    Bookmarks = bookmarks ?? new BookmarkDocument { Model = scene.ModelTitle },
                     Comments = comments ?? new CommentDocument { Model = scene.ModelTitle },
                     Journal = new EditJournal(),
                     CreatedUtc = scene.Provenance.ExtractedUtc,
@@ -258,12 +308,21 @@ namespace BimGo.Commands.Cmds_BimGo
                     Path = path
                 };
 
-                if (!BimGoWriter.Write(path, document, CommandSteps.Writer, FileKinds.EXPORT, out string error))
+                progress.Begin("Writing the .bimgo file", 0.85, 1.0);
+                bool written = BimGoWriter.Write(path, document, CommandSteps.Writer, FileKinds.EXPORT, out string error, progress: progress);
+                window?.Dispose();
+                if (!written)
                 {
-                    return FormCallers.Error($"The .bimgo could not be written:\n{error}");
+                    if (progress.CancelRequested) { return Result.Cancelled; }
+                    return FormCallers.Error($"The .bimgo file could not be written:\n{error}");
                 }
 
                 return OfferToOpen(path, scene, document.Comments.Comments.Count);
+            }
+            catch (OperationCanceledException)
+            {
+                Utilities.Log_Utils.Write("Export cancelled.");
+                return Result.Cancelled;
             }
             catch (Exception ex)
             {

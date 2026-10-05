@@ -120,16 +120,16 @@
   <data name="BimGo_Launch" xml:space="preserve">
     <value>Walk the active model in first person in the BimGo app, with edits coming back to Revit.
 
-Choose categories, then BimGo opens on a live snapshot of this model. Demolish / Gizmo / Clone change the model here; Scan → R selects elements in Revit; changes made in Revit prompt a refresh (F5). Press Go again to re-extract.</value>
+Choose what to load, then BimGo opens a live snapshot of this model. The Demolish, Gizmo and Clone guns change the model here; Scan → R selects elements in Revit; changes made in Revit prompt a refresh (F5). Press Go again to re-extract.</value>
   </data>
   <data name="BimGo_Export" xml:space="preserve">
     <value>Export the active model as a standalone .bimgo file for the BimGo app.
 
-Choose categories and extra parameters, then pick where to save. The file holds geometry, levels, rooms, metadata and the model's comments, and opens in BimGo without Revit. Edits made there are kept in the file's journal.</value>
+Choose what to load and any extra parameters, then pick where to save. The file holds geometry, levels, rooms, metadata and the model's comments, and opens in BimGo without Revit. Edits made there are kept in the file's journal.</value>
   </data>
   <data name="BimGo_Status" xml:space="preserve">
     <value>The active model's live BimGo session.
 
-Shows whether the app is attached, and lets you bring it forward, push a fresh snapshot, or end the session.</value>
+Shows whether BimGo is connected, and lets you bring it to the front, send a fresh snapshot, or end the session.</value>
   </data>
 </root>

@@ -127,8 +127,7 @@ namespace BimGo.Extraction
             }
 
             ElementOnPhaseStatus status = StatusIn(element, phases.NewId);
-            return status is ElementOnPhaseStatus.Existing or ElementOnPhaseStatus.New
-                or ElementOnPhaseStatus.None;
+            return status is ElementOnPhaseStatus.Existing or ElementOnPhaseStatus.New or ElementOnPhaseStatus.None;
         }
 
         /// <summary>
@@ -195,7 +194,7 @@ namespace BimGo.Extraction
         }
 
         /// <summary>
-        /// The element's status in a phase (NotApplicable if Revit can't tell).
+        /// The element's status in a phase (None if the element has no phases or Revit can't tell).
         /// </summary>
         public static ElementOnPhaseStatus StatusIn(Element element, ElementId phaseId)
         {

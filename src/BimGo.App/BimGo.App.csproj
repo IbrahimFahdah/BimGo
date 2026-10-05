@@ -20,8 +20,9 @@
 		<AllowUnsafeBlocks>true</AllowUnsafeBlocks>
 		<RootNamespace>BimGo</RootNamespace>
 		<AssemblyName>BimGo</AssemblyName>
-		<AssemblyVersion>3.00.00.01</AssemblyVersion>
-		<FileVersion>3.00.00.01</FileVersion>
+		<AssemblyVersion>1.0.0.0</AssemblyVersion>
+		<FileVersion>1.0.0.0</FileVersion>
+		<Version>1.0.0</Version>
 		<Company>Author</Company>
 		<Product>BimGo</Product>
 		<GenerateDocumentationFile>True</GenerateDocumentationFile>

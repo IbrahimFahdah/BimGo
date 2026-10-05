@@ -52,7 +52,8 @@ namespace BimGo.Game.Guns
             }
 
             ElementRecord element = Session.Scene.Elements[aim.Hit.Element];
-            Session.BeginCommentEdit(aim.Hit.Point + aim.Hit.Normal * 0.06f, element.ElementId, Session.LevelNameAt(aim.Hit.Point.Z));
+            // Linked elements' ids belong to another model: the comment records no element there
+            Session.BeginCommentEdit(aim.Hit.Point + aim.Hit.Normal * 0.06f, element.IsLinked ? -1 : element.ElementId, Session.LevelNameAt(aim.Hit.Point.Z));
             Session.Sound.Play(SoundId.UiClick);
         }
 

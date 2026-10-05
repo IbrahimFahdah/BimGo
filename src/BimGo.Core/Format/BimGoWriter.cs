@@ -25,9 +25,13 @@ namespace BimGo.Format
         /// Compression of geometry.bin: <see cref="CompressionLevel.Fastest"/> for saved files,
         /// <see cref="CompressionLevel.NoCompression"/> for throwaway live snapshots where speed matters more.
         /// </param>
+        /// <param name="progress">
+        /// Optional progress / cancellation (the caller starts the stage with <see cref="Utilities.OperationProgress.Begin"/>).
+        /// A cancelled write leaves the target untouched and returns false with "Cancelled.".
+        /// </param>
         /// <returns>True on success.</returns>
         public static bool Write(string path, BimGoDocument document, WriterInfo writer, string kind, out string error,
-            CompressionLevel geometryCompression = CompressionLevel.Fastest)
+            CompressionLevel geometryCompression = CompressionLevel.Fastest, Utilities.OperationProgress progress = null)
         {
             error = null;
             string temp = path + ".tmp";
@@ -46,18 +50,38 @@ namespace BimGo.Format
                     WriteJson(zip, BimGoFormat.ENTRY_MANIFEST, BuildManifest(document, writer, kind), BimGoFormat.JSON_INDENTED);
                     WriteJson(zip, BimGoFormat.ENTRY_MODEL, BuildModel(scene), BimGoFormat.JSON_INDENTED);
                     WriteJson(zip, BimGoFormat.ENTRY_ELEMENTS, BuildElements(scene), BimGoFormat.JSON_COMPACT);
+                    progress?.Step(0.12);
+                    progress?.ThrowIfCancelled();
                     if (!scene.Parameters.IsEmpty)
                     {
                         var parameters = new ParametersDto { Names = scene.Parameters.Names, Values = scene.Parameters.Values, Rows = scene.Parameters.Rows };
                         WriteJson(zip, BimGoFormat.ENTRY_PARAMETERS, parameters, BimGoFormat.JSON_COMPACT);
                     }
-                    WriteGeometry(zip, scene, geometryCompression);
+                    WriteGeometry(zip, scene, geometryCompression, progress);
+                    progress?.ThrowIfCancelled();
                     WriteJson(zip, BimGoFormat.ENTRY_COMMENTS, document.Comments ?? new CommentDocument(), BimGoFormat.JSON_INDENTED);
                     var journal = new JournalDto { Entries = document.Journal?.Entries.ToList() ?? new List<JournalEntry>() };
                     WriteJson(zip, BimGoFormat.ENTRY_JOURNAL, journal, BimGoFormat.JSON_INDENTED);
+
+                    // Optional part: older readers ignore entries they don't know, so no format bump is needed
+                    if (document.Bookmarks != null && !document.Bookmarks.IsEmpty)
+                    {
+                        WriteJson(zip, BimGoFormat.ENTRY_BOOKMARKS, document.Bookmarks, BimGoFormat.JSON_INDENTED);
+                    }
+                    if (document.Visibility != null && !document.Visibility.IsEmpty)
+                    {
+                        WriteJson(zip, BimGoFormat.ENTRY_VISIBILITY, document.Visibility, BimGoFormat.JSON_INDENTED);
+                    }
+                    if (document.Sun != null)
+                    {
+                        WriteJson(zip, BimGoFormat.ENTRY_SUN, document.Sun, BimGoFormat.JSON_INDENTED);
+                    }
                 }
 
+                // Past this point the write completes: the replace is quick and must not be half done
+                if (progress != null) { progress.CanCancel = false; }
                 File.Move(temp, path, overwrite: true);
+                progress?.Step(1.0);
                 Utilities.Log_Utils.Write($"Wrote {path} ({scene.Elements.Length} elements, {document.Journal?.Count ?? 0} journal entries).");
                 return true;
             }
@@ -96,7 +120,8 @@ namespace BimGo.Format
                     ExtraParameters = scene.Parameters.Names.ToList(),
                     ProxyCount = scene.ProxyCount,
                     SkippedCount = scene.SkippedCount,
-                    ExtractionSeconds = Math.Round(scene.ExtractionTime.TotalSeconds, 2)
+                    ExtractionSeconds = Math.Round(scene.ExtractionTime.TotalSeconds, 2),
+                    ActiveView = scene.SourceView
                 },
                 Counts = new CountsDto
                 {
@@ -106,7 +131,9 @@ namespace BimGo.Format
                     Levels = scene.Levels.Length,
                     Rooms = scene.Rooms.Length,
                     Comments = document.Comments?.Comments?.Count ?? 0,
-                    JournalEntries = document.Journal?.Count ?? 0
+                    JournalEntries = document.Journal?.Count ?? 0,
+                    Bookmarks = document.Bookmarks?.Bookmarks?.Count ?? 0,
+                    Links = scene.Links?.Length ?? 0
                 }
             };
         }
@@ -124,6 +151,7 @@ namespace BimGo.Format
                 ExistingPhaseId = scene.ExistingPhaseId,
                 ExistingPhaseName = scene.ExistingPhaseName,
                 PhaseNote = scene.PhaseNote,
+                Links = scene.Links != null && scene.Links.Length > 0 ? scene.Links.ToList() : null,
                 Spawn = scene.Spawn == null ? null : new SpawnDto
                 {
                     Eye = scene.Spawn.Eye,
@@ -140,7 +168,7 @@ namespace BimGo.Format
 
             foreach (RoomInfo room in scene.Rooms)
             {
-                var dto = new RoomDto { Number = room.Number, Name = room.Name, BottomZ = room.BottomZ, TopZ = room.TopZ };
+                var dto = new RoomDto { Number = room.Number, Name = room.Name, BottomZ = room.BottomZ, TopZ = room.TopZ, Link = room.Link > 0 ? room.Link : null };
                 foreach (System.Numerics.Vector2[] loop in room.Loops)
                 {
                     float[] flat = new float[loop.Length * 2];
@@ -187,6 +215,7 @@ namespace BimGo.Format
                     MoveBlockReason = record.MoveBlockReason,
                     Pivot = record.Pivot,
                     Phase = BimGoFormat.FormatPhaseRole(record.Phase),
+                    Link = record.Link > 0 ? record.Link : null,
                     BoundsMin = record.Bounds.Min,
                     BoundsMax = record.Bounds.Max,
                     Opaque = record.OpaqueCount > 0 ? new[] { record.OpaqueStart, record.OpaqueCount } : null,
@@ -199,7 +228,7 @@ namespace BimGo.Format
         /// <summary>
         /// geometry.bin: a small header, then the raw vertex and index arrays (little-endian, as in memory on x64).
         /// </summary>
-        private static void WriteGeometry(ZipArchive zip, SceneData scene, CompressionLevel compression)
+        private static void WriteGeometry(ZipArchive zip, SceneData scene, CompressionLevel compression, Utilities.OperationProgress progress)
         {
             ZipArchiveEntry entry = zip.CreateEntry(BimGoFormat.ENTRY_GEOMETRY, compression);
             using Stream stream = entry.Open();
@@ -213,14 +242,17 @@ namespace BimGo.Format
                 header.Write(0); // reserved
             }
 
-            WriteChunked(stream, MemoryMarshal.AsBytes(scene.Vertices.AsSpan()));
-            WriteChunked(stream, MemoryMarshal.AsBytes(scene.Indices.AsSpan()));
+            // Geometry is most of the work: it fills the bar from 12 % to 95 %
+            long total = (long)scene.Vertices.Length * SceneVertex.SIZE + (long)scene.Indices.Length * sizeof(uint);
+            long done = 0;
+            WriteChunked(stream, MemoryMarshal.AsBytes(scene.Vertices.AsSpan()), progress, ref done, total);
+            WriteChunked(stream, MemoryMarshal.AsBytes(scene.Indices.AsSpan()), progress, ref done, total);
         }
 
         /// <summary>
         /// Writes a large span in pieces (keeps the deflate stream's buffers small).
         /// </summary>
-        private static void WriteChunked(Stream stream, ReadOnlySpan<byte> bytes)
+        private static void WriteChunked(Stream stream, ReadOnlySpan<byte> bytes, Utilities.OperationProgress progress, ref long done, long total)
         {
             const int CHUNK = 1 << 20;
             while (bytes.Length > 0)
@@ -228,6 +260,12 @@ namespace BimGo.Format
                 int length = Math.Min(CHUNK, bytes.Length);
                 stream.Write(bytes[..length]);
                 bytes = bytes[length..];
+                done += length;
+                if (progress != null)
+                {
+                    progress.Step(0.12 + 0.83 * (total <= 0 ? 1.0 : (double)done / total));
+                    progress.ThrowIfCancelled();
+                }
             }
         }
 
