@@ -459,7 +459,7 @@ namespace BimGo.Game
         {
             if (!input.LeftDown) { _activeSlider = -1; }
 
-            float w = S(340), h = S(500);
+            float w = S(340), h = S(600);
             SunIconRect(out _, out float iconY, out _);
             float x = _window.Width - S(20) - w;
             float y = MathF.Max(S(20), iconY - S(10) - h);
@@ -472,7 +472,7 @@ namespace BimGo.Game
             float cy = y + S(14);
 
             // Header
-            _ui.Text(f.Small, ix, cy, "SUN & SHADOWS", UiTheme.SUN_LABEL, S(2f));
+            _ui.Text(f.Small, ix, cy, "SUN, SHADOWS & LIGHTS", UiTheme.SUN_LABEL, S(2f));
             _ui.TextRight(f.Small, ix + iw, cy, "ESC · O CLOSE", UiTheme.TEXT_FAINT, S(0.6f));
             cy += S(22);
             _ui.TextWrapped(f.Small, ix, cy, iw, _sunPlaceLabel, _locationKnown ? UiTheme.TEXT_MUTED : UiTheme.MEASURE_LABEL, maxLines: 1);
@@ -542,9 +542,13 @@ namespace BimGo.Game
             IntensitySlider(f, input, SLIDER_GLASS, ix, cy, iw, "Light through glass", _sun.GlassTransmission, 2f);
             cy += S(54);
 
+            // Artificial lights (saved with the settings, not the model)
+            cy += BuildLightControls(f, input, ix, cy, iw);
+
             if (SmallButton(f, input, ix, cy, S(150), S(28), "RESET LIGHTING"))
             {
                 _sun.SunIntensity = _sun.SkyIntensity = _sun.ShadowIntensity = _sun.GlassTransmission = 1f;
+                _lightIntensity = _bloomIntensity = 1f;
                 SunChanged();
             }
             _ui.TextRight(f.Small, ix + iw, cy + S(8), "[ ] TIME · SPACE PLAY", UiTheme.TEXT_FAINT, S(0.4f));

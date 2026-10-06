@@ -21,6 +21,7 @@ namespace BimGo.Format
     /// bookmarks.json    saved viewpoints and the home viewpoint (optional; only written when there are some)
     /// sun.json          sun / shadow state: on/off, date, time, intensities (optional)
     /// visibility.json   hidden categories, links and elements (optional; only written when something is hidden)
+    /// lighting.json     glowing vertex ranges and lighting-fixture lights (optional; only written when there are some)
     /// </code>
     /// </summary>
     public static class BimGoFormat
@@ -67,6 +68,7 @@ namespace BimGo.Format
         internal const string ENTRY_BOOKMARKS = "bookmarks.json";
         internal const string ENTRY_SUN = "sun.json";
         internal const string ENTRY_VISIBILITY = "visibility.json";
+        internal const string ENTRY_LIGHTING = "lighting.json";
 
         /// <summary>geometry.bin magic ("BGEO", little-endian).</summary>
         internal const uint GEOMETRY_MAGIC = 0x4F454742;

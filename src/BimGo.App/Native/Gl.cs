@@ -51,6 +51,13 @@ namespace BimGo.Native
         public const uint OUT_OF_MEMORY = 0x0505;
         public const uint NONE = 0;
 
+        // Ambient occlusion (float colour targets, read with texelFetch)
+        public const uint RGBA32F = 0x8814, RG16F = 0x822F, RG = 0x8227, HALF_FLOAT = 0x140B;
+
+        // Artificial lights (glow target as a second colour attachment)
+        public const uint RGBA16F = 0x881A, COLOR_ATTACHMENT1 = 0x8CE1;
+        public const uint DEPTH_COMPONENT16 = 0x81A5, UNSIGNED_SHORT = 0x1403;
+
         #endregion
 
         #region Loading
@@ -81,12 +88,12 @@ namespace BimGo.Native
             "glCreateShader", "glShaderSource", "glCompileShader", "glGetShaderiv", "glGetShaderInfoLog",
             "glDeleteShader", "glCreateProgram", "glAttachShader", "glLinkProgram", "glGetProgramiv",
             "glGetProgramInfoLog", "glDeleteProgram", "glUseProgram", "glGetUniformLocation", "glUniform1i",
-            "glUniform1f", "glUniform2f", "glUniform3f", "glUniform4f", "glUniformMatrix4fv",
+            "glUniform1f", "glUniform2f", "glUniform3f", "glUniform4f", "glUniformMatrix4fv", "glUniform4fv",
 
             // Framebuffers
             "glGenFramebuffers", "glDeleteFramebuffers", "glBindFramebuffer", "glFramebufferRenderbuffer",
             "glCheckFramebufferStatus", "glGenRenderbuffers", "glDeleteRenderbuffers", "glBindRenderbuffer",
-            "glRenderbufferStorageMultisample", "glBlitFramebuffer", "glFramebufferTextureLayer",
+            "glRenderbufferStorageMultisample", "glBlitFramebuffer", "glFramebufferTextureLayer", "glFramebufferTexture2D", "glDrawBuffers",
         };
 
         [DllImport("opengl32.dll", CharSet = CharSet.Ansi, BestFitMapping = false)]
@@ -325,6 +332,15 @@ namespace BimGo.Native
         public static void Uniform4(int location, float x, float y, float z, float w) => _gl.Uniform4(location, x, y, z, w);
 
         /// <summary>
+        /// Uploads a vec4 array (count elements, starting at the array's location).
+        /// </summary>
+        public static void Uniform4(int location, int count, System.Numerics.Vector4[] values)
+        {
+            if (count <= 0) { return; }
+            fixed (System.Numerics.Vector4* p = values) { _gl.Uniform4(location, (uint)count, (float*)p); }
+        }
+
+        /// <summary>
         /// Uploads a System.Numerics matrix as-is (row-vector convention reads as the GL column-vector transpose).
         /// </summary>
         public static void UniformMatrix4(int location, in System.Numerics.Matrix4x4 matrix)
@@ -354,11 +370,19 @@ namespace BimGo.Native
         public static uint CheckFramebufferStatus(uint target) => (uint)_gl.CheckFramebufferStatus((GLEnum)target);
 
         public static void DrawBuffer(uint buffer) => _gl.DrawBuffer((GLEnum)buffer);
+
+        /// <summary>
+        /// Sets the draw buffers of the bound framebuffer (multiple render targets).
+        /// </summary>
+        public static void DrawBuffers(int count, uint* buffers) => _gl.DrawBuffers((uint)count, (GLEnum*)buffers);
         public static void ReadBuffer(uint buffer) => _gl.ReadBuffer((GLEnum)buffer);
         public static void ReadPixels(int x, int y, int width, int height, uint format, uint type, void* pixels) => _gl.ReadPixels(x, y, (uint)width, (uint)height, (GLEnum)format, (GLEnum)type, pixels);
 
         public static void FramebufferTextureLayer(uint target, uint attachment, uint texture, int level, int layer)
             => _gl.FramebufferTextureLayer((GLEnum)target, (GLEnum)attachment, texture, level, layer);
+
+        public static void FramebufferTexture2D(uint target, uint attachment, uint textureTarget, uint texture, int level)
+            => _gl.FramebufferTexture2D((GLEnum)target, (GLEnum)attachment, (GLEnum)textureTarget, texture, level);
 
         public static uint GenRenderbuffer()
         {

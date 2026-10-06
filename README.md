@@ -79,11 +79,12 @@ The v3 design brief is `ai/261005_V3/1_BimGo v3_Handoff.md`. Decisions and the c
 | N | Measure gun: toggle normal projection |
 | T | Demolish gun: toggle phase demolish (default; existing elements only) / delete |
 | **E** | Comment gun: edit the hovered comment |
-| WASD · Q / E | Gizmo / Clone while locked on: move (view-relative) · rotate CCW / CW (player frozen) |
+| WASD · E / Q | Gizmo / Clone, move mode (every lock starts here): move in plan (view-relative) · E up / Q down (player frozen) |
+| **R** · A / D | Gizmo / Clone while locked on: switch move ↔ rotate · in rotate mode, turn CCW / CW on the XY plane |
 | Shift · Ctrl | Gizmo / Clone while locked on: fine control · invert snap mode while held |
 | RMB · Esc | Gizmo / Clone while locked on: commit · cancel |
 | **G** | Gizmo / Clone: toggle snap mode (moves / turns step by the increment; Ctrl held inverts) |
-| **Z / X · C / V** | Gizmo / Clone while locked on: move increment down / up (5 mm … 1 m) · angle increment down / up (1° … 90°) |
+| **Z / X** | Gizmo / Clone while locked on: the current mode's increment down / up (move 5 mm … 1 m, rotate 1° … 90°) |
 | **R** | Scan gun, live session: select and show the target in Revit (a linked element is selected inside its link) |
 | **F5** | Live session: ask Revit for a fresh snapshot (reloads where you stand) |
 | Page Up / Page Down | Teleport up / down one level |
@@ -128,7 +129,7 @@ Coordinate readout (L, remembered in settings): **Shared** = survey coordinates 
 | 4 | Comment | Place + type (E edits) | Remove marker | Sidecar beside the model | Saved in the file |
 | 5 | Teleport | Blink to marker | Step back | | Same |
 | 6 | Demolish | Prime / demolish primed | Un-prime | Demolish in the new phase (existing elements only; T = delete) in Revit | Journal `hide`; hosted inserts go too |
-| 7 | Gizmo | Lock on (FFE) | Commit | Moves the element in Revit (G snap, Z/X C/V increments) | Journal `transform` |
+| 7 | Gizmo | Lock on (FFE) | Commit | Moves / raises / rotates the element in Revit (R move ↔ rotate, G snap, Z/X increments) | Journal `transform` |
 | 8 | Clone | Clone in place (FFE) | Commit | Copies the element in Revit (same snap keys) | Journal `clone` |
 
 ## 4. Project structure
@@ -147,7 +148,7 @@ src/
 │   ├── Program.cs                 #   entry point, single instance, DPI awareness, --register / --unregister
 │   ├── Shell/                     #   AppShell (home ↔ walkthrough loop, switch / reload), HomeScreen, OpenTarget, RecentFiles, AppInstance (mutex + inbox), FileAssociation
 │   ├── Game/                      #   GameSession (+Render, +Menu, +Edits, +Document, +Live, +Push, +Comments, +Bookmarks, +Coordinates, +Sun), CommentStore, BookmarkStore, SessionOptions, guns
-│   ├── Rendering/                 #   SceneRenderer (+ shadow passes), ShadowMaps (cascades), SunLighting, Shaders, UI
+│   ├── Rendering/                 #   SceneRenderer (+ shadow and AO / glow pre-passes), ShadowMaps (cascades), ScreenEffects (AO + bloom), ArtificialLighting, SunLighting, Shaders, UI
 │   ├── Physics/ Platform/ Native/ Audio/
 └── BimGo.Revit/                   # the add-in (template configs R25–R27)
     ├── Application.cs             #   ribbon: BimGo tab → Walkthrough → Go, Export .bimgo, Live (status)
@@ -196,6 +197,10 @@ tests/
   - A static BVH shared by picking and collision.
   - Degenerate-index hiding.
   - `DynamicInstance`s for moved and cloned elements.
+- **Ambient occlusion** (pause menu → Ambient occlusion, on by default, saved in settings): before the scene pass, the opaque batches, moved / cloned elements and the ground are drawn at half resolution into a geometry target (view-space normal + view depth, RGBA32F) by `ScreenEffects`. A screen-space AO pass (12 spiral taps over 0.6 m, 4×4 ordered rotation) and a 9-tap depth-aware blur in each direction leave (AO, depth) on texture unit 3. The scene and ground shaders upsample it with a joint bilateral 2×2 lookup and multiply only the **ambient** (sky) term, so direct sun and shadows are untouched. Off for glass, the plan minimap and beyond 120 m (fading from 72 m). Independent of MSAA (separate target). A GPU that refuses the targets switches it off with a toast.
+- **Artificial lights** (K cycles off / glow / glow + light; sun panel: mode and brightness; Revit Options: the launch mode; saved in settings).
+  - *Extraction* (`SceneExtractor.Lighting.cs`): a material **glows** when its appearance asset has self-illumination (Generic `generic_self_illum_luminance` > 0, with its filter colour and colour temperature; Advanced / Physical `opaque_luminance` unless `opaque_emission` is off), anywhere in the model. Inside **Lighting Fixtures** elements, materials whose name contains an `EmissiveKeywords` entry (lamp, bulb, LED, lens, diffuser…) glow too; a raised fixture (bottom > 1.2 m above its level) with neither gets its bottom, downward-facing faces as a guessed lens. Glowing meshes are always opaque. Each fixture gets **one light** at the area-weighted centre of its glowing triangles (5 cm in front, downward share from which way they face), else near the top of the fixture (floor / table lamps); lumens and kelvin come from its "Initial Intensity" / "Initial Color" (or similarly named) parameters when their text parses (lm, cd, W @ lm/W; K), else 1000 lm / 3500 K (logged as estimated).
+  - *Rendering:* glow is a per-vertex RGBA8 stream (attribute 3; only uploaded when the model has some) added to the surface colour and written by the AO pre-pass into a second target, so the **bloom** (quarter resolution, 13-tap blur, added over the scene after glass) is hidden behind whatever is in front. Each frame `GameSession.Lights` picks the **nearest 32 lights whose sphere touches the view** (fixtures where they stand, moved fixtures where they went, clones' copies; hidden ones dark), fading the farthest when more are in range. Each light has a **cached omnidirectional shadow map** (`LightShadows`: 6 × 256 px faces per light in one 16-bit depth array of 32 × 6 layers, ~25 MB; the shader picks the face from the major axis, so GL 3.3 is enough). Maps are rendered once and kept while the light stays picked; a moved light or a scene change (hide, demolish, move, category toggle) re-renders them, at most 4 lights per frame (new ones first; stale maps are used meanwhile); a light joins, fading in over 8 frames, once its map exists. Windowed inverse-square falloff (radius 2.5–9 m from √lumens), an omni + downward-cosine lobe, 4-tap PCF, and 6 % of each light filling what it sees evenly (a stand-in for bounce, darkened by AO; a third of it reaches shadowed spots). Values above 0.8 roll off smoothly instead of clipping. With the sun up the fixtures matter less (light × 0.35, glow × 0.6 at full day).
 
 ## 6. The `.bimgo` format (version 1)
 
@@ -212,6 +217,7 @@ A ZIP container with the extension masked:
 | `journal.json` | ordered edit entries |
 | `visibility.json` | optional (only when something is hidden): `hiddenCategories` (catalog keys), `hiddenLinks` (link instance UniqueIds), `hiddenElements[]` (`link` instance UniqueId or absent, `uniqueId`, `id`) |
 | `sun.json` | optional: `enabled`, `time` (`month`, `day`, `minutes`, `daylightSaving`), `sunIntensity`, `skyIntensity`, `shadowIntensity`, `glassTransmission`. Bookmarks may carry `sun` (same `time` shape) |
+| `lighting.json` | optional (written when there are lights or glowing surfaces): `emissive[]` = `[vertexStart, vertexCount, packed RGBA]` runs (RGB = colour, A = strength / 4), `lights[]` with `element` (index), `position` (scene-local metres), `lumens`, `kelvin`, `downward` (0–1), `estimated`. Damaged runs / lights are dropped on read |
 | `bookmarks.json` | optional (written when there are bookmarks or a home): `bookmarks[]` with id, name, author, created, `x`/`y`/`z` (feet, Revit internal metres), `yaw`/`pitch` (radians), `flying`, `level`, optional `sun` and `thumbnail` (base64 JPEG); optional `home` (same shape: where walkthroughs start). List order = Ctrl+1–9 order |
 
 `model.site` also carries (v5.1, additive) `hasSharedTransform`, `sharedEast`, `sharedNorth`, `sharedElevation` (shared position of the internal origin, double precision) and `sharedAngle` (internal → shared rotation): shared = Rz(sharedAngle) · internal + (east, north, elevation). The manifest's `counts` gained `bookmarks`. v6 adds `model.site.hasLocation`, `latitude`, `longitude` (degrees, east / north positive), `timeZone` (hours), `placeName` and `sunStart` (`yyyy-MM-ddTHH:mm`, the launch view's sun-study start). Settings gained `ShadowQuality` (Low / Medium / High).
@@ -269,11 +275,43 @@ Envelope: `protocol`, `id`, `seq`, `sessionId`, `type`, `replyTo`, `sentUtc`, `p
 - **v7** (linked models) built and works (Gavin, 2026-10-11).
 - Linked models: only top-level link instances are offered (nested links are not extracted); unloaded links are listed but can't be ticked; link phases are matched by name (Revit's per-link phase mapping isn't exposed in the API); a link's levels name its elements but don't join the level list (PgUp / PgDn); linked elements are read-only and never enter the journal or push; comments on them record no element id. A link reloaded in Revit shows as MODEL CHANGED (F5 re-extracts it).
 - More than 9 guns will need a rethink of the number keys.
-- **Dependencies round (Silk.NET GL bindings + Core tests) not compiled yet** (written without a .NET SDK or NuGet access). Verify: restore of `Silk.NET.OpenGL` 2.23.0 and `MSTest.Sdk` 4.4.1; the `Gl` facade overloads against Silk.NET (GLEnum casts, `uint` sizes); every test passes; the §6 UX parity checklist in `ai/261013_Dependencies/0_BimGo Dependencies_Handoff.md` (rendering paths, 3.3 fallback, startup error text, frame times).
+- **Dependencies round** (Silk.NET GL bindings, Core tests, MIT) built, all tests pass and UX checked (Gavin, 2026-10-13). Next: installer round, `ai/261013_Installer/0_BimGo Installer_Handoff.md`.
 - Silk.NET.Core brings Microsoft.Extensions.DependencyModel 9.x, which may in turn copy a newer `System.Text.Json.dll` (9.x) beside `BimGo.exe`; the app (and BimGo.Core inside it) would then use it instead of the 8.0 framework copy. Check the build output; JSON behaviour should be identical for BimGo's DTOs, and the Revit add-in is unaffected.
+- **Lighting round** (glow, bloom, lights with cached shadow maps) and **gizmo modes** built and working (Gavin, 2026-10-16). Originally written without a .NET SDK or the Revit API. The GLSL was compiled, linked and run in WebGL2 (two rooms, a doorway, ceiling panels, night and day). Verify: Revit `Autodesk.Revit.DB.Visual` (`Asset.FindByName`, `AssetPropertyDouble/Float/Boolean`, `AssetPropertyDoubleArray4d.GetValueAsDoubles`), `Parameter.AsValueString` text for "Initial Intensity" / "Initial Color" on real fixtures (check the log's "estimated" count), `glDrawBuffers` / `glUniform4fv`, RGBA16F targets, the sun panel height (600) on small windows.
+- Artificial-light shadows are 256 px per face (soft, ~2.5 cm texels at 3 m); glass doesn't cast them; geometry within 8 cm of a light never shadows it. A GPU that can't make the maps lights without shadows (toast once). Keyword glow only applies inside Lighting Fixtures; self-illuminated materials glow anywhere. Light intensity is calibrated for a night-adapted eye (100 lx ≈ full albedo) and is not photometric.
+- **AO round not compiled yet** (written without a .NET SDK). The GLSL was compiled, linked and run in WebGL2 (ANGLE / SwiftShader) on a test room; the C# was reviewed by eye only. Verify: `glFramebufferTexture2D` (wglGetProcAddress), RGBA32F / RG16F render targets, the menu card height, and the FPS cost on a large model (the pre-pass draws the opaque scene a second time at half resolution). Tuning constants are in `ScreenEffects` (`RADIUS`, `INTENSITY`, `MAX_DEPTH`). AO built and confirmed working (Gavin, 2026-10-14).
+- AO is screen-space: occluders off screen or hidden behind the nearest surface don't count, so occlusion near the screen edges can fade as the view turns. Highlights on glass sample the AO of the surface behind.
 - Journal replay onto the scene lives in BimGo.App (`GameSession`), so the Core tests cover the journal's own rules (numbering, undo / redo, clone keys, push request) but not replay.
 
 ## 9. Changelog
+
+### 2026-10-16: Gizmo / Clone: separate move and rotate modes, vertical moves
+
+- Locking on (and every new clone) starts in **move** mode: WASD move in plan relative to the view, **E raises, Q lowers**. **R** switches to **rotate** mode: **A / D** turn CCW / CW about the vertical axis through the pivot (XY plane only: families stay level). RMB commits, Esc cancels, as before.
+- **Z / X** step the current mode's snap increment (move distance or angle); C / V no longer used. Snapped E / Q step by the move increment (Z clamped to whole increments like X / Y).
+- Gizmo drawing follows the mode (move: plan arrows + up / down arrows, faint ring; rotate: bold ring and heading tick); the panel shows MOVE / ROTATE, and the Δ readout adds Z when raised or lowered.
+- No format or protocol change: edits already carried a 3D translation (Revit `MoveElement` and the file journal apply Z). Revit may refuse or adjust a vertical move for some hosted / level-constrained families (the walkthrough reverts it with Revit's message).
+
+### 2026-10-16: Lights: cached shadow maps instead of room clipping; bloom control
+
+- Room clipping gave hard cut-offs at door thresholds (Gavin). Each light now has a cached omnidirectional shadow map (`Rendering/LightShadows`), so light goes through doorways and stops at walls and under furniture. Room boxes removed.
+- Sun panel: *Light* and *Bloom* sliders side by side; `LaunchSettings.BloomIntensity` (0–2, default 1; 0 = no bloom).
+
+### 2026-10-15: Rendering round 2: artificial lights and glow
+
+- **Glow:** materials with Revit self-illumination glow anywhere; inside Lighting Fixtures, lamp / LED / lens / diffuser… materials (`LaunchSettings.EmissiveKeywords`) and, failing those, the bottom faces of raised fixtures glow too. A bloom spreads it (half-res pre-pass target → quarter-res blur → added over the scene).
+- **Lights:** one per lighting fixture (output and colour temperature from its parameters when readable), nearest 32 in view each frame, soft falloff, downward lobe, a little fill for bounce. Daylight dims them; night shows them off.
+- **Controls:** K cycles off / glow / glow + light; sun panel (now SUN, SHADOWS & LIGHTS) has the mode and *Light* / *Bloom* sliders; Revit Options → **Artificial lights** sets the launch mode. Settings: `ArtificialLights` (default glow + light), `ArtificialLightIntensity`, `EmissiveKeywords`.
+- **Format:** optional `lighting.json` (no version bump; older readers ignore it). `SceneData.Lighting` (Core `LightingData`, `EmissiveRun`, `LightSource`).
+- `AmbientOcclusion` → `ScreenEffects` (the pre-pass now also writes glow; AO unchanged). `Gl`: `DrawBuffers`, `Uniform4` arrays, `RGBA16F`, `COLOR_ATTACHMENT1`.
+- Tests: `LightingTests` (round-trip, absent, damaged entries, packing, luminance, kelvin, settings).
+
+### 2026-10-14: Rendering round 1: ambient occlusion
+
+- **Ambient occlusion** (SSAO): darkens corners, junctions, skirting, furniture against walls and objects on floors. Half-resolution geometry pre-pass, AO and depth-aware blur in the new `Rendering/AmbientOcclusion`; applied to the ambient term only in both the sun and classic lighting, and to the ground. Pause menu → WORLD & DISPLAY → **Ambient occlusion** (on by default; `LaunchSettings.AmbientOcclusion`, older settings files read as on).
+- `Gl`: `FramebufferTexture2D` and the float format constants. `sunLight()` takes the AO factor.
+- Tests: the new setting's default and older settings files.
+- First of the rendering rounds agreed after 1.0 (AO → HDR / tone mapping → material table → emissive + triplanar textures → point lights); see `ai/261014_Rendering_AO/1_build notes AO.md`.
 
 ### 2026-10-13: Dependencies round: Silk.NET GL bindings, Core tests, MIT licence
 

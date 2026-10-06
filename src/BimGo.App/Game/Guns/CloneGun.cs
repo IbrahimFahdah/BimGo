@@ -9,7 +9,7 @@ using BimGo.Scene;
 namespace BimGo.Game.Guns
 {
     /// <summary>
-    /// Gun 8: copy a loadable family instance in place and go straight into the gizmo on the copy.
+    /// Gun 8: copy a loadable family instance in place and go straight into the gizmo (move mode) on the copy.
     /// RMB commits (Revit copies the element with the same move and rotation, or the file records it); Esc discards.
     /// </summary>
     internal sealed class CloneGun : Gun

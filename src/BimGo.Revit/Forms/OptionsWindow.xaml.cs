@@ -187,6 +187,7 @@ namespace BimGo.Forms
             CheckComments.IsChecked = _settings.LoadComments;
             LoadSnap();
             ComboShadowQuality.SelectedIndex = Math.Clamp((int)_settings.ShadowQuality, 0, 2);
+            ComboArtificialLights.SelectedIndex = Math.Clamp((int)_settings.ArtificialLights, 0, 2);
             CheckViewOnly.IsChecked = _settings.ActiveViewOnly && _view.Available;
             CheckViewOnly.IsEnabled = _view.Available;
             CheckSkipHelpers.IsChecked = _settings.SkipHelperGeometry;
@@ -298,6 +299,7 @@ namespace BimGo.Forms
             _settings.SnapMoveMm = LaunchSettings.SNAP_MOVE_STEPS_MM[Math.Max(ComboSnapMove.SelectedIndex, 0)];
             _settings.SnapAngleDeg = LaunchSettings.SNAP_ANGLE_STEPS_DEG[Math.Max(ComboSnapAngle.SelectedIndex, 0)];
             _settings.ShadowQuality = (BimGo.Scene.ShadowQuality)Math.Clamp(ComboShadowQuality.SelectedIndex, 0, 2);
+            _settings.ArtificialLights = (BimGo.Scene.ArtificialLightMode)Math.Clamp(ComboArtificialLights.SelectedIndex, 0, 2);
             _settings.ExistingPhase = existingPhase;
             _settings.NewPhase = newPhase;
             _settings.ExtraParameters = _knownParameters.Where(_pickedParameters.Contains).ToList();

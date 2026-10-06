@@ -62,6 +62,7 @@ namespace BimGo.Game
 
         public static readonly uint AXIS_X = Rgba.Hex(0xF87171);
         public static readonly uint AXIS_Y = Rgba.Hex(0x4ADE80);
+        public static readonly uint AXIS_Z = Rgba.Hex(0x60A5FA);
 
         public static readonly uint MAP_BACKGROUND = Rgba.Hex(0x14171C);
         public static readonly uint MENU_BACKGROUND = Rgba.Hex(0x101318, 0.94f);

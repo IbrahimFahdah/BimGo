@@ -44,6 +44,19 @@ namespace BimGo.Tests
         }
 
         [TestMethod]
+        public void AmbientOcclusion_OnByDefaultAndForOlderSettingsFiles()
+        {
+            Assert.IsTrue(new LaunchSettings().AmbientOcclusion);
+
+            // A settings.json written before the setting existed has no AmbientOcclusion key: it stays on
+            LaunchSettings older = System.Text.Json.JsonSerializer.Deserialize<LaunchSettings>("{\"Msaa\":2}");
+            Assert.IsTrue(older.AmbientOcclusion);
+
+            LaunchSettings off = System.Text.Json.JsonSerializer.Deserialize<LaunchSettings>("{\"AmbientOcclusion\":false}");
+            Assert.IsFalse(off.AmbientOcclusion);
+        }
+
+        [TestMethod]
         public void Sanitise_RepairsNullsAndUndefinedEnums()
         {
             var settings = new LaunchSettings

@@ -92,6 +92,7 @@ namespace BimGo.Game
 
         private bool _whitecard;
         private int _msaa;
+        private bool _ambientOcclusion;
         private float _fov;
         private float _sensitivity;
         private bool _invertY;
@@ -169,6 +170,7 @@ namespace BimGo.Game
             LaunchSettings settings = scene.Settings;
             _whitecard = settings.Colour == ColourMode.Whitecard;
             _msaa = settings.Msaa;
+            _ambientOcclusion = settings.AmbientOcclusion;
             _fov = settings.FieldOfView;
             _sensitivity = settings.MouseSensitivity;
             _invertY = settings.InvertY;
@@ -178,6 +180,7 @@ namespace BimGo.Game
             SnapMoveMm = LaunchSettings.NearestStep(LaunchSettings.SNAP_MOVE_STEPS_MM, settings.SnapMoveMm);
             SnapAngleDeg = LaunchSettings.NearestStep(LaunchSettings.SNAP_ANGLE_STEPS_DEG, settings.SnapAngleDeg);
             InitialiseCoordinates(settings.CoordinateReadout);
+            InitialiseLights(settings);
         }
 
         #region Setup
@@ -600,6 +603,7 @@ namespace BimGo.Game
                 return;
             }
             if (input.IsPressed('L')) { CycleCoordinateReadout(); }
+            if (input.IsPressed('K')) { CycleLightMode(); }
             if (input.IsPressed('O'))
             {
                 if (input.IsDown(Vk.VK_SHIFT)) { OpenSunPanel(); }
@@ -859,6 +863,10 @@ namespace BimGo.Game
             LaunchSettings settings = LaunchSettings.LoadOrDefault();
             settings.Colour = _whitecard ? ColourMode.Whitecard : ColourMode.Material;
             settings.Msaa = _msaa;
+            settings.AmbientOcclusion = _ambientOcclusion;
+            settings.ArtificialLights = _lightMode;
+            settings.ArtificialLightIntensity = _lightIntensity;
+            settings.BloomIntensity = _bloomIntensity;
             settings.FieldOfView = _fov;
             settings.MouseSensitivity = _sensitivity;
             settings.InvertY = _invertY;

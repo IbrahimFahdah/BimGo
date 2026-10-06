@@ -40,6 +40,9 @@ namespace BimGo.Rendering
     /// <summary>
     /// Owns the static scene buffers and draws sky, batches, ground and highlights, and (when the sun is on) the
     /// cascaded shadow maps. Lighting comes from <see cref="Lighting"/>: off = the classic fixed light.
+    /// Ambient occlusion and the glow (when on) share a half-resolution geometry pre-pass drawn here and processed by
+    /// <see cref="ScreenEffects"/>. Artificial lights (<see cref="ArtificialLighting"/>) and emissive surfaces are lit
+    /// in the scene and ground shaders.
     /// </summary>
     internal sealed unsafe class SceneRenderer : IDisposable
     {
@@ -51,8 +54,13 @@ namespace BimGo.Rendering
         private static readonly Vector3 LIGHT_DIR = Vector3.Normalize(new Vector3(0.35f, 0.22f, 0.91f));
 
         private ShaderProgram _sceneProgram, _skyProgram, _groundProgram, _shadowDepthProgram, _shadowTransmitProgram;
+        private ShaderProgram _geometryProgram, _groundGeometryProgram;
         private SceneUniforms _sceneUniforms;
         private LightUniforms _sceneLight, _groundLight;
+        private AoUniforms _sceneAo, _groundAo;
+        private ArtificialUniforms _sceneLights, _groundLights;
+        private GeometryUniforms _geometryUniforms, _groundGeometryUniforms;
+        private int _groundGeometryCenter, _groundGeometryHalf, _geometryGlow;
         private int _skyInvViewProj, _skyEye, _groundViewProj, _groundCenter, _groundHalf, _groundEye, _groundFog;
         private int _skySun, _skySunDir, _skyZenith, _skyHorizon, _skyDisc;
         private int _depthViewProj, _depthModel, _transmitViewProj, _transmitModel, _transmitGlass, _transmitWhitecard;
@@ -64,7 +72,27 @@ namespace BimGo.Rendering
         private bool _shadowsActive;
         private bool _hasTransparent;
 
+        // Ambient occlusion and glow
+        private readonly ScreenEffects _effects = new();
+        private bool _aoActive, _glowActive;
+        private Vector3 _aoForward = Vector3.UnitX;
+
+        // Glowing surfaces: a per-vertex RGBA8 stream (attribute 3), only when the model has any
+        private uint _emissiveVbo;
+
+        // Artificial-light shadow maps (cached per light)
+        private readonly LightShadows _lightShadows = new();
+        private readonly int[] _lightSlot = new int[ArtificialLighting.MAX_LIGHTS];
+        private bool _lightShadowsReported;
+        private readonly List<int> _lightsToRender = new(LightShadows.LIGHTS_PER_FRAME);
+
         private uint _vao, _vbo, _ibo, _emptyVao;
+
+        /// <summary>This frame's artificial lights and glow strength (set by the session before drawing).</summary>
+        public ArtificialLighting Artificial { get; } = new();
+
+        /// <summary>True if the model has glowing surfaces.</summary>
+        public bool HasEmissive => _emissiveVbo != 0;
 
         private SceneBatches _batches;
         private int[] _drawCounts = Array.Empty<int>();
@@ -91,6 +119,12 @@ namespace BimGo.Rendering
 
         /// <summary>The shadow maps (state, presets, last error).</summary>
         public ShadowMaps Shadows => _shadows;
+
+        /// <summary>The ambient occlusion / glow targets (state, last error).</summary>
+        public ScreenEffects Effects => _effects;
+
+        /// <summary>Half-size of the ground plane quad (m).</summary>
+        private const float GROUND_HALF = 2500f;
 
         #endregion
 
@@ -134,6 +168,70 @@ namespace BimGo.Rendering
         }
 
         /// <summary>
+        /// Uniform locations of the ambient occlusion block shared by the scene and ground shaders.
+        /// </summary>
+        private struct AoUniforms
+        {
+            public int On, Forward, Scale;
+
+            public static AoUniforms From(ShaderProgram p)
+            {
+                // The sampler reads a fixed texture unit (set once)
+                p.Use();
+                Gl.Uniform1(p.Uniform("uAoMap"), ScreenEffects.AO_UNIT);
+                return new AoUniforms
+                {
+                    On = p.Uniform("uAoOn"),
+                    Forward = p.Uniform("uAoForward"),
+                    Scale = p.Uniform("uAoScale")
+                };
+            }
+        }
+
+        /// <summary>
+        /// Uniform locations of the artificial-light block shared by the scene and ground shaders.
+        /// </summary>
+        private struct ArtificialUniforms
+        {
+            public int Count, Pos, Color, Shadow, Emissive, Shoulder;
+
+            public static ArtificialUniforms From(ShaderProgram p)
+            {
+                // The shadow sampler reads a fixed texture unit and the texel size never changes (set once)
+                p.Use();
+                Gl.Uniform1(p.Uniform("uLightShadowMap"), LightShadows.UNIT);
+                Gl.Uniform1(p.Uniform("uLightShadowTexel"), LightShadows.Texel);
+                return new ArtificialUniforms
+                {
+                    Count = p.Uniform("uLightCount"),
+                    Pos = p.Uniform("uLightPos[0]"),
+                    Color = p.Uniform("uLightColor[0]"),
+                    Shadow = p.Uniform("uLightShadow[0]"),
+                    Emissive = p.Uniform("uEmissive"),
+                    Shoulder = p.Uniform("uShoulder")
+                };
+            }
+        }
+
+        /// <summary>
+        /// Uniform locations of a geometry pre-pass program.
+        /// </summary>
+        private struct GeometryUniforms
+        {
+            public int ViewProj, Model, Eye, Right, Up, Forward;
+
+            public static GeometryUniforms From(ShaderProgram p) => new()
+            {
+                ViewProj = p.Uniform("uViewProj"),
+                Model = p.Uniform("uModel"),
+                Eye = p.Uniform("uEye"),
+                Right = p.Uniform("uRight"),
+                Up = p.Uniform("uUp"),
+                Forward = p.Uniform("uForward")
+            };
+        }
+
+        /// <summary>
         /// Uniform locations of a scene-shaded program.
         /// </summary>
         private struct SceneUniforms
@@ -171,10 +269,21 @@ namespace BimGo.Rendering
             _groundProgram = ShaderProgram.Create("ground", Shaders.GROUND_VS, Shaders.GROUND_FS);
             _shadowDepthProgram = ShaderProgram.Create("shadow depth", Shaders.SHADOW_VS, Shaders.SHADOW_DEPTH_FS);
             _shadowTransmitProgram = ShaderProgram.Create("shadow glass", Shaders.SHADOW_VS, Shaders.SHADOW_TRANSMIT_FS);
+            _geometryProgram = ShaderProgram.Create("ao geometry", Shaders.SCENE_VS, Shaders.GEOMETRY_FS);
+            _groundGeometryProgram = ShaderProgram.Create("ao ground geometry", Shaders.GROUND_VS, Shaders.GEOMETRY_GROUND_FS);
 
             _sceneUniforms = SceneUniforms.From(_sceneProgram);
             _sceneLight = LightUniforms.From(_sceneProgram);
             _groundLight = LightUniforms.From(_groundProgram);
+            _sceneAo = AoUniforms.From(_sceneProgram);
+            _groundAo = AoUniforms.From(_groundProgram);
+            _sceneLights = ArtificialUniforms.From(_sceneProgram);
+            _groundLights = ArtificialUniforms.From(_groundProgram);
+            _geometryGlow = _geometryProgram.Uniform("uGlow");
+            _geometryUniforms = GeometryUniforms.From(_geometryProgram);
+            _groundGeometryUniforms = GeometryUniforms.From(_groundGeometryProgram);
+            _groundGeometryCenter = _groundGeometryProgram.Uniform("uCenter");
+            _groundGeometryHalf = _groundGeometryProgram.Uniform("uHalf");
             _skyInvViewProj = _skyProgram.Uniform("uInvViewProj");
             _skyEye = _skyProgram.Uniform("uEye");
             _skySun = _skyProgram.Uniform("uSun");
@@ -224,6 +333,9 @@ namespace BimGo.Rendering
             Gl.BindBuffer(Gl.ELEMENT_ARRAY_BUFFER, _dynamicIbo);
             SetVertexLayout();
             Gl.BindVertexArray(0);
+
+            // Glowing surfaces: a second vertex stream on both VAOs (left disabled when there are none: reads as no glow)
+            UploadEmissive(scene);
             _dynamicRanges = new ElementRange[scene.Elements.Length];
             _hasDynamicRange = new bool[scene.Elements.Length];
 
@@ -238,6 +350,41 @@ namespace BimGo.Rendering
 
             _emptyVao = Gl.GenVertexArray();
             _shadows.Initialise();
+            _effects.Initialise();
+        }
+
+        /// <summary>
+        /// Expands the model's emissive runs to one RGBA8 per vertex and binds it as attribute 3 of both VAOs.
+        /// </summary>
+        private void UploadEmissive(SceneData scene)
+        {
+            EmissiveRun[] runs = scene.Lighting?.Emissive ?? Array.Empty<EmissiveRun>();
+            if (runs.Length == 0) { return; }
+
+            uint[] perVertex = new uint[scene.Vertices.Length];
+            int glowing = 0;
+            foreach (EmissiveRun run in runs)
+            {
+                Array.Fill(perVertex, run.Emissive, run.Start, run.Count);
+                glowing += run.Count;
+            }
+
+            _emissiveVbo = Gl.GenBuffer();
+            Gl.BindBuffer(Gl.ARRAY_BUFFER, _emissiveVbo);
+            fixed (uint* data = perVertex)
+            {
+                Gl.BufferData(Gl.ARRAY_BUFFER, (nint)perVertex.Length * sizeof(uint), data, Gl.STATIC_DRAW);
+            }
+            foreach (uint vao in new[] { _vao, _dynamicVao })
+            {
+                Gl.BindVertexArray(vao);
+                Gl.BindBuffer(Gl.ARRAY_BUFFER, _emissiveVbo);
+                Gl.EnableVertexAttribArray(3);
+                Gl.VertexAttribPointer(3, 4, Gl.UNSIGNED_BYTE, true, sizeof(uint), 0);
+            }
+            Gl.BindVertexArray(0);
+            Gl.BindBuffer(Gl.ARRAY_BUFFER, 0);
+            Utilities.Log_Utils.Write($"Glowing surfaces: {glowing:N0} vertices in {runs.Length:N0} runs.");
         }
 
         /// <summary>
@@ -533,6 +680,208 @@ namespace BimGo.Rendering
 
         #endregion
 
+        #region Ambient occlusion and glow
+
+        /// <summary>
+        /// Renders this frame's screen effects (call after <see cref="UpdateShadows"/> and before binding the scene
+        /// target): the opaque batches, moved / cloned elements and the ground into the half-resolution pre-pass with
+        /// the player camera's culling, then the AO and / or bloom passes. With both off the targets are freed.
+        /// </summary>
+        /// <param name="camera">The player camera (updated).</param>
+        /// <param name="width">Scene target width in pixels.</param>
+        /// <param name="height">Scene target height in pixels.</param>
+        /// <param name="groupVisible">Per visibility group (category × model, <see cref="SceneBatches.GroupOf"/>).</param>
+        /// <param name="dynamics">Moved and cloned elements.</param>
+        /// <param name="groundZ">Ground plane elevation.</param>
+        /// <param name="ao">Ambient occlusion wanted.</param>
+        /// <param name="glow">Bloom wanted (ignored when the model has no glowing surfaces).</param>
+        /// <returns>Null, or a reason the effects could not be shown (the caller switches them off).</returns>
+        public string UpdateScreenEffects(FpsCamera camera, int width, int height, bool[] groupVisible, DynamicSet dynamics, float groundZ,
+            bool ao, bool glow)
+        {
+            glow &= HasEmissive;
+            _aoActive = _glowActive = false;
+            if (!ao && !glow)
+            {
+                _effects.Release();
+                return null;
+            }
+            if (!_effects.Ensure(width, height))
+            {
+                _effects.Bind();
+                return _effects.LastError;
+            }
+
+            FlushDynamic();
+            Vector3 eye = camera.Position, forward = camera.Forward, right = camera.Right;
+            Vector3 up = Vector3.Normalize(Vector3.Cross(right, forward));
+
+            _effects.BeginGeometry(glow);
+
+            _geometryProgram.Use();
+            ApplyGeometry(_geometryUniforms, camera.ViewProjection, eye, right, up, forward);
+            Gl.Uniform1(_geometryGlow, glow ? 1f : 0f);
+            DrawBatches(camera.Planes, groupVisible, transparent: false, countStats: false);
+            if (dynamics != null && dynamics.Instances.Count > 0) { DrawDynamicInstances(dynamics, camera.Planes, transparent: false, _geometryUniforms.Model); }
+
+            _groundGeometryProgram.Use();
+            ApplyGeometry(_groundGeometryUniforms, camera.ViewProjection, eye, right, up, forward);
+            Gl.Uniform3(_groundGeometryCenter, eye.X, eye.Y, groundZ);
+            Gl.Uniform1(_groundGeometryHalf, GROUND_HALF);
+            Gl.BindVertexArray(_emptyVao);
+            Gl.DrawArrays(Gl.TRIANGLES, 0, 6);
+            Gl.BindVertexArray(0);
+
+            _effects.Compute(camera, ao, glow);
+            _aoForward = forward;
+            _aoActive = ao;
+            _glowActive = glow;
+            return null;
+
+            static void ApplyGeometry(in GeometryUniforms u, in Matrix4x4 viewProjection, Vector3 eye, Vector3 right, Vector3 up, Vector3 forward)
+            {
+                Gl.UniformMatrix4(u.ViewProj, viewProjection);
+                Gl.UniformMatrix4(u.Model, Matrix4x4.Identity);
+                Gl.Uniform3(u.Eye, eye.X, eye.Y, eye.Z);
+                Gl.Uniform3(u.Right, right.X, right.Y, right.Z);
+                Gl.Uniform3(u.Up, up.X, up.Y, up.Z);
+                Gl.Uniform3(u.Forward, forward.X, forward.Y, forward.Z);
+            }
+        }
+
+        /// <summary>
+        /// Switches AO and glow off for this frame and frees their targets (after a failure).
+        /// </summary>
+        public void DisableScreenEffects()
+        {
+            _aoActive = _glowActive = false;
+            _effects.Release();
+        }
+
+        /// <summary>
+        /// Gives this frame's picked lights their shadow maps (call after the session filled <see cref="Artificial"/>,
+        /// before binding the scene target): renders the few that are new, moved or out of date, then keeps only the
+        /// lights that have a map (a new light joins, fading in, once its map exists). With no lights the maps are freed.
+        /// If the GPU can't make the maps, lights are drawn without shadows.
+        /// </summary>
+        /// <param name="groupVisible">Per visibility group (category × model, <see cref="SceneBatches.GroupOf"/>).</param>
+        /// <param name="dynamics">Moved and cloned elements.</param>
+        /// <param name="sceneKey">Changes whenever shadow casters change.</param>
+        /// <returns>Null, or (once) why light shadows are unavailable.</returns>
+        public string UpdateLightShadows(bool[] groupVisible, DynamicSet dynamics, long sceneKey)
+        {
+            ArtificialLighting a = Artificial;
+            if (a.Count == 0)
+            {
+                if (_lightShadows.Ready) { _lightShadows.Release(); }
+                return null;
+            }
+
+            string error = null;
+            if (!_lightShadows.Ensure())
+            {
+                // No maps: light without shadows (said once)
+                error = _lightShadows.LastError;
+                if (_lightShadowsReported) { error = null; }
+                _lightShadowsReported = true;
+                for (int k = 0; k < a.Count; k++) { a.Shadow[k].X = -1f; }
+                return error;
+            }
+
+            _lightShadows.Assign(a, sceneKey, _lightSlot, _lightsToRender);
+            if (_lightsToRender.Count > 0)
+            {
+                FlushDynamic();
+                Gl.Enable(Gl.DEPTH_TEST);
+                Gl.DepthFunc(Gl.LEQUAL);
+                Gl.Disable(Gl.BLEND);
+                Gl.Disable(Gl.CULL_FACE);
+                Gl.ColorMask(false, false, false, false);
+                Gl.Enable(Gl.POLYGON_OFFSET_FILL);
+                Gl.PolygonOffset(1.5f, 3f);
+                _shadowDepthProgram.Use();
+                foreach (int k in _lightsToRender)
+                {
+                    Vector4 light = a.Position[k];
+                    var position = new Vector3(light.X, light.Y, light.Z);
+                    for (int face = 0; face < 6; face++)
+                    {
+                        Matrix4x4 matrix = LightShadows.FaceMatrix(position, light.W, face);
+                        Vector4[] planes = _lightShadows.BeginFace(_lightSlot[k], face, matrix);
+                        Gl.UniformMatrix4(_depthViewProj, matrix);
+                        Gl.UniformMatrix4(_depthModel, Matrix4x4.Identity);
+                        DrawBatches(planes, groupVisible, transparent: false, countStats: false);
+                        if (dynamics != null && dynamics.Instances.Count > 0) { DrawDynamicInstances(dynamics, planes, transparent: false, _depthModel); }
+                    }
+                    _lightShadows.MarkRendered(_lightSlot[k], light, sceneKey);
+                }
+                Gl.Disable(Gl.POLYGON_OFFSET_FILL);
+                Gl.ColorMask(true, true, true, true);
+                _lightShadows.EndRender(_lightsToRender.Count);
+            }
+
+            // Keep the lights that have a map (order kept: nearest first)
+            for (int k = 0; k < a.Count; k++)
+            {
+                if (_lightShadows.HasMap(_lightSlot[k], out float fadeIn))
+                {
+                    a.Shadow[k].X = _lightSlot[k] * 6;
+                    a.Shadow[k].Y *= fadeIn;
+                    continue;
+                }
+                a.RemoveAt(k);
+                Array.Copy(_lightSlot, k + 1, _lightSlot, k, a.Count - k);
+                k--;
+            }
+            _lightShadows.Bind();
+            return null;
+        }
+
+        /// <summary>
+        /// Adds this frame's bloom over the scene target (call after the transparent pass, target bound).
+        /// </summary>
+        public void CompositeGlow()
+        {
+            if (_glowActive) { _effects.CompositeGlow(Artificial.Bloom); }
+        }
+
+        /// <summary>
+        /// Sets the AO block of the scene or ground program for one draw.
+        /// </summary>
+        /// <param name="u">The program's locations.</param>
+        /// <param name="on">False for passes that never get AO (plan minimap, glass).</param>
+        private void ApplyAo(in AoUniforms u, bool on)
+        {
+            on &= _aoActive;
+            Gl.Uniform1(u.On, on ? 1 : 0);
+            if (!on) { return; }
+            Vector3 forward = _aoForward;
+            Vector2 scale = _effects.Scale;
+            Gl.Uniform3(u.Forward, forward.X, forward.Y, forward.Z);
+            Gl.Uniform2(u.Scale, scale.X, scale.Y);
+        }
+
+        /// <summary>
+        /// Sets the artificial-light block of the scene or ground program for one draw.
+        /// </summary>
+        /// <param name="u">The program's locations.</param>
+        /// <param name="on">False for the plan minimap (no lights, no glow).</param>
+        private void ApplyArtificial(in ArtificialUniforms u, bool on)
+        {
+            ArtificialLighting a = Artificial;
+            int count = on ? a.Count : 0;
+            float emissive = on ? a.Emissive : 0f;
+            Gl.Uniform1(u.Count, count);
+            Gl.Uniform1(u.Emissive, emissive);
+            Gl.Uniform1(u.Shoulder, count > 0 || emissive > 0f ? 1 : 0);
+            if (count == 0) { return; }
+            Gl.Uniform4(u.Pos, count, a.Position);
+            Gl.Uniform4(u.Color, count, a.Colour);
+            Gl.Uniform4(u.Shadow, count, a.Shadow);
+        }
+
+        #endregion
+
         #region Drawing
 
         /// <summary>
@@ -565,11 +914,13 @@ namespace BimGo.Rendering
             _groundProgram.Use();
             Gl.UniformMatrix4(_groundViewProj, camera.ViewProjection);
             Gl.Uniform3(_groundCenter, camera.Position.X, camera.Position.Y, groundZ);
-            Gl.Uniform1(_groundHalf, 2500f);
+            Gl.Uniform1(_groundHalf, GROUND_HALF);
             Gl.Uniform3(_groundEye, camera.Position.X, camera.Position.Y, camera.Position.Z);
             Vector3 fog = FogColour;
             Gl.Uniform3(_groundFog, fog.X, fog.Y, fog.Z);
             ApplyLight(_groundLight, sun: true, transmit: true);
+            ApplyAo(_groundAo, on: true);
+            ApplyArtificial(_groundLights, on: true);
             Gl.BindVertexArray(_emptyVao);
             Gl.DrawArrays(Gl.TRIANGLES, 0, 6);
         }
@@ -650,6 +1001,9 @@ namespace BimGo.Rendering
             Vector3 fog = p.Sun ? FogColour : FOG_COLOUR;
             Gl.Uniform3(u.FogColor, fog.X, fog.Y, fog.Z);
             ApplyLight(_sceneLight, p.Sun, transmit);
+            // AO follows "transmit": on for opaque surfaces and highlights, off for glass (it isn't in the pre-pass)
+            ApplyAo(_sceneAo, transmit && !p.Plan);
+            ApplyArtificial(_sceneLights, !p.Plan);
             Gl.Uniform1(u.FogDensity, p.FogDensity);
             Gl.Uniform1(u.Whitecard, p.Whitecard ? 1 : 0);
             Gl.Uniform1(u.Plan, p.Plan ? 1 : 0);
@@ -669,7 +1023,12 @@ namespace BimGo.Rendering
             _groundProgram?.Dispose();
             _shadowDepthProgram?.Dispose();
             _shadowTransmitProgram?.Dispose();
+            _geometryProgram?.Dispose();
+            _groundGeometryProgram?.Dispose();
             _shadows.Dispose();
+            _effects.Dispose();
+            _lightShadows.Dispose();
+            Gl.DeleteBuffer(_emissiveVbo);
             Gl.DeleteBuffer(_vbo);
             Gl.DeleteBuffer(_ibo);
             Gl.DeleteBuffer(_dynamicIbo);

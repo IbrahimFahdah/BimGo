@@ -17,6 +17,21 @@ namespace BimGo.Scene
     }
 
     /// <summary>
+    /// How lighting fixtures show in the walkthrough.
+    /// </summary>
+    public enum ArtificialLightMode
+    {
+        /// <summary>Not shown: fixtures look like any other element.</summary>
+        Off = 0,
+
+        /// <summary>Lamps and lenses glow (with a bloom), but cast no light.</summary>
+        Glow = 1,
+
+        /// <summary>Glow, and the nearest fixtures cast light (with cached shadow maps).</summary>
+        Lights = 2
+    }
+
+    /// <summary>
     /// Shadow-map quality: resolution, number of cascades and edge softening (see the renderer's presets).
     /// </summary>
     public enum ShadowQuality
@@ -81,6 +96,27 @@ namespace BimGo.Scene
 
         /// <summary>MSAA samples (0, 2 or 4).</summary>
         public int Msaa { get; set; } = 0;
+
+        /// <summary>Screen-space ambient occlusion in the walkthrough (contact shading in corners and under objects).</summary>
+        public bool AmbientOcclusion { get; set; } = true;
+
+        /// <summary>Artificial lights at launch (the sun panel and K change it in the walkthrough).</summary>
+        public ArtificialLightMode ArtificialLights { get; set; } = ArtificialLightMode.Lights;
+
+        /// <summary>Artificial light brightness multiplier (0–2, 1 = default).</summary>
+        public float ArtificialLightIntensity { get; set; } = 1f;
+
+        /// <summary>Bloom (the halo around glowing surfaces) multiplier (0–2, 1 = default; 0 = no bloom).</summary>
+        public float BloomIntensity { get; set; } = 1f;
+
+        /// <summary>
+        /// Material name fragments (case-insensitive) that glow inside Lighting Fixtures elements, for families whose
+        /// materials have no self-illumination set. Materials with Revit self-illumination glow anywhere.
+        /// </summary>
+        public List<string> EmissiveKeywords { get; set; } = DefaultEmissiveKeywords();
+
+        /// <summary>The default emissive keywords.</summary>
+        public static List<string> DefaultEmissiveKeywords() => new() { "lamp", "bulb", "led", "lens", "diffuser", "emissive", "glow", "illum", "light source", "luminaire" };
 
         /// <summary>Mouse sensitivity multiplier.</summary>
         public float MouseSensitivity { get; set; } = 1.0f;
@@ -311,6 +347,15 @@ namespace BimGo.Scene
             NewPhase = NewPhase?.Trim() ?? string.Empty;
             if (!Enum.IsDefined(CoordinateReadout)) { CoordinateReadout = CoordinateReadout.Off; }
             if (!Enum.IsDefined(ShadowQuality)) { ShadowQuality = ShadowQuality.Medium; }
+            if (!Enum.IsDefined(ArtificialLights)) { ArtificialLights = ArtificialLightMode.Lights; }
+            ArtificialLightIntensity = float.IsFinite(ArtificialLightIntensity) ? Math.Clamp(ArtificialLightIntensity, 0f, 2f) : 1f;
+            BloomIntensity = float.IsFinite(BloomIntensity) ? Math.Clamp(BloomIntensity, 0f, 2f) : 1f;
+            EmissiveKeywords = (EmissiveKeywords ?? DefaultEmissiveKeywords())
+                .Where(k => !string.IsNullOrWhiteSpace(k))
+                .Select(k => k.Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Take(40)
+                .ToList();
             TriangleThreshold = Math.Clamp(TriangleThreshold, 100, 5_000_000);
             Msaa = Msaa >= 4 ? 4 : Msaa >= 2 ? 2 : 0;
             MouseSensitivity = Math.Clamp(MouseSensitivity, 0.1f, 3f);

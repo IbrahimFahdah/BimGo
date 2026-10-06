@@ -76,6 +76,10 @@ namespace BimGo.Format
                     {
                         WriteJson(zip, BimGoFormat.ENTRY_SUN, document.Sun, BimGoFormat.JSON_INDENTED);
                     }
+                    if (scene.Lighting != null && !scene.Lighting.IsEmpty)
+                    {
+                        WriteJson(zip, BimGoFormat.ENTRY_LIGHTING, BuildLighting(scene.Lighting), BimGoFormat.JSON_COMPACT);
+                    }
                 }
 
                 // Past this point the write completes: the replace is quick and must not be half done
@@ -193,6 +197,28 @@ namespace BimGo.Format
                 });
             }
             return model;
+        }
+
+        private static LightingDto BuildLighting(LightingData lighting)
+        {
+            var dto = new LightingDto();
+            foreach (EmissiveRun run in lighting.Emissive)
+            {
+                dto.Emissive.Add(new long[] { run.Start, run.Count, run.Emissive });
+            }
+            foreach (LightSource light in lighting.Lights)
+            {
+                dto.Lights.Add(new LightDto
+                {
+                    Element = light.Element,
+                    Position = light.Position,
+                    Lumens = light.Lumens,
+                    Kelvin = light.Kelvin,
+                    Downward = light.Downward,
+                    Estimated = light.Estimated
+                });
+            }
+            return dto;
         }
 
         private static ElementsDto BuildElements(SceneData scene)

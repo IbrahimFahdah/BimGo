@@ -204,6 +204,7 @@
                         <RowDefinition Height="34"/>
                         <RowDefinition Height="38"/>
                         <RowDefinition Height="38"/>
+                        <RowDefinition Height="38"/>
                     </Grid.RowDefinitions>
 
                     <TextBlock Grid.Row="0" Style="{StaticResource FieldLabel}" Text="Anti-aliasing"/>
@@ -248,6 +249,16 @@
                             <ComboBoxItem Content="High"/>
                         </ComboBox>
                         <TextBlock Margin="10,0,0,0" VerticalAlignment="Center" FontSize="12" Foreground="{StaticResource Muted}" Text="O toggles shadows · Shift+O opens the sun panel"/>
+                    </StackPanel>
+
+                    <TextBlock Grid.Row="6" Style="{StaticResource FieldLabel}" Text="Artificial lights"/>
+                    <StackPanel Grid.Row="6" Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                        <ComboBox x:Name="ComboArtificialLights" Width="140" Height="28" VerticalContentAlignment="Center">
+                            <ComboBoxItem Content="Off"/>
+                            <ComboBoxItem Content="Glow only"/>
+                            <ComboBoxItem Content="Glow + light"/>
+                        </ComboBox>
+                        <TextBlock Margin="10,0,0,0" VerticalAlignment="Center" FontSize="12" Foreground="{StaticResource Muted}" Text="Lighting fixtures glow and cast light · K cycles"/>
                     </StackPanel>
                 </Grid>
 

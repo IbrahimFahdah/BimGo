@@ -321,6 +321,9 @@ namespace BimGo.Scene
         public LinkInfo LinkOf(ElementRecord record) =>
             record != null && record.Link > 0 && record.Link <= Links.Length ? Links[record.Link - 1] : null;
 
+        /// <summary>Glowing surfaces and lighting-fixture lights (optional; never null).</summary>
+        public LightingData Lighting { get; init; } = LightingData.Empty;
+
         /// <summary>Optional extra parameter values per element (names picked in the Options dialog). Never null.</summary>
         public ParameterTable Parameters { get; init; } = ParameterTable.Empty;
 

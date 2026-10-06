@@ -284,4 +284,47 @@ namespace BimGo.Format
     }
 
     #endregion
+
+    #region lighting.json
+
+    /// <summary>
+    /// lighting.json: glowing surfaces and lighting-fixture lights (optional; older readers ignore it).
+    /// </summary>
+    public sealed class LightingDto
+    {
+        /// <summary>Entry layout version.</summary>
+        public int Version { get; set; } = 1;
+
+        /// <summary>Emissive vertex runs as [start, count, packed RGBA (uint)].</summary>
+        public List<long[]> Emissive { get; set; } = new();
+
+        /// <summary>The lights.</summary>
+        public List<LightDto> Lights { get; set; } = new();
+    }
+
+    /// <summary>
+    /// One light in lighting.json.
+    /// </summary>
+    public sealed class LightDto
+    {
+        /// <summary>Element index (into elements.json).</summary>
+        public int Element { get; set; }
+
+        /// <summary>Position (scene-local metres).</summary>
+        public Vector3 Position { get; set; }
+
+        /// <summary>Luminous flux (lm).</summary>
+        public float Lumens { get; set; } = 1000f;
+
+        /// <summary>Colour temperature (K).</summary>
+        public float Kelvin { get; set; } = 3500f;
+
+        /// <summary>0 omnidirectional .. 1 downward.</summary>
+        public float Downward { get; set; } = 0.7f;
+
+        /// <summary>True when guessed.</summary>
+        public bool Estimated { get; set; }
+    }
+
+    #endregion
 }

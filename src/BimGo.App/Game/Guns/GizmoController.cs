@@ -9,15 +9,29 @@ using Vk = BimGo.Native.Win32;
 namespace BimGo.Game.Guns
 {
     /// <summary>
+    /// The gizmo's two modes: R switches between them while locked on.
+    /// </summary>
+    internal enum GizmoMode
+    {
+        /// <summary>WASD move in plan (view-relative), E / Q up / down.</summary>
+        Move,
+
+        /// <summary>A / D rotate about the vertical axis through the pivot (level families stay level).</summary>
+        Rotate
+    }
+
+    /// <summary>
     /// The move / rotate gizmo shared by the Gizmo and Clone guns.
     ///
-    /// While locked on, WASD (or the arrows) move the target in plan relative to the view and Q / E rotate it
-    /// counter-clockwise / clockwise about its pivot; Shift slows both down.
+    /// Locking on starts in <see cref="GizmoMode.Move"/>: WASD (or the arrows) move the target in plan relative to
+    /// the view, E raises it and Q lowers it. R switches to <see cref="GizmoMode.Rotate"/>: A / D (or ← / →) turn it
+    /// counter-clockwise / clockwise about its pivot on the XY plane (no other rotations: Revit families stay level).
+    /// Shift slows either down.
     ///
     /// Snap mode (G toggles it; holding Ctrl inverts it for as long as it is held) clamps the change since locking
     /// on to the session's increments (<see cref="GameSession.SnapMove"/> / <see cref="GameSession.SnapAngle"/>):
-    /// each key press (and key repeat) steps one increment, moves follow the world X / Y axis nearest the view
-    /// direction, so offsets stay exact multiples. Z / X and C / V change the increments while locked.
+    /// each key press (and key repeat) steps one increment, plan moves follow the world X / Y axis nearest the view
+    /// direction, so offsets stay exact multiples. Z / X step the current mode's increment down / up.
     /// The owning gun decides what committing and cancelling mean.
     /// </summary>
     internal sealed class GizmoController
@@ -49,6 +63,14 @@ namespace BimGo.Game.Guns
         /// <summary>True while locked on.</summary>
         public bool Active => Target != null;
 
+        /// <summary>Move or rotate (R switches; every lock starts in move).</summary>
+        public GizmoMode Mode { get; private set; } = GizmoMode.Move;
+
+        /// <summary>
+        /// Switches between move and rotate.
+        /// </summary>
+        public void ToggleMode() => Mode = Mode == GizmoMode.Move ? GizmoMode.Rotate : GizmoMode.Move;
+
         /// <summary>Pivot translation since locking on.</summary>
         public Vector3 DeltaOffset => Target == null ? Vector3.Zero : Target.Offset - _startOffset;
 
@@ -69,6 +91,7 @@ namespace BimGo.Game.Guns
         public void Begin(DynamicInstance target)
         {
             Target = target;
+            Mode = GizmoMode.Move;
             _startOffset = _rawOffset = target.Offset;
             _startAngle = _rawAngle = target.Angle;
         }
@@ -108,20 +131,30 @@ namespace BimGo.Game.Guns
             _clock += dt;
             if (Target == null) { return; }
 
-            float forward = 0f, strafe = 0f, turn = 0f;
-            if (input.IsDown('W') || input.IsDown(Vk.VK_UP)) { forward += 1f; }
-            if (input.IsDown('S') || input.IsDown(Vk.VK_DOWN)) { forward -= 1f; }
-            if (input.IsDown('D') || input.IsDown(Vk.VK_RIGHT)) { strafe += 1f; }
-            if (input.IsDown('A') || input.IsDown(Vk.VK_LEFT)) { strafe -= 1f; }
-            if (input.IsDown('Q')) { turn += 1f; }
-            if (input.IsDown('E')) { turn -= 1f; }
+            bool rotating = Mode == GizmoMode.Rotate;
+            float forward = 0f, strafe = 0f, lift = 0f, turn = 0f;
+            if (!rotating)
+            {
+                if (input.IsDown('W') || input.IsDown(Vk.VK_UP)) { forward += 1f; }
+                if (input.IsDown('S') || input.IsDown(Vk.VK_DOWN)) { forward -= 1f; }
+                if (input.IsDown('D') || input.IsDown(Vk.VK_RIGHT)) { strafe += 1f; }
+                if (input.IsDown('A') || input.IsDown(Vk.VK_LEFT)) { strafe -= 1f; }
+                if (input.IsDown('E')) { lift += 1f; }
+                if (input.IsDown('Q')) { lift -= 1f; }
+            }
+            else
+            {
+                if (input.IsDown('A') || input.IsDown(Vk.VK_LEFT)) { turn += 1f; }
+                if (input.IsDown('D') || input.IsDown(Vk.VK_RIGHT)) { turn -= 1f; }
+            }
             float scale = input.IsDown(Vk.VK_SHIFT) ? FINE : 1f;
 
-            // Camera-relative in plan
+            // Camera-relative in plan, plus straight up / down
             Vector3 flatForward = Flatten(_session.Camera.Forward);
             Vector3 flatRight = Flatten(_session.Camera.Right);
             Vector3 move = flatForward * forward + flatRight * strafe;
             if (move.LengthSquared() > 1f) { move = Vector3.Normalize(move); }
+            move.Z = lift;
 
             Vector3 offset;
             float angle;
@@ -129,18 +162,26 @@ namespace BimGo.Game.Guns
             {
                 // Stepped: one increment per press / key repeat, along the world axis nearest the view direction
                 float step = _session.SnapMove, angleStep = _session.SnapAngle;
-                Vector3 stepMove = Vector3.Zero;
-                if (input.IsPressedOrRepeated('W') || input.IsPressedOrRepeated(Vk.VK_UP)) { stepMove += flatForward; }
-                if (input.IsPressedOrRepeated('S') || input.IsPressedOrRepeated(Vk.VK_DOWN)) { stepMove -= flatForward; }
-                if (input.IsPressedOrRepeated('D') || input.IsPressedOrRepeated(Vk.VK_RIGHT)) { stepMove += flatRight; }
-                if (input.IsPressedOrRepeated('A') || input.IsPressedOrRepeated(Vk.VK_LEFT)) { stepMove -= flatRight; }
-                _rawOffset += NearestAxis(stepMove) * step;
-                if (input.IsPressedOrRepeated('Q')) { _rawAngle += angleStep; }
-                if (input.IsPressedOrRepeated('E')) { _rawAngle -= angleStep; }
+                if (!rotating)
+                {
+                    Vector3 stepMove = Vector3.Zero;
+                    if (input.IsPressedOrRepeated('W') || input.IsPressedOrRepeated(Vk.VK_UP)) { stepMove += flatForward; }
+                    if (input.IsPressedOrRepeated('S') || input.IsPressedOrRepeated(Vk.VK_DOWN)) { stepMove -= flatForward; }
+                    if (input.IsPressedOrRepeated('D') || input.IsPressedOrRepeated(Vk.VK_RIGHT)) { stepMove += flatRight; }
+                    if (input.IsPressedOrRepeated('A') || input.IsPressedOrRepeated(Vk.VK_LEFT)) { stepMove -= flatRight; }
+                    _rawOffset += NearestAxis(stepMove) * step;
+                    if (input.IsPressedOrRepeated('E')) { _rawOffset.Z += step; }
+                    if (input.IsPressedOrRepeated('Q')) { _rawOffset.Z -= step; }
+                }
+                else
+                {
+                    if (input.IsPressedOrRepeated('A') || input.IsPressedOrRepeated(Vk.VK_LEFT)) { _rawAngle += angleStep; }
+                    if (input.IsPressedOrRepeated('D') || input.IsPressedOrRepeated(Vk.VK_RIGHT)) { _rawAngle -= angleStep; }
+                }
 
                 // Clamp the change since lock-on to whole increments (also tidies a smooth move made before snapping)
                 Vector3 delta = _rawOffset - _startOffset;
-                _rawOffset = _startOffset + new Vector3(Snap(delta.X, step), Snap(delta.Y, step), 0f);
+                _rawOffset = _startOffset + new Vector3(Snap(delta.X, step), Snap(delta.Y, step), Snap(delta.Z, step));
                 _rawAngle = _startAngle + Snap(_rawAngle - _startAngle, angleStep);
                 offset = _rawOffset;
                 angle = _rawAngle;
@@ -202,19 +243,26 @@ namespace BimGo.Game.Guns
             float radius = MathF.Max(0.35f, 0.5f * MathF.Max(size.X, size.Y) + 0.2f);
             float pulse = 0.5f + 0.5f * MathF.Sin(_clock * 5f);
 
-            // Rotate ring with a tick showing the current heading
-            overlay.Ring(centre, Vector3.UnitX, Vector3.UnitY, radius, radius, 0.03f, Rgba.WithAlpha(colour, 0.85f));
+            // Rotate ring with a tick showing the current heading (bold in rotate mode, faint in move mode)
+            bool rotating = Mode == GizmoMode.Rotate;
+            overlay.Ring(centre, Vector3.UnitX, Vector3.UnitY, radius, radius, rotating ? 0.05f : 0.02f, Rgba.WithAlpha(colour, rotating ? 0.95f : 0.35f));
             float heading = Target.Angle;
             var tick = new Vector3(MathF.Cos(heading), MathF.Sin(heading), 0f);
-            overlay.Line(centre + tick * (radius - 0.12f), centre + tick * (radius + 0.12f), 4f, colour);
+            overlay.Line(centre + tick * (radius - 0.12f), centre + tick * (radius + 0.12f), rotating ? 5f : 2f, Rgba.WithAlpha(colour, rotating ? 1f : 0.5f));
 
-            // Move arrows along the view's forward / right in plan
-            Vector3 forward = Flatten(_session.Camera.Forward), right = Flatten(_session.Camera.Right);
-            float arrow = radius + 0.35f;
-            Arrow(overlay, centre, forward, arrow, UiTheme.AXIS_Y);
-            Arrow(overlay, centre, -forward, arrow * 0.7f, Rgba.WithAlpha(UiTheme.AXIS_Y, 0.5f));
-            Arrow(overlay, centre, right, arrow, UiTheme.AXIS_X);
-            Arrow(overlay, centre, -right, arrow * 0.7f, Rgba.WithAlpha(UiTheme.AXIS_X, 0.5f));
+            if (!rotating)
+            {
+                // Move arrows along the view's forward / right in plan, and up / down (E / Q)
+                Vector3 forward = Flatten(_session.Camera.Forward), right = Flatten(_session.Camera.Right);
+                float arrow = radius + 0.35f;
+                Arrow(overlay, centre, forward, arrow, UiTheme.AXIS_Y);
+                Arrow(overlay, centre, -forward, arrow * 0.7f, Rgba.WithAlpha(UiTheme.AXIS_Y, 0.5f));
+                Arrow(overlay, centre, right, arrow, UiTheme.AXIS_X);
+                Arrow(overlay, centre, -right, arrow * 0.7f, Rgba.WithAlpha(UiTheme.AXIS_X, 0.5f));
+                var top = new Vector3(pivot.X, pivot.Y, bounds.Max.Z + 0.1f);
+                VerticalArrow(overlay, top, +1f, UiTheme.AXIS_Z);
+                VerticalArrow(overlay, centre, -1f, Rgba.WithAlpha(UiTheme.AXIS_Z, 0.6f));
+            }
 
             // Pivot post and the trail back to where it started
             overlay.Line(centre, new Vector3(pivot.X, pivot.Y, bounds.Max.Z + 0.1f), 1.5f, Rgba.WithAlpha(colour, 0.5f + 0.3f * pulse));
@@ -227,6 +275,18 @@ namespace BimGo.Game.Guns
             }
         }
 
+        /// <summary>
+        /// A short vertical arrow (up from the top, or down from the base) for E / Q.
+        /// </summary>
+        private void VerticalArrow(Overlay3D overlay, Vector3 from, float sign, uint colour)
+        {
+            Vector3 tip = from + new Vector3(0f, 0f, 0.45f * sign);
+            Vector3 back = tip - new Vector3(0f, 0f, 0.14f * sign);
+            Vector3 side = Flatten(_session.Camera.Right) * 0.08f;
+            overlay.Line(from + new Vector3(0f, 0f, 0.05f * sign), back, 3f, colour);
+            overlay.Triangle(tip, back + side, back - side, colour);
+        }
+
         private static void Arrow(Overlay3D overlay, Vector3 centre, Vector3 direction, float length, uint colour)
         {
             Vector3 tip = centre + direction * length;
@@ -237,13 +297,15 @@ namespace BimGo.Game.Guns
         }
 
         /// <summary>
-        /// Writes "Δ 1.250 m · 15.0°" for the panel.
+        /// Writes "Δ 1.250 m · Z +0.100 m · 15.0°" for the panel (the Z part only when raised or lowered).
         /// </summary>
         public void DescribeDelta(TextBuffer text)
         {
             float degrees = DeltaAngle * 180f / MathF.PI;
             Vector3 delta = DeltaOffset;
-            text.Append("Δ ").Append(new Vector2(delta.X, delta.Y).Length(), 3).Append(" m · ").Append(degrees, 1).Append('°');
+            text.Append("Δ ").Append(new Vector2(delta.X, delta.Y).Length(), 3).Append(" m");
+            if (MathF.Abs(delta.Z) > 5e-4f) { text.Append(" · Z ").Append(delta.Z, 3, plusSign: true).Append(" m"); }
+            text.Append(" · ").Append(degrees, 1).Append('°');
         }
 
         #endregion

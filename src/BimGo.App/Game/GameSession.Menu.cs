@@ -502,7 +502,7 @@ namespace BimGo.Game
         {
             _ui.Text(f.Small, x, top + S(2), "WORLD & DISPLAY", UiTheme.TEXT_MUTED, S(1.8f));
             float cardTop = top + S(26);
-            float cardH = S(452);
+            float cardH = S(480);
             _ui.Panel(x, cardTop, width, cardH, UiTheme.CARD, UiTheme.CARD_BORDER);
 
             float ix = x + S(14), iw = width - S(28);
@@ -547,6 +547,8 @@ namespace BimGo.Game
             _invertY = Checkbox(f, input, ix, y, iw, "Invert Y", _invertY);
             y += S(28);
             _showFps = Checkbox(f, input, ix, y, iw, "Show FPS", _showFps);
+            y += S(28);
+            _ambientOcclusion = Checkbox(f, input, ix, y, iw, "Ambient occlusion", _ambientOcclusion);
         }
 
         #endregion

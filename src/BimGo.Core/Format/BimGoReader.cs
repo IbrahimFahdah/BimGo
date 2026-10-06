@@ -75,12 +75,13 @@ namespace BimGo.Format
                 BookmarkDocument bookmarks = (ReadJson<BookmarkDocument>(zip, BimGoFormat.ENTRY_BOOKMARKS, required: false) ?? new BookmarkDocument()).Clean();
                 SunSettings sun = ReadJson<SunSettings>(zip, BimGoFormat.ENTRY_SUN, required: false)?.Clean();
                 VisibilitySettings visibility = ReadJson<VisibilitySettings>(zip, BimGoFormat.ENTRY_VISIBILITY, required: false)?.Clean();
+                LightingDto lighting = ReadJson<LightingDto>(zip, BimGoFormat.ENTRY_LIGHTING, required: false);
                 progress?.Step(0.1);
                 progress?.ThrowIfCancelled();
                 ReadGeometry(zip, out SceneVertex[] vertices, out uint[] indices, progress);
                 progress?.ThrowIfCancelled();
 
-                SceneData scene = BuildScene(path, manifest, model, elements, parameters, vertices, indices, settings ?? new LaunchSettings());
+                SceneData scene = BuildScene(path, manifest, model, elements, parameters, vertices, indices, settings ?? new LaunchSettings(), lighting);
                 comments.Comments ??= new List<CommentRecord>();
                 comments.Comments.RemoveAll(c => c == null || string.IsNullOrWhiteSpace(c.Text));
 
@@ -112,7 +113,7 @@ namespace BimGo.Format
         #region Scene
 
         private static SceneData BuildScene(string path, ManifestDto manifest, ModelDto model, ElementsDto elementsDto, ParametersDto parametersDto,
-            SceneVertex[] vertices, uint[] indices, LaunchSettings settings)
+            SceneVertex[] vertices, uint[] indices, LaunchSettings settings, LightingDto lightingDto)
         {
             IReadOnlyList<CategoryDef> catalog = CategoryCatalog.All;
             int genericIndex = CategoryCatalog.Find(CategoryCatalog.KEY_GENERIC)?.Index ?? 0;
@@ -258,6 +259,7 @@ namespace BimGo.Format
                 Provenance = manifest.Provenance ?? new ModelProvenance(),
                 Site = model.Site ?? new SiteInfo(),
                 Parameters = BuildParameters(parametersDto, records.Length),
+                Lighting = BuildLighting(lightingDto, vertices.Length, records.Length),
                 CategoryLoaded = loaded,
                 CategoryElementCounts = counts,
                 Settings = settings,
@@ -282,6 +284,47 @@ namespace BimGo.Format
             int start = range[0], count = range[1];
             if (start < 0 || count <= 0 || start > indexCount || (long)start + count > indexCount) { return (0, 0); }
             return (start, count - count % 3);
+        }
+
+        /// <summary>
+        /// The optional lighting entry, validated: runs inside the vertex array, in order and not overlapping; lights on
+        /// real elements with finite values. Anything damaged is dropped (lighting is decoration, never worth a failed load).
+        /// </summary>
+        private static LightingData BuildLighting(LightingDto dto, int vertexCount, int elementCount)
+        {
+            if (dto == null) { return LightingData.Empty; }
+
+            var runs = new List<EmissiveRun>();
+            long next = 0;
+            foreach (long[] run in dto.Emissive ?? new List<long[]>())
+            {
+                if (run == null || run.Length < 3) { continue; }
+                long start = run[0], count = run[1];
+                if (start < next || count <= 0 || start + count > vertexCount || run[2] < 0 || run[2] > uint.MaxValue) { continue; }
+                runs.Add(new EmissiveRun((int)start, (int)count, (uint)run[2]));
+                next = start + count;
+            }
+
+            var lights = new List<LightSource>();
+            foreach (LightDto light in dto.Lights ?? new List<LightDto>())
+            {
+                if (light == null || light.Element < 0 || light.Element >= elementCount) { continue; }
+                Vector3 p = light.Position;
+                if (!float.IsFinite(p.X) || !float.IsFinite(p.Y) || !float.IsFinite(p.Z)) { continue; }
+                lights.Add(new LightSource
+                {
+                    Element = light.Element,
+                    Position = p,
+                    Lumens = float.IsFinite(light.Lumens) ? Math.Clamp(light.Lumens, 10f, 100000f) : 1000f,
+                    Kelvin = float.IsFinite(light.Kelvin) ? Math.Clamp(light.Kelvin, 1000f, 15000f) : 3500f,
+                    Downward = float.IsFinite(light.Downward) ? Math.Clamp(light.Downward, 0f, 1f) : 0.7f,
+                    Estimated = light.Estimated
+                });
+            }
+
+            return runs.Count == 0 && lights.Count == 0
+                ? LightingData.Empty
+                : new LightingData { Emissive = runs.ToArray(), Lights = lights.ToArray() };
         }
 
         private static ParameterTable BuildParameters(ParametersDto dto, int elementCount)

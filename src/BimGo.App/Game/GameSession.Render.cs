@@ -1,4 +1,5 @@
 using System.Numerics;
+using BimGo.Audio;
 using BimGo.Format;
 using BimGo.Game.Guns;
 using BimGo.Rendering;
@@ -34,6 +35,7 @@ namespace BimGo.Game
             ("X", "Clear this gun's markers"),
             ("B · CTRL+1–9", "Bookmark this view · Go to bookmark"),
             ("L", "Coordinate readout"),
+            ("K", "Artificial lights: off / glow / light"),
             ("O · SHIFT+O", "Shadows on/off · Sun panel"),
             ("[ ]", "Sun time −/+ 5 min (Shift: 1 min)"),
             ("CTRL+S · Z · Y", "Save · Undo · Redo (files)"),
@@ -61,6 +63,16 @@ namespace BimGo.Game
                 OnShadowFailure(shadowError);
                 _renderer.Lighting = CurrentLighting();
             }
+
+            // ---- Artificial lights for this frame (after the sun: daylight dims them), and their cached shadow maps
+            UpdateArtificialLights();
+            string lightShadowError = _renderer.UpdateLightShadows(_groupVisible, Dynamics, ShadowSceneKey());
+            if (lightShadowError != null) { Toast(lightShadowError, 6f); }
+
+            // ---- Ambient occlusion and glow: half-resolution geometry pre-pass, AO + blur, bloom source + blur
+            bool glow = _renderer.Artificial.Bloom > 0f;
+            string effectsError = _renderer.UpdateScreenEffects(Camera, width, height, _groupVisible, Dynamics, _groundZ, _ambientOcclusion, glow);
+            if (effectsError != null) { OnScreenEffectsFailure(effectsError); }
 
             // ---- 3D scene into the (optionally multisampled) target
             _target.Ensure(width, height, _msaa);
@@ -115,6 +127,9 @@ namespace BimGo.Game
             Gl.DepthMask(true);
             Gl.Disable(Gl.BLEND);
 
+            // Bloom from glowing surfaces over everything (glass included)
+            _renderer.CompositeGlow();
+
             // Markers: depth-tested, then a faint x-ray copy so markers behind walls stay discoverable
             _overlay.Begin(Camera);
             for (int i = 0; i < _guns.Length; i++) { _guns[i].DrawWorld(_overlay, i == _activeGun); }
@@ -140,6 +155,20 @@ namespace BimGo.Game
                 if (IsEditingComment) { BuildCommentEditor(); }
             }
             _ui.Flush(width, height);
+        }
+
+        /// <summary>
+        /// AO and glow could not be set up on this GPU: switch AO off (the setting is saved off too) and the bloom off
+        /// for this session (surfaces still glow, lights still light), and say why.
+        /// </summary>
+        private void OnScreenEffectsFailure(string reason)
+        {
+            _ambientOcclusion = false;
+            _bloomFailed = true;
+            _renderer.Artificial.Bloom = 0f;
+            _renderer.DisableScreenEffects();
+            Sound.Play(SoundId.Error);
+            Toast(reason, 6f);
         }
 
         /// <summary>

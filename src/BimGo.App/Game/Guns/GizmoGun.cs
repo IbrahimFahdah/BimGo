@@ -9,10 +9,11 @@ using BimGo.Scene;
 namespace BimGo.Game.Guns
 {
     /// <summary>
-    /// Gun 7: move / rotate loadable family instances (FFE). LMB on an eligible element locks the gizmo on:
-    /// WASD move it relative to the view, Q / E rotate it CCW / CW, Shift for fine control. G toggles snapping
-    /// to fixed increments (Ctrl inverts while held); Z / X and C / V change the increments while locked.
-    /// RMB commits (the same move and rotation are applied in Revit, or recorded in the file); Esc cancels.
+    /// Gun 7: move / rotate loadable family instances (FFE). LMB on an eligible element locks the gizmo on in move
+    /// mode: WASD move it relative to the view, E / Q raise / lower it. R switches to rotate mode: A / D turn it CCW /
+    /// CW on the XY plane. Shift for fine control. G toggles snapping to fixed increments (Ctrl inverts while held);
+    /// Z / X step the current mode's increment. RMB commits (the same move and rotation are applied in Revit, or
+    /// recorded in the file); Esc cancels.
     /// </summary>
     internal sealed class GizmoGun : Gun
     {
@@ -180,17 +181,21 @@ namespace BimGo.Game.Guns
     internal static class GizmoPanel
     {
         /// <summary>
-        /// Snap keys shared by the Gizmo and Clone guns: G toggles snapping (any time the gun is selected);
-        /// while locked on, Z / X step the move increment down / up and C / V the rotation increment.
+        /// Keys shared by the Gizmo and Clone guns: G toggles snapping (any time the gun is selected); while locked on,
+        /// R switches move / rotate and Z / X step the current mode's increment (move distance or angle) down / up.
         /// </summary>
         public static void HandleKeys(GameSession session, GizmoController gizmo, Platform.InputState input)
         {
             if (input.IsPressed('G')) { session.ToggleGizmoSnap(); }
             if (!gizmo.Active) { return; }
-            if (input.IsPressed('Z')) { session.StepSnapMove(-1); }
-            if (input.IsPressed('X')) { session.StepSnapMove(+1); }
-            if (input.IsPressed('C')) { session.StepSnapAngle(-1); }
-            if (input.IsPressed('V')) { session.StepSnapAngle(+1); }
+            if (input.IsPressed('R'))
+            {
+                gizmo.ToggleMode();
+                session.Sound.Play(Audio.SoundId.UiClick);
+            }
+            bool rotating = gizmo.Mode == GizmoMode.Rotate;
+            if (input.IsPressed('Z')) { if (rotating) { session.StepSnapAngle(-1); } else { session.StepSnapMove(-1); } }
+            if (input.IsPressed('X')) { if (rotating) { session.StepSnapAngle(+1); } else { session.StepSnapMove(+1); } }
         }
 
         /// <summary>
@@ -212,7 +217,7 @@ namespace BimGo.Game.Guns
             float s(float value) => value * scale;
             FontAtlas f = ui.Atlas;
             float used = ui.Text(f.Small, x, y, title, titleColour, s(1.1f));
-            if (gizmo.Active) { ui.Text(f.Small, x + used, y, " · LOCKED", titleColour, s(1.1f)); }
+            if (gizmo.Active) { ui.Text(f.Small, x + used, y, gizmo.Mode == GizmoMode.Rotate ? " · ROTATE" : " · MOVE", titleColour, s(1.1f)); }
             y += s(20);
 
             if (gizmo.Active)
@@ -224,7 +229,8 @@ namespace BimGo.Game.Guns
                 gizmo.DescribeDelta(delta);
                 ui.Text(f.Mono, x, y, delta.Span, UiTheme.TEXT);
                 y += s(20);
-                ui.Text(f.Body, x, y, "WASD move · Q/E rotate", UiTheme.TEXT_SOFT);
+                bool rotating = gizmo.Mode == GizmoMode.Rotate;
+                ui.Text(f.Body, x, y, rotating ? "A/D rotate · R move" : "WASD · E/Q up/down · R rotate", UiTheme.TEXT_SOFT);
                 y += s(18);
                 if (gizmo.IsSnapping(session.Input))
                 {
@@ -236,7 +242,7 @@ namespace BimGo.Game.Guns
                     ui.Text(f.Body, x, y, "Shift fine · G snap on/off · Ctrl flips snap", UiTheme.TEXT_MUTED);
                 }
                 y += s(18);
-                ui.Text(f.Body, x, y, "Z/X move step · C/V angle step", UiTheme.TEXT_MUTED);
+                ui.Text(f.Body, x, y, rotating ? "Z/X angle step" : "Z/X move step", UiTheme.TEXT_MUTED);
                 y += s(18);
                 ui.Text(f.Body, x, y, "RMB commit · Esc cancel", UiTheme.TEXT_MUTED);
                 return;

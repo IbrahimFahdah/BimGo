@@ -1,6 +1,6 @@
 # BimGo dependencies round: build notes (steps 1 and 3; installer deferred)
 
-Follows `0_BimGo Dependencies_Handoff.md` (this folder). Written in a sandbox with no .NET SDK and no NuGet access: **not compiled yet**. The Silk.NET overloads used by the facade were checked line by line against the Silk.NET **v2.23.0** source (the `GL.gen.cs` signatures, `GL.GetApi`, `LamdaNativeContext`), and the expected sun values against an independent algorithm, but the first real build and test run is Gavin's.
+Follows `0_BimGo Dependencies_Handoff.md` (this folder). **Status: built, all tests pass and the UX checks are fine (Gavin, 2026-10-13). MIT licence confirmed after review.** Originally written in a sandbox with no .NET SDK or NuGet access. The Silk.NET overloads used by the facade were checked line by line against the Silk.NET **v2.23.0** source (the `GL.gen.cs` signatures, `GL.GetApi`, `LamdaNativeContext`), and the expected sun values against an independent algorithm; Gavin then built and tested it.
 
 ## Decisions (Gavin, this round)
 

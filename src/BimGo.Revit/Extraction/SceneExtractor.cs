@@ -12,7 +12,7 @@ namespace BimGo.Extraction
     /// Runs on the Revit API thread only. Converts feet to metres and shifts everything to a
     /// scene-local origin (rounded to whole metres) so float precision holds up on large sites.
     /// </summary>
-    internal sealed class SceneExtractor
+    internal sealed partial class SceneExtractor
     {
         #region Constants
 
@@ -43,6 +43,7 @@ namespace BimGo.Extraction
 
         // Per-element temporary buffers (reused)
         private readonly List<SceneVertex> _tmpVertices = new(4096);
+        private readonly List<uint> _tmpEmissive = new(4096);
         private readonly List<int> _tmpOpaque = new(8192);
         private readonly List<int> _tmpTransparent = new(1024);
         private Vector3[] _normalAccumulator = new Vector3[1024];
@@ -89,6 +90,10 @@ namespace BimGo.Extraction
                 ComputeReferences = false,
                 IncludeNonVisibleObjects = false
             };
+            _emissiveKeywords = (settings.EmissiveKeywords ?? LaunchSettings.DefaultEmissiveKeywords())
+                .Select(k => k.Trim().ToLowerInvariant())
+                .Where(k => k.Length > 0)
+                .ToArray();
             if (settings.SkipHelperGeometry)
             {
                 _helperKeywords = (settings.HelperSubcategoryKeywords ?? new List<string>())
@@ -221,6 +226,7 @@ namespace BimGo.Extraction
             _progress?.Begin("Reading levels and rooms", 0.08, 0.12);
             _progress?.ThrowIfCancelled();
             LevelInfo[] levels = CollectLevels();
+            _levelElevations = levels.Select(l => l.Elevation).ToArray();
             Phase phase = _phases.New;
             var rooms = new List<RoomInfo>(CollectRooms(host, phase));
             foreach (SourceModel source in sources)
@@ -305,6 +311,7 @@ namespace BimGo.Extraction
                 Provenance = BuildProvenance(),
                 Site = BuildSite(uiDoc),
                 Parameters = _parameters?.Build() ?? ParameterTable.Empty,
+                Lighting = BuildLighting(),
                 CategoryLoaded = loaded,
                 CategoryElementCounts = counts,
                 Settings = _settings,
@@ -403,8 +410,8 @@ namespace BimGo.Extraction
             /// <summary>Why linked elements can't be moved or copied (shown by the Gizmo / Clone guns).</summary>
             public string ReadOnlyReason { get; init; }
 
-            /// <summary>Material colours by material id (ids are per document).</summary>
-            public Dictionary<long, uint> MaterialColours { get; } = new();
+            /// <summary>Material colours and glow by material id (ids are per document).</summary>
+            public Dictionary<long, MaterialLook> MaterialLooks { get; } = new();
 
             /// <summary>Category colours by category id.</summary>
             public Dictionary<long, uint> CategoryColours { get; } = new();
@@ -587,11 +594,13 @@ namespace BimGo.Extraction
 
             // Reset per-element state
             _tmpVertices.Clear();
+            _tmpEmissive.Clear();
             _tmpOpaque.Clear();
             _tmpTransparent.Clear();
             _tmpTriangles = 0;
             _overLimit = false;
             _thresholdActive = def.ThresholdApplies;
+            BeginFixture(element);
 
             uint fallback = FallbackColour(element);
             Walk(geometry, _src.Transform ?? Transform.Identity, fallback);
@@ -600,6 +609,7 @@ namespace BimGo.Extraction
             if (_overLimit)
             {
                 _tmpVertices.Clear();
+                _tmpEmissive.Clear();
                 _tmpOpaque.Clear();
                 _tmpTransparent.Clear();
 
@@ -617,8 +627,12 @@ namespace BimGo.Extraction
             // Nothing to draw
             if (_tmpOpaque.Count == 0 && _tmpTransparent.Count == 0) { return false; }
 
+            // Fixtures without a glowing material: guess the lens (downward faces at the bottom of a raised fixture)
+            if (_fixture && !isProxy) { MarkFallbackLens(); }
+
             // Commit
             int vertexBase = _vertices.Count;
+            CommitEmissive(vertexBase);
             Aabb bounds = Aabb.Empty;
             foreach (SceneVertex vertex in _tmpVertices)
             {
@@ -657,6 +671,7 @@ namespace BimGo.Extraction
             };
 
             if (_parameters != null) { AddParameters(element); }
+            if (_fixture) { AddFixtureLight(_elements.Count, bounds); }
             _elements.Add(record);
             return true;
         }
@@ -681,7 +696,8 @@ namespace BimGo.Extraction
                     case Mesh mesh when mesh.NumTriangles > 0:
                         if (CountTriangles(mesh.NumTriangles))
                         {
-                            AddMesh(mesh, transform, null, MaterialColour(mesh.MaterialElementId, fallback));
+                            MaterialLook look = MaterialLookOf(mesh.MaterialElementId, fallback);
+                            AddMesh(mesh, transform, null, look.Colour, EmissiveOf(look));
                         }
                         break;
 
@@ -711,9 +727,9 @@ namespace BimGo.Extraction
                 if (mesh == null || mesh.NumTriangles == 0) { continue; }
                 if (!CountTriangles(mesh.NumTriangles)) { return; }
 
-                uint colour = MaterialColour(face.MaterialElementId, fallback);
+                MaterialLook look = MaterialLookOf(face.MaterialElementId, fallback);
                 XYZ planarNormal = face is PlanarFace planar ? planar.FaceNormal : null;
-                AddMesh(mesh, transform, planarNormal, colour);
+                AddMesh(mesh, transform, planarNormal, look.Colour, EmissiveOf(look));
             }
         }
 
@@ -740,13 +756,19 @@ namespace BimGo.Extraction
         /// <param name="transform">The accumulated transform to model coordinates.</param>
         /// <param name="planarNormal">The face normal for planar faces (local), or null.</param>
         /// <param name="colour">The RGBA8 colour.</param>
-        private void AddMesh(Mesh mesh, Transform transform, XYZ planarNormal, uint colour)
+        /// <param name="emissive">Packed glow (<see cref="LightingData.PackEmissive"/>), or 0. Glowing surfaces are always opaque.</param>
+        private void AddMesh(Mesh mesh, Transform transform, XYZ planarNormal, uint colour, uint emissive)
         {
             IList<XYZ> points = mesh.Vertices;
             int vertexCount = points.Count;
             int triangleCount = mesh.NumTriangles;
             int baseIndex = _tmpVertices.Count;
+            if (emissive != 0) { colour |= 0xFF000000u; }
             bool transparent = (colour >> 24) < 250;
+
+            // Per-vertex glow, parallel to _tmpVertices (proxies and boxes add none: padded with 0 here)
+            while (_tmpEmissive.Count < baseIndex) { _tmpEmissive.Add(0u); }
+            for (int i = 0; i < vertexCount; i++) { _tmpEmissive.Add(emissive); }
             List<int> target = transparent ? _tmpTransparent : _tmpOpaque;
             bool identity = transform.IsIdentity;
 
@@ -904,16 +926,18 @@ namespace BimGo.Extraction
         #region Colour
 
         /// <summary>
-        /// Gets a material's colour (with transparency in alpha), cached.
+        /// Gets a material's colour (with transparency in alpha) and glow (self-illumination, name keywords), cached.
         /// </summary>
-        private uint MaterialColour(ElementId materialId, uint fallback)
+        private MaterialLook MaterialLookOf(ElementId materialId, uint fallback)
         {
-            if (materialId == null || materialId == ElementId.InvalidElementId) { return fallback; }
+            if (materialId == null || materialId == ElementId.InvalidElementId) { return new MaterialLook(fallback, 0u, false); }
 
             long key = materialId.Value;
-            if (_src.MaterialColours.TryGetValue(key, out uint cached)) { return cached; }
+            if (_src.MaterialLooks.TryGetValue(key, out MaterialLook cached)) { return cached; }
 
             uint colour = fallback;
+            uint selfIllumination = 0u;
+            bool keyword = false;
             if (_src.Doc.GetElement(materialId) is Material material)
             {
                 DB.Color c = material.Color;
@@ -922,10 +946,13 @@ namespace BimGo.Extraction
                     int alpha = Math.Clamp(255 - (int)(material.Transparency * 2.55), 64, 255);
                     colour = Pack(c.Red, c.Green, c.Blue, (byte)alpha);
                 }
+                selfIllumination = ReadSelfIllumination(material);
+                keyword = MatchesEmissiveKeyword(material.Name);
             }
 
-            _src.MaterialColours[key] = colour;
-            return colour;
+            var look = new MaterialLook(colour, selfIllumination, keyword);
+            _src.MaterialLooks[key] = look;
+            return look;
         }
 
         /// <summary>
