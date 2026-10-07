@@ -9,6 +9,10 @@ export default defineConfig({
   define: {
     __BIMGO_VERSION__: JSON.stringify(pkg.version)
   },
+  server: {
+    // Dev only: lets ?model=/BimGo/@fs/<path> open the local test models kept outside the repo (../../test-models)
+    fs: { allow: ['.', '../../test-models'] }
+  },
   build: {
     target: 'es2022',
     outDir: 'dist',
