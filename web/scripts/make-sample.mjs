@@ -1,6 +1,7 @@
 // Builds public/samples/BimGo Sample Pavilion.bimgo: a small two-storey pavilion made from boxes, so visitors without
 // a Revit export can try every tool. Everything here is generated (no Revit or third-party content), so it can ship
 // with the site. Run: node scripts/make-sample.mjs
+import { Buffer } from 'node:buffer';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
