@@ -19,7 +19,7 @@ const COLOUR_OPTIONS = ['Whitecard', 'Material', 'Realistic'];
  * Immediate-mode widgets shared by the menus (port of the Widgets region of GameSession.Menu.cs). Each call draws and
  * returns what was clicked this frame.
  */
-class Widgets {
+export class Widgets {
   activeSlider = -1;
 
   constructor(private readonly session: GameSession) {}
@@ -332,7 +332,7 @@ export class PauseMenu {
     const settings = session.settings;
     ui.text(f.small, x, top + this.s(2), 'WORLD & DISPLAY', UiTheme.TEXT_MUTED, this.s(1.8));
     const cardTop = top + this.s(26);
-    ui.panel(x, cardTop, width, this.s(412), UiTheme.CARD, UiTheme.CARD_BORDER);
+    ui.panel(x, cardTop, width, this.s(440), UiTheme.CARD, UiTheme.CARD_BORDER);
 
     const ix = x + this.s(14), iw = width - this.s(28);
     let y = cardTop + this.s(14);
@@ -371,6 +371,9 @@ export class PauseMenu {
     y += this.s(28);
     const showFps = w.checkbox(f, ix, y, iw, 'Show FPS', settings.showFps);
     if (showFps !== settings.showFps) { settings.showFps = showFps; settings.save(); }
+    y += this.s(28);
+    const ao = w.checkbox(f, ix, y, iw, 'Ambient occlusion', settings.ambientOcclusion);
+    if (ao !== settings.ambientOcclusion) { settings.ambientOcclusion = ao; settings.save(); }
     y += this.s(40);
 
     // Author name for comments and bookmarks (the browser has no user name)

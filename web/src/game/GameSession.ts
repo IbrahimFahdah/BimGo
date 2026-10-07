@@ -12,6 +12,7 @@ import { CharacterController } from '../engine/physics/CharacterController';
 import { FpsCamera } from '../engine/render/FpsCamera';
 import { Overlay3D } from '../engine/render/Overlay3D';
 import { SceneBatches } from '../engine/render/SceneBatches';
+import { ShadowQuality, shadowPresetFor } from '../engine/render/ShadowMaps';
 import { type SceneDrawParams, SceneRenderer } from '../engine/render/SceneRenderer';
 import { Rgba } from '../engine/ui/Rgba';
 import { TextBuffer } from '../engine/ui/TextBuffer';
@@ -28,9 +29,12 @@ import { MeasureGun } from './guns/MeasureGun';
 import { PortalGun } from './guns/PortalGun';
 import { ScanGun } from './guns/ScanGun';
 import { TeleportGun } from './guns/TeleportGun';
+import { LightMode, Lights } from './Lights';
 import { PauseMenu, TextEditor } from './Menus';
 import { Player } from './Player';
 import { BookmarkStore, CommentStore } from './Stores';
+import { SunPanel } from './SunPanel';
+import { SunState } from './SunState';
 import type { ViewerSettings } from './ViewerSettings';
 import { ColourMode } from './ViewerSettings';
 
@@ -49,6 +53,9 @@ const HELP_ROWS: [string, string][] = [
   ['X', "Clear this tool's markers"],
   ['B · ALT+1–9', 'Bookmark this view · Go to bookmark'],
   ['L', 'Coordinate readout'],
+  ['K', 'Artificial lights: off / glow / light'],
+  ['O · SHIFT+O', 'Shadows on/off · Sun panel'],
+  ['[ ]', 'Sun time −/+ 5 min (Shift: 1 min)'],
   ['TAB · ESC / P', 'Minimap · Pause menu'],
   ['F11 · SHIFT+F12', 'Fullscreen · Screenshot'],
   ['F1', 'Hide help · BimGo Web ' + __BIMGO_VERSION__]
@@ -85,6 +92,14 @@ export class GameSession implements GunHost {
   portalGun!: PortalGun;
   commentGun!: CommentGun;
   readonly menu: PauseMenu;
+  readonly sunPanel: SunPanel;
+  sun!: SunState;
+  lights!: Lights;
+  /** Set once the user picks a shadow quality (the automatic downgrade then leaves it alone). */
+  qualityChosenByUser = false;
+  private bloomFailed = false;
+  private sceneRevision = 0;
+  private slowFrameTime = 0;
   readonly editor: TextEditor;
   aim: AimInfo = { hasHit: false, hit: null, origin: vec3(), direction: vec3(1, 0, 0) };
 
@@ -172,6 +187,7 @@ export class GameSession implements GunHost {
     this.doorCategory = findCategory(KEY_DOORS)?.index ?? -1;
     this.levelNamesUpper = scene.levels.map(l => l.name.toUpperCase());
     this.menu = new PauseMenu(this);
+    this.sunPanel = new SunPanel(this);
     this.editor = new TextEditor(this);
     setCurrentUser(settings.userName);
 
@@ -236,6 +252,8 @@ export class GameSession implements GunHost {
     this.bookmarks = new BookmarkStore(this.scene.modelTitle, this.scene.originOffset);
     this.bookmarks.loadFrom(this.document.bookmarks);
     this.initialiseVisibility();
+    this.sun = new SunState(this.scene.site, this.document.sun);
+    this.lights = new Lights(this.scene);
 
     this.portalGun = new PortalGun(this);
     this.commentGun = new CommentGun(this);
@@ -303,6 +321,7 @@ export class GameSession implements GunHost {
   }
 
   refreshMasks(): void {
+    this.sceneRevision++;
     this.updateGroupVisibility();
     const elements = this.scene.elements;
     for (let e = 0; e < elements.length; e++) {
@@ -347,6 +366,7 @@ export class GameSession implements GunHost {
     this.updateCamera(this.paused ? 1 : this.accumulator / GameSession.TICK, dt);
     this.updateAim();
     this.updateGuns(dt);
+    this.sun.update(dt);
     this.render();
     this.updateFps(dt);
     return this.ended ? 'closed' : null;
@@ -354,7 +374,7 @@ export class GameSession implements GunHost {
 
   /** Called when the browser released the mouse (Esc, focus loss). */
   onCaptureLost(): void {
-    if (!this.paused && !this.editor.active) { this.setPaused(true); }
+    if (!this.paused && !this.editor.active && !this.sunPanel.open) { this.setPaused(true); }
   }
 
   private updateFrame(): void {
@@ -363,6 +383,13 @@ export class GameSession implements GunHost {
 
     if (this.editor.active) {
       this.editor.update(input);
+      return;
+    }
+
+    // The sun panel has the cursor: the player stands still and its keys take over
+    if (this.sunPanel.open && !this.paused) {
+      if (input.isPressed(Vk.F11)) { toggleFullscreen(); }
+      this.sunPanel.updateKeys(input);
       return;
     }
 
@@ -405,6 +432,13 @@ export class GameSession implements GunHost {
       return;
     }
     if (input.isPressed(Vk.key('L'))) { this.cycleCoordinateReadout(); }
+    if (input.isPressed(Vk.key('K'))) { this.cycleLightMode(); }
+    if (input.isPressed(Vk.key('O'))) {
+      if (input.isDown(Vk.SHIFT)) { this.sunPanel.show(); } else { this.toggleShadows(); }
+      return;
+    }
+    if (this.sun.enabled && input.isPressedOrRepeated(Vk.OEM_4)) { this.stepSunTime(input.isDown(Vk.SHIFT) ? -1 : -5); }
+    if (this.sun.enabled && input.isPressedOrRepeated(Vk.OEM_6)) { this.stepSunTime(input.isDown(Vk.SHIFT) ? 1 : 5); }
     if (input.isPressed(Vk.SPACE) && !this.player.flying) { this.player.queueJump(); }
 
     for (let i = 0; i < this.guns.length; i++) {
@@ -421,6 +455,12 @@ export class GameSession implements GunHost {
 
   private updateMouseLook(input: InputState): void {
     if (!this.window.isCaptured && input.leftPressed) {
+      // A click on the sun icon (cursor free) opens the sun panel instead of capturing the mouse
+      if (this.sunPanel.hoverIcon(input)) {
+        input.consumeClicks();
+        this.sunPanel.show();
+        return;
+      }
       this.window.setCaptured(true);
       input.consumeClicks();
     }
@@ -431,7 +471,7 @@ export class GameSession implements GunHost {
 
   private fixedUpdate(dt: number): void {
     this.player.controller.groundZ = this.groundZ;
-    const frozen = this.editor.active || this.window.isMinimised || this.guns[this.activeGun].capturesInput;
+    const frozen = this.editor.active || this.sunPanel.open || this.window.isMinimised || this.guns[this.activeGun].capturesInput;
     this.player.fixedUpdate(dt, this.window.input, !frozen);
     this.portalGun.checkTeleport(this.player, dt);
   }
@@ -455,7 +495,7 @@ export class GameSession implements GunHost {
 
   private updateGuns(dt: number): void {
     for (const gun of this.guns) { gun.tick(dt); }
-    if (this.paused || this.editor.active) { return; }
+    if (this.paused || this.editor.active || this.sunPanel.open) { return; }
 
     const active = this.guns[this.activeGun];
     active.update(dt, this.aim);
@@ -467,6 +507,7 @@ export class GameSession implements GunHost {
   }
 
   private updateFps(dt: number): void {
+    this.autoDowngradeShadows(dt);
     this.fpsAccumulator += dt;
     this.fpsFrames++;
     if (this.fpsAccumulator >= 0.5) {
@@ -490,6 +531,7 @@ export class GameSession implements GunHost {
 
   setPaused(paused: boolean): void {
     this.paused = paused;
+    if (paused) { this.sunPanel.close(); }
     this.window.setCaptured(!paused);
     this.window.input.releaseAll();
   }
@@ -562,6 +604,77 @@ export class GameSession implements GunHost {
 
   // #endregion
 
+  // #region Sun and lights
+
+  toggleShadows(): void {
+    this.sun.toggle();
+    this.sound.play(SoundId.UiClick);
+    this.toast(this.sun.enabled ? `Shadows on · ${this.sun.describeTime()} (Shift+O opens the sun panel)` : 'Shadows off');
+  }
+
+  stepSunTime(minutes: number): void {
+    this.sun.stepTime(minutes);
+    // Say which time is now shown (short, so holding the key reads as a ticking clock)
+    if (!this.sunPanel.open) { this.toast(`${this.sun.describeTime()} · sun ${this.sun.heightText()}`, 1.4); }
+  }
+
+  cycleLightMode(): void {
+    if (!this.lights.hasAny) {
+      this.sound.play(SoundId.Error);
+      this.toast('This model has no lighting fixtures or glowing materials');
+      return;
+    }
+    this.setLightMode((this.settings.lightMode + 1) % 3);
+  }
+
+  setLightMode(mode: LightMode): void {
+    this.settings.lightMode = mode;
+    this.settings.save();
+    this.sound.play(SoundId.UiClick);
+    const fixtures = this.scene.lighting.lights.length;
+    this.toast(mode === LightMode.Off ? 'Artificial lights off'
+      : mode === LightMode.Glow ? 'Artificial lights: glow only'
+        : fixtures > 0 ? `Artificial lights: glow + light (${fixtures} fixtures)` : 'Artificial lights: glow (no fixtures to light rooms)');
+  }
+
+  /** Changes whenever shadow casters change (hidden elements, category and link toggles, whitecard glass). */
+  private get shadowSceneKey(): number {
+    return this.sceneRevision * 2 + (this.settings.whitecard ? 1 : 0);
+  }
+
+  private onShadowFailure(reason: string): void {
+    if (this.sun.enabled) { this.sun.toggle(); }
+    this.sound.play(SoundId.Error);
+    this.toast(reason, 6);
+  }
+
+  private onScreenEffectsFailure(reason: string): void {
+    this.settings.ambientOcclusion = false;
+    this.bloomFailed = true;
+    this.renderer.disableScreenEffects();
+    this.sound.play(SoundId.Error);
+    this.toast(reason, 6);
+  }
+
+  /**
+   * WebGL is slower than native: when shadows hold the frame rate under ~25 fps for 3 s, step their quality down once
+   * per level (only until the user picks a quality themselves).
+   */
+  private autoDowngradeShadows(dt: number): void {
+    if (!this.sun.enabled || this.qualityChosenByUser || this.paused || this.settings.shadowQuality === ShadowQuality.Low) {
+      this.slowFrameTime = 0;
+      return;
+    }
+    this.slowFrameTime = this.frameMs > 40 ? this.slowFrameTime + dt : 0;
+    if (this.slowFrameTime < 3) { return; }
+    this.slowFrameTime = 0;
+    this.settings.shadowQuality = this.settings.shadowQuality - 1;
+    this.settings.save();
+    this.toast(`Shadows lowered to ${this.settings.shadowQuality === ShadowQuality.Low ? 'Low' : 'Medium'} to keep the frame rate up (Shift+O to change)`, 5);
+  }
+
+  // #endregion
+
   // #region Comments (editor in Menus.ts)
 
   beginCommentEdit(point: Vec3, elementId: number, level: string): void {
@@ -611,7 +724,7 @@ export class GameSession implements GunHost {
 
   private addBookmarkHere(): void {
     const p = this.player;
-    const record = this.bookmarks.createPending(null, p.feet, p.yaw, p.pitch, p.flying, this.currentLevelName, null);
+    const record = this.bookmarks.createPending(null, p.feet, p.yaw, p.pitch, p.flying, this.currentLevelName, this.sun.bookmarkTime());
     this.thumbnailFor = record;
     this.sound.play(SoundId.CommentPlace);
     this.editor.renameBookmark(record, true);
@@ -619,14 +732,14 @@ export class GameSession implements GunHost {
 
   addBookmarkFromMenu(): BookmarkRecord {
     const p = this.player;
-    const added = this.bookmarks.add(null, p.feet, p.yaw, p.pitch, p.flying, this.currentLevelName, null);
+    const added = this.bookmarks.add(null, p.feet, p.yaw, p.pitch, p.flying, this.currentLevelName, this.sun.bookmarkTime());
     this.thumbnailFor = added;
     return added;
   }
 
   setBookmarkHere(record: BookmarkRecord): void {
     const p = this.player;
-    this.bookmarks.update(record, p.feet, p.yaw, p.pitch, p.flying, this.currentLevelName, null);
+    this.bookmarks.update(record, p.feet, p.yaw, p.pitch, p.flying, this.currentLevelName, this.sun.bookmarkTime());
     this.thumbnailFor = record;
     this.sound.play(SoundId.Commit);
   }
@@ -643,6 +756,7 @@ export class GameSession implements GunHost {
   }
 
   goToBookmark(record: BookmarkRecord): void {
+    if (record.sun) { this.sun.applyTime(record.sun); }
     if (record.flying !== this.player.flying) { this.player.toggleFly(); }
     this.player.teleportTo(record.local, record.yaw, clamp(record.pitch, -1.5, 1.5));
     this.sound.play(SoundId.Teleport);
@@ -737,6 +851,7 @@ export class GameSession implements GunHost {
     if (element < 0 || this.userHidden[element] === hidden) { return; }
     this.userHidden[element] = hidden;
     this.userHiddenCount += hidden ? 1 : -1;
+    this.sceneRevision++;
     this.renderer.setElementHidden(element, hidden);
     const visible = !hidden && this.groupVisible[SceneBatches.groupOf(this.scene.elements[element])];
     this.pickMask[element] = visible;
@@ -902,10 +1017,32 @@ export class GameSession implements GunHost {
 
   private render(): void {
     const width = this.window.width, height = this.window.height;
+    const renderer = this.renderer, settings = this.settings;
 
+    // ---- Sun lighting and shadow maps (only changed cascades re-render)
+    renderer.lighting = this.sun.lighting();
+    const shadowError = renderer.updateShadows(this.camera, this.scene.bounds, this.shadowSceneKey, this.groupVisible, settings.whitecard,
+      shadowPresetFor(settings.shadowQuality));
+    if (shadowError) {
+      this.onShadowFailure(shadowError);
+      renderer.lighting = this.sun.lighting();
+    }
+
+    // ---- Artificial lights for this frame (after the sun: daylight dims them), and their cached shadow maps
+    this.lights.update(renderer.artificial, settings.lightMode, settings.lightIntensity, settings.bloomIntensity, this.bloomFailed,
+      renderer.lighting, this.camera, this.groupVisible, this.userHidden);
+    const lightShadowError = renderer.updateLightShadows(this.groupVisible, this.shadowSceneKey);
+    if (lightShadowError) { this.toast(lightShadowError, 6); }
+
+    // ---- Ambient occlusion and glow: half-resolution geometry pre-pass, AO + blur, bloom source + blur
+    const effectsError = renderer.updateScreenEffects(this.camera, width, height, this.groupVisible, this.groundZ,
+      settings.ambientOcclusion, renderer.artificial.bloom > 0);
+    if (effectsError) { this.onScreenEffectsFailure(effectsError); }
+
+    // ---- 3D scene
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.viewport(0, 0, width, height);
-    const fog = SceneRenderer.FOG_COLOUR;
+    const fog = renderer.fogColour;
     gl.clearColor(fog.x, fog.y, fog.z, 1);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
     gl.enable(gl.DEPTH_TEST);
@@ -944,6 +1081,9 @@ export class GameSession implements GunHost {
     this.renderer.drawStatic(p, this.groupVisible, true);
     gl.depthMask(true);
     gl.disable(gl.BLEND);
+
+    // Bloom from glowing surfaces over everything (glass included)
+    this.renderer.compositeGlow();
 
     // Markers: depth-tested, then a faint x-ray copy so markers behind walls stay discoverable
     this.overlay.begin(this.camera);
@@ -1149,7 +1289,7 @@ export class GameSession implements GunHost {
     ui.rect(cx + gap, cy - t1 * 0.5, arm, t1, UiTheme.TEXT);
     ui.circle(cx, cy, this.s(1.8), active.colour, 10);
 
-    if (!this.window.isCaptured && !this.editor.active) {
+    if (!this.window.isCaptured && !this.editor.active && !this.sunPanel.open) {
       const hint = 'Click to look around';
       const hintWidth = UiBatch.measure(f.body, hint) + this.s(24);
       ui.panel(cx - hintWidth * 0.5, cy + this.s(28), hintWidth, this.s(28), UiTheme.PANEL, UiTheme.PANEL_BORDER);
@@ -1161,10 +1301,16 @@ export class GameSession implements GunHost {
 
     // Minimap and the gun's context panel beneath it
     if (this.showMap) { this.drawMinimapOverlay(mapX, mapY); }
-    const panelTop = this.showMap ? mapY + this.s(208) + this.s(12) : this.s(20);
-    const panelWidth = this.s(260), panelX = width - this.s(20) - panelWidth;
-    ui.panel(panelX, panelTop, panelWidth, this.s(active.panelHeight) + this.s(24), UiTheme.PANEL, UiTheme.PANEL_BORDER);
-    active.drawPanel(ui, panelX + this.s(14), panelTop + this.s(12), panelWidth - this.s(28));
+    // (hidden while the sun panel is open: the two would overlap on smaller screens)
+    if (!this.sunPanel.open) {
+      const panelTop = this.showMap ? mapY + this.s(208) + this.s(12) : this.s(20);
+      const panelWidth = this.s(260), panelX = width - this.s(20) - panelWidth;
+      ui.panel(panelX, panelTop, panelWidth, this.s(active.panelHeight) + this.s(24), UiTheme.PANEL, UiTheme.PANEL_BORDER);
+      active.drawPanel(ui, panelX + this.s(14), panelTop + this.s(12), panelWidth - this.s(28));
+    }
+
+    this.sunPanel.buildIcon(f, this.window.input);
+    if (this.sunPanel.open) { this.sunPanel.build(f, this.window.input); }
 
     this.buildHelp(f, height);
     this.buildGunBar(f, width, height, active);
@@ -1225,7 +1371,7 @@ export class GameSession implements GunHost {
     switch (this.settings.colour) {
       case ColourMode.Whitecard: return 'Whitecard';
       case ColourMode.Material: return 'Material colour';
-      default: return 'Realistic (no textures)';
+      default: return 'Realistic (colours)';
     }
   }
 

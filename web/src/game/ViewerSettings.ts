@@ -1,5 +1,7 @@
 import { clamp } from '../core/math/Vector';
 import { CoordinateReadout } from '../core/scene/SiteCoordinates';
+import { ShadowQuality } from '../engine/render/ShadowMaps';
+import { LightMode } from './Lights';
 import { readJson, writeJson } from '../platform/settings';
 
 /** Colour mode (port of ColourMode). */
@@ -23,6 +25,11 @@ export class ViewerSettings {
   coordinateReadout = CoordinateReadout.Off;
   /** Author shown on comments and bookmarks (the browser has no user name). */
   userName = 'Web user';
+  shadowQuality = ShadowQuality.Medium;
+  ambientOcclusion = true;
+  lightMode = LightMode.Lights;
+  lightIntensity = 1;
+  bloomIntensity = 1;
 
   get whitecard(): boolean {
     return this.colour === ColourMode.Whitecard;
@@ -41,6 +48,11 @@ export class ViewerSettings {
       s.coordinateReadout = raw.coordinateReadout;
     }
     if (typeof raw.userName === 'string' && raw.userName.trim()) { s.userName = raw.userName.trim().slice(0, 40); }
+    if (typeof raw.shadowQuality === 'number' && raw.shadowQuality >= 0 && raw.shadowQuality <= 2) { s.shadowQuality = raw.shadowQuality; }
+    if (typeof raw.ambientOcclusion === 'boolean') { s.ambientOcclusion = raw.ambientOcclusion; }
+    if (typeof raw.lightMode === 'number' && raw.lightMode >= 0 && raw.lightMode <= 2) { s.lightMode = raw.lightMode; }
+    if (typeof raw.lightIntensity === 'number') { s.lightIntensity = clamp(raw.lightIntensity, 0, 2); }
+    if (typeof raw.bloomIntensity === 'number') { s.bloomIntensity = clamp(raw.bloomIntensity, 0, 2); }
     return s;
   }
 
@@ -52,7 +64,12 @@ export class ViewerSettings {
       invertY: this.invertY,
       showFps: this.showFps,
       coordinateReadout: this.coordinateReadout,
-      userName: this.userName
+      userName: this.userName,
+      shadowQuality: this.shadowQuality,
+      ambientOcclusion: this.ambientOcclusion,
+      lightMode: this.lightMode,
+      lightIntensity: this.lightIntensity,
+      bloomIntensity: this.bloomIntensity
     });
   }
 }
