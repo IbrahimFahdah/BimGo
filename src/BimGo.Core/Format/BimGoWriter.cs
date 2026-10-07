@@ -80,9 +80,10 @@ namespace BimGo.Format
                     {
                         WriteJson(zip, BimGoFormat.ENTRY_LIGHTING, BuildLighting(scene.Lighting), BimGoFormat.JSON_COMPACT);
                     }
-                    if (scene.Materials != null && !scene.Materials.IsEmpty && scene.Materials.VertexMaterial.Length == scene.Vertices.Length)
+                    MaterialData materials = document.Materials ?? scene.Materials;
+                    if (materials != null && !materials.IsEmpty && materials.VertexMaterial.Length == scene.Vertices.Length)
                     {
-                        WriteMaterials(zip, scene.Materials, geometryCompression);
+                        WriteMaterials(zip, materials, geometryCompression);
                     }
                 }
 

@@ -14,12 +14,17 @@ namespace BimGo.Rendering
     /// image takes the smallest bucket that holds its longest side (never above the size it was extracted at), so a
     /// model of 256 px library textures doesn't pay for 1024² layers. Rectangular images are stretched to the square
     /// layer; their real-world width and height keep the proportions on screen.</item>
-    /// <item><b>The table</b> is a small RGBA32F texture, four texels per material (read with texelFetch, so any
-    /// number of materials fits on GL 3.3): (colour, fade) (tint, reflectivity) (scale U, scale V, offset U, offset V)
-    /// (cos angle, sin angle, bucket or -1, layer).</item>
+    /// <item><b>The table</b> is a small RGBA32F texture, five texels per material (read with texelFetch, so any
+    /// number of materials fits on GL 3.3):
+    /// t0 (colour, fade) · t1 (image tint, reflectivity) · t2 (scale U, scale V, offset U, offset V) ·
+    /// t3 (cos angle, sin angle, bucket or -1, layer) · t4 (appearance tint, flags: 1 = invert the image).
+    /// Keep in step with <see cref="Shaders.MATERIALS_GLSL"/>.</item>
+    /// <item><b>Proxies:</b> a material with no embedded image but a proxy keyword (<see cref="ProxyPack"/>) gets the
+    /// pack's image as one more layer, drawn fully (fade 1, no image tint) at the proxy's real-world size.</item>
     /// </list>
     /// One draw path for every material: the scene shader picks the material per vertex, nothing is bound per batch.
-    /// Images that can't be decoded are left out (the material shows its colour).
+    /// Images that can't be decoded are left out (the material shows its colour). After a change in the Textures
+    /// panel, <see cref="Release"/> then <see cref="Initialise"/> rebuild everything (the vertex streams stay).
     /// </summary>
     internal sealed unsafe class MaterialTextures : IDisposable
     {
@@ -34,8 +39,23 @@ namespace BimGo.Rendering
         /// <summary>The bucket sizes (px), smallest first. The shader has one sampler per bucket.</summary>
         public static readonly int[] BUCKETS = { 256, 512, 1024, 2048 };
 
-        /// <summary>Texels per material in the table.</summary>
-        private const int TEXELS = 4;
+        /// <summary>Texels per material in the table (see the class remarks).</summary>
+        private const int TEXELS = 5;
+
+        /// <summary>Proxy layers are capped at this size (the pack's images are 512²).</summary>
+        private const int PROXY_CAP = 512;
+
+        /// <summary>t4.w flag: draw the image inverted (1 − rgb).</summary>
+        private const float FLAG_INVERT = 1f;
+
+        /// <summary>t4.w flag: a proxy image (its image tint always multiplies, whatever the Revit tint mode).</summary>
+        private const float FLAG_PROXY = 2f;
+
+        /// <summary>
+        /// Proxies take the material's colour: the image tint is the material colour over the image's average colour,
+        /// so the pattern keeps its contrast and takes the material's hue and lightness. Set before Initialise.
+        /// </summary>
+        public bool ProxyMaterialColour { get; set; } = true;
 
         #endregion
 
@@ -56,17 +76,23 @@ namespace BimGo.Rendering
         /// <summary>Approximate GPU memory used by the arrays (bytes, mipmaps included).</summary>
         public long GpuBytes { get; private set; }
 
+        /// <summary>Materials drawn with a proxy image.</summary>
+        public int ProxyCount { get; private set; }
+
         #endregion
 
         /// <summary>
         /// Decodes the images and uploads the arrays and the table (GL thread). Never throws: on failure the mode is
         /// unavailable and the reason is logged.
         /// </summary>
-        /// <param name="materials">The snapshot's materials.</param>
+        /// <param name="materials">The snapshot's materials (or the Textures panel's current set).</param>
+        /// <param name="proxies">The proxy pack, or null for none.</param>
+        /// <param name="autoProxy">Suggest proxies for missing images in snapshots made before proxies existed.</param>
         /// <returns>Null, or a short reason the textures couldn't all be shown.</returns>
-        public string Initialise(MaterialData materials)
+        public string Initialise(MaterialData materials, ProxyPack proxies = null, bool autoProxy = false)
         {
             if (materials == null || materials.IsEmpty) { return null; }
+            Release(); // a rebuild (Textures panel) starts clean
             string warning = null;
             try
             {
@@ -75,16 +101,38 @@ namespace BimGo.Rendering
 
                 // Decode each referenced image once and choose its bucket
                 var placements = new Dictionary<string, (int Bucket, int Layer)>(StringComparer.Ordinal);
+                var averages = new Dictionary<string, Vector3>(StringComparer.Ordinal);
                 var pending = new List<(int Bucket, byte[] Pixels)>[BUCKETS.Length];
                 for (int b = 0; b < BUCKETS.Length; b++) { pending[b] = new List<(int, byte[])>(); }
 
-                foreach (SceneMaterial material in materials.Materials)
+                // Each material's image key: its embedded image, else "proxy:<keyword>" (null = plain colour)
+                string[] keys = new string[materials.Materials.Length];
+                string[] proxyOf = new string[materials.Materials.Length];
+                for (int i = 0; i < keys.Length; i++)
                 {
-                    string name = material.Texture;
-                    if (name == null || placements.ContainsKey(name)) { continue; }
-                    if (!materials.Textures.TryGetValue(name, out byte[] bytes)) { continue; }
+                    SceneMaterial material = materials.Materials[i];
+                    if (material.Texture != null && materials.Textures.ContainsKey(material.Texture))
+                    {
+                        keys[i] = material.Texture;
+                        continue;
+                    }
+                    string proxy = proxies == null ? null : ProxyPack.EffectiveProxy(material, materials, autoProxy);
+                    if (proxy != null && proxies.Has(proxy))
+                    {
+                        keys[i] = "proxy:" + proxy;
+                        proxyOf[i] = proxy;
+                    }
+                }
 
-                    int bucket = BucketFor(bytes, Math.Min(materials.TextureMaxSize, maxSize));
+                for (int i = 0; i < keys.Length; i++)
+                {
+                    string name = keys[i];
+                    if (name == null || placements.ContainsKey(name)) { continue; }
+                    byte[] bytes = proxyOf[i] != null ? proxies.ImageBytes(proxyOf[i]) : materials.Textures[name];
+                    if (bytes == null) { continue; }
+
+                    int cap = proxyOf[i] != null ? Math.Min(PROXY_CAP, maxSize) : Math.Min(materials.TextureMaxSize, maxSize);
+                    int bucket = BucketFor(bytes, cap);
                     while (bucket >= 0 && pending[bucket].Count >= maxLayers) { bucket--; }
                     if (bucket < 0)
                     {
@@ -94,6 +142,7 @@ namespace BimGo.Rendering
 
                     byte[] pixels = Decode(bytes, BUCKETS[bucket]);
                     if (pixels == null) { continue; }
+                    if (proxyOf[i] != null) { averages[name] = Average(pixels); }
                     placements[name] = (bucket, pending[bucket].Count);
                     pending[bucket].Add((bucket, pixels));
                 }
@@ -125,7 +174,7 @@ namespace BimGo.Rendering
                     ImageCount += layers;
                 }
 
-                UploadTable(materials.Materials, placements);
+                UploadTable(materials.Materials, keys, proxyOf, proxies, placements, averages);
                 Gl.ActiveTexture(Gl.TEXTURE0);
 
                 uint error = Gl.GetError();
@@ -135,7 +184,7 @@ namespace BimGo.Rendering
                     return "Not enough graphics memory for the textures: Realistic mode shows colours only. Try a smaller texture size.";
                 }
 
-                Utilities.Log_Utils.Write($"Materials: {MaterialCount} in the table, {ImageCount} images in " +
+                Utilities.Log_Utils.Write($"Materials: {MaterialCount} in the table ({ProxyCount} on proxies), {ImageCount} images in " +
                     $"{string.Join(", ", BUCKETS.Select((s, b) => (s, n: pending[b].Count)).Where(x => x.n > 0).Select(x => $"{x.n}×{x.s}²"))}, ≈ {GpuBytes / (1024 * 1024)} MB.");
                 return warning;
             }
@@ -166,30 +215,54 @@ namespace BimGo.Rendering
         #region Upload helpers
 
         /// <summary>
-        /// The table: four RGBA32F texels per material (see the class remarks).
+        /// The table: five RGBA32F texels per material (see the class remarks).
         /// </summary>
-        private void UploadTable(SceneMaterial[] materials, Dictionary<string, (int Bucket, int Layer)> placements)
+        private void UploadTable(SceneMaterial[] materials, string[] keys, string[] proxyOf, ProxyPack proxies,
+            Dictionary<string, (int Bucket, int Layer)> placements, Dictionary<string, Vector3> averages)
         {
             int count = materials.Length;
             float[] data = new float[count * TEXELS * 4];
+            ProxyCount = 0;
             for (int i = 0; i < count; i++)
             {
                 SceneMaterial m = materials[i];
                 int o = i * TEXELS * 4;
-                bool textured = m.Texture != null && placements.TryGetValue(m.Texture, out _);
-                (int bucket, int layer) = textured ? placements[m.Texture] : (-1, 0);
+                bool textured = keys[i] != null && placements.ContainsKey(keys[i]);
+                (int bucket, int layer) = textured ? placements[keys[i]] : (-1, 0);
+                bool proxy = textured && proxyOf[i] != null;
                 float angle = m.Angle * MathF.PI / 180f;
 
-                Put(o, m.Colour, textured ? m.Fade : 0f);
-                Put(o + 4, m.Tint, m.Reflectivity);
-                data[o + 8] = MathF.Max(m.ScaleU, 1e-3f);
-                data[o + 9] = MathF.Max(m.ScaleV, 1e-3f);
-                data[o + 10] = m.OffsetU;
-                data[o + 11] = m.OffsetV;
+                if (proxy)
+                {
+                    // A stand-in: drawn fully at the proxy's own real-world size, in the material's colour (or the pack's)
+                    (float sizeU, float sizeV) = proxies.SizeOf(proxyOf[i]);
+                    Vector3 tint = Vector3.One;
+                    if (ProxyMaterialColour && averages.TryGetValue(keys[i], out Vector3 average))
+                    {
+                        tint = Vector3.Clamp(m.Colour / Vector3.Max(average, new Vector3(0.02f)), Vector3.Zero, new Vector3(4f));
+                    }
+                    Put(o, m.Colour, 1f);
+                    Put(o + 4, tint, m.Reflectivity);
+                    data[o + 8] = MathF.Max(sizeU, 1e-3f);
+                    data[o + 9] = MathF.Max(sizeV, 1e-3f);
+                    data[o + 10] = 0f;
+                    data[o + 11] = 0f;
+                    ProxyCount++;
+                }
+                else
+                {
+                    Put(o, m.Colour, textured ? m.Fade : 0f);
+                    Put(o + 4, m.Tint, m.Reflectivity);
+                    data[o + 8] = MathF.Max(m.ScaleU, 1e-3f);
+                    data[o + 9] = MathF.Max(m.ScaleV, 1e-3f);
+                    data[o + 10] = m.OffsetU;
+                    data[o + 11] = m.OffsetV;
+                }
                 data[o + 12] = MathF.Cos(angle);
                 data[o + 13] = MathF.Sin(angle);
                 data[o + 14] = bucket;
                 data[o + 15] = layer;
+                Put(o + 16, m.AssetTint ?? Vector3.One, proxy ? FLAG_PROXY : m.Invert ? FLAG_INVERT : 0f);
             }
 
             _table = Gl.GenTexture();
@@ -211,6 +284,23 @@ namespace BimGo.Rendering
                 data[offset + 2] = rgb.Z;
                 data[offset + 3] = w;
             }
+        }
+
+        /// <summary>
+        /// The average colour (0–1 RGB) of a decoded BGRA layer (sampled every 7th pixel: plenty for a tint).
+        /// </summary>
+        private static Vector3 Average(byte[] bgra)
+        {
+            double r = 0, g = 0, b = 0;
+            int n = 0;
+            for (int i = 0; i + 3 < bgra.Length; i += 4 * 7)
+            {
+                b += bgra[i];
+                g += bgra[i + 1];
+                r += bgra[i + 2];
+                n++;
+            }
+            return n == 0 ? Vector3.One : new Vector3((float)(r / n / 255.0), (float)(g / n / 255.0), (float)(b / n / 255.0));
         }
 
         /// <summary>
@@ -308,7 +398,7 @@ namespace BimGo.Rendering
                 Gl.DeleteTexture(_arrays[b]);
                 _arrays[b] = 0;
             }
-            MaterialCount = ImageCount = 0;
+            MaterialCount = ImageCount = ProxyCount = 0;
             GpuBytes = 0;
         }
 

@@ -65,6 +65,23 @@ namespace BimGo.Scene
     }
 
     /// <summary>
+    /// How Revit's tint is drawn in the Realistic colour mode (<see cref="LaunchSettings.RevitTint"/>).
+    /// </summary>
+    public enum TintMode
+    {
+        /// <summary>Revit tint ignored.</summary>
+        Off = 0,
+
+        /// <summary>The image (and, for an appearance tint, the colour) multiplied by the tint colour in linear light:
+        /// Revit's own blend (confirmed against Realistic view on a tint test model).</summary>
+        Multiply = 1,
+
+        /// <summary>Build B trial value (hue at the image's lightness), dropped once Multiply was confirmed: read as
+        /// <see cref="Multiply"/> (kept so a settings file that has it still reads).</summary>
+        KeepLightness = 2
+    }
+
+    /// <summary>
     /// Options chosen in the launch dialog. Persisted as JSON in %AppData%\BimGo\settings.json and
     /// shared by the Revit add-in (extraction options) and the standalone app (display options).
     /// </summary>
@@ -112,6 +129,52 @@ namespace BimGo.Scene
 
         /// <summary>Sky reflections on glass and mirrors in the Realistic colour mode (on by default).</summary>
         public bool Reflections { get; set; } = true;
+
+        /// <summary>
+        /// Revit's tint (appearance and bitmap "Tint") in the Realistic colour mode: <see cref="TintMode.Multiply"/>
+        /// (Revit's blend, the default) or <see cref="TintMode.Off"/>.
+        /// </summary>
+        public TintMode RevitTint { get; set; } = TintMode.Multiply;
+
+        /// <summary>
+        /// Draw a CC0 proxy texture (by material name, then schema) for materials whose image is missing or unreadable
+        /// (on by default). Plain-colour materials are left alone unless the user assigns a proxy.
+        /// </summary>
+        public bool ProxyMissingTextures { get; set; } = true;
+
+        /// <summary>
+        /// Proxy textures take the material's own colour (the image's pattern and shading, the material's hue), so a
+        /// white vinyl stays white whatever colour the pack's vinyl is. On by default; off shows the pack's colours.
+        /// </summary>
+        public bool ProxyMaterialColour { get; set; } = true;
+
+        /// <summary>
+        /// Folders searched (by exact file name, recursively) for textures Revit can't find, for every model. Added
+        /// from the "Review textures…" window or the app's Textures panel ("Remember this folder").
+        /// </summary>
+        public List<string> TextureSearchFolders { get; set; } = new();
+
+        /// <summary>Most remembered texture search folders.</summary>
+        public const int MAX_TEXTURE_SEARCH_FOLDERS = 20;
+
+        /// <summary>
+        /// Remembers a texture search folder (moved to the end if already there; the oldest drops off past the limit).
+        /// </summary>
+        /// <returns>True if the list changed.</returns>
+        public bool AddTextureSearchFolder(string folder)
+        {
+            if (string.IsNullOrWhiteSpace(folder)) { return false; }
+            string clean = folder.Trim().TrimEnd('\\', '/');
+            TextureSearchFolders ??= new List<string>();
+            if (TextureSearchFolders.Count > 0 && string.Equals(TextureSearchFolders[^1], clean, StringComparison.OrdinalIgnoreCase)) { return false; }
+            TextureSearchFolders.RemoveAll(f => string.Equals(f, clean, StringComparison.OrdinalIgnoreCase));
+            TextureSearchFolders.Add(clean);
+            if (TextureSearchFolders.Count > MAX_TEXTURE_SEARCH_FOLDERS)
+            {
+                TextureSearchFolders.RemoveRange(0, TextureSearchFolders.Count - MAX_TEXTURE_SEARCH_FOLDERS);
+            }
+            return true;
+        }
 
         /// <summary>MSAA samples (0, 2 or 4).</summary>
         public int Msaa { get; set; } = 0;
@@ -322,6 +385,16 @@ namespace BimGo.Scene
         }
 
         /// <summary>
+        /// A deep copy (through the same JSON the settings file uses), e.g. to try the Options window's unsaved choices.
+        /// </summary>
+        public LaunchSettings Clone()
+        {
+            LaunchSettings copy = JsonSerializer.Deserialize<LaunchSettings>(JsonSerializer.Serialize(this, JSON_OPTIONS), JSON_OPTIONS) ?? new LaunchSettings();
+            copy.Sanitise();
+            return copy;
+        }
+
+        /// <summary>
         /// Saves the settings. Failures are logged, never thrown.
         /// </summary>
         public void Save()
@@ -369,6 +442,16 @@ namespace BimGo.Scene
             if (!Enum.IsDefined(ArtificialLights)) { ArtificialLights = ArtificialLightMode.Lights; }
             if (!Enum.IsDefined(Colour)) { Colour = ColourMode.Material; }
             TextureMaxSize = MaterialData.NearestTextureSize(TextureMaxSize);
+            if (RevitTint != TintMode.Off) { RevitTint = TintMode.Multiply; } // unknown and retired values
+            TextureSearchFolders = (TextureSearchFolders ?? new List<string>())
+                .Where(f => !string.IsNullOrWhiteSpace(f))
+                .Select(f => f.Trim().TrimEnd('\\', '/'))
+                .Where(f => f.Length > 0)
+                .Reverse()
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Take(MAX_TEXTURE_SEARCH_FOLDERS)
+                .Reverse()
+                .ToList();
             ArtificialLightIntensity = float.IsFinite(ArtificialLightIntensity) ? Math.Clamp(ArtificialLightIntensity, 0f, 2f) : 1f;
             BloomIntensity = float.IsFinite(BloomIntensity) ? Math.Clamp(BloomIntensity, 0f, 2f) : 1f;
             EmissiveKeywords = (EmissiveKeywords ?? DefaultEmissiveKeywords())

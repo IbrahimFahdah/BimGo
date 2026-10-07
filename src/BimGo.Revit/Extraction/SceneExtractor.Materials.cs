@@ -67,6 +67,14 @@ namespace BimGo.Extraction
         private readonly bool _extractMaterials;
         private readonly int _textureCap;
         private TextureLocator _locator;
+        private TextureOverrideSet _overrides;
+
+        /// <summary>
+        /// Texture review ("Review textures…"): find the images but don't decode or embed them; where each was found
+        /// is kept in <see cref="_lookups"/>.
+        /// </summary>
+        private bool _resolveOnly;
+        private readonly Dictionary<SceneMaterial, TextureLookup> _lookups = new(ReferenceEqualityComparer.Instance);
 
         // Per-element temporary streams, parallel to _tmpVertices
         private readonly List<ushort> _tmpMaterial = new(4096);
@@ -78,6 +86,7 @@ namespace BimGo.Extraction
         private readonly List<SceneMaterial> _materialTable = new();
         private readonly Dictionary<string, byte[]> _textures = new(StringComparer.Ordinal);
         private int _texturedMaterials, _missingTextures, _proceduralTextures, _unreadableTextures;
+        private int _overrideCount, _proxiedMaterials, _searchHits, _fallbackColours;
         private readonly Stopwatch _materialTime = new();
 
         /// <summary>
@@ -283,17 +292,51 @@ namespace BimGo.Extraction
         }
 
         /// <summary>
-        /// Reads a material's render colour, texture and placement from its appearance asset.
+        /// Finds where textures live on this machine (library, Revit.ini paths, remembered search folders) and loads
+        /// this model's texture overrides. Logged.
+        /// </summary>
+        private void PrepareTextures()
+        {
+            _locator = TextureLocator.Discover(_doc.Application.VersionNumber);
+            _locator.SetSearchFolders(_settings.TextureSearchFolders);
+            _overrides = TextureOverrideSet.Load(LinkResolver.HostKey(_doc));
+            Utilities.Log_Utils.Write($"Textures: Autodesk library {(_locator.HasLibrary ? string.Join("; ", _locator.LibraryRoots) : "not found")}; " +
+                $"additional render appearance paths: {(_locator.ExtraPaths.Count == 0 ? "none" : string.Join("; ", _locator.ExtraPaths))}; " +
+                $"search folders: {(_locator.SearchFolders.Count == 0 ? "none" : string.Join("; ", _locator.SearchFolders))}; " +
+                $"{_overrides.Documents.Values.Sum(d => d.Count)} override(s) for this model; cap {_textureCap} px.");
+        }
+
+        /// <summary>
+        /// The override-file document key of the current source: "host", or the link's model key.
+        /// </summary>
+        private string DocumentKey()
+        {
+            if (_src == null || _src.Link == 0) { return TextureOverrideSet.HOST; }
+            string key = _src.Info?.ModelKey;
+            return string.IsNullOrWhiteSpace(key) ? "link:" + _src.Link : key;
+        }
+
+        /// <summary>
+        /// Reads a material's render colour, texture and placement from its appearance asset, then applies the user's
+        /// override (image, proxy or plain colour), an automatic proxy for a missing image, and the shading-colour
+        /// fallback when the texture didn't make it in.
         /// </summary>
         private SceneMaterial ReadAppearance(Material material)
         {
+            Vector3 shading = ShadingColour(material);
+            string uniqueId = null;
+            try { uniqueId = material.UniqueId; }
+            catch { /* none */ }
+
             var entry = new SceneMaterial
             {
                 Name = material.Name ?? string.Empty,
+                UniqueId = uniqueId,
                 Link = _src.Link,
                 MaterialId = material.Id.Value,
-                Colour = ShadingColour(material)
+                Colour = shading
             };
+            TextureOverride choice = _overrides?.Find(DocumentKey(), uniqueId, entry.Name);
 
             Visual.Asset asset = null;
             ElementId assetId = material.AppearanceAssetId;
@@ -306,10 +349,14 @@ namespace BimGo.Extraction
                 // No readable appearance (legacy presets with no properties): the shading colour stands in
                 entry.Schema = asset?.Name ?? string.Empty;
                 entry.Reflectivity = material.Transparency > 0 ? 0.06f : 0f;
+                Finish(entry, choice, shading);
                 return entry;
             }
 
             entry.Schema = SchemaName(asset);
+
+            // The appearance's own tint (Appearance tab "Tint": the whole look, colour and image)
+            entry.AssetTint = ReadTint(asset);
 
             // The colour slot
             Visual.AssetProperty slot = null;
@@ -327,17 +374,136 @@ namespace BimGo.Extraction
                 {
                     entry.Tint = tint;
                 }
-                ReadTexture(slot, entry);
+                ReadTexture(slot, entry, choice);
             }
 
             // Generic: how much of the image shows over the colour
-            if (entry.Texture != null && FindDouble(asset, "generic_diffuse_image_fade") is double fade && slot?.Name == "generic_diffuse")
+            if (entry.TextureState == TextureState.Embedded && FindDouble(asset, "generic_diffuse_image_fade") is double fade && slot?.Name == "generic_diffuse")
             {
                 entry.Fade = (float)Math.Clamp(fade, 0.0, 1.0);
             }
 
             entry.Reflectivity = ReadReflectivity(asset, entry.Schema, material);
+            Finish(entry, choice, shading);
             return entry;
+        }
+
+        /// <summary>
+        /// The last steps for a material: the user's override, an automatic proxy (missing / unreadable images only,
+        /// when "Proxy textures for missing images" is on), and the shading colour in place of the render colour when
+        /// no texture made it in (the render colour is often a white placeholder when a bitmap was connected).
+        /// </summary>
+        private void Finish(SceneMaterial entry, TextureOverride choice, Vector3 shading)
+        {
+            bool found = entry.TextureState == TextureState.Embedded;
+            if (choice != null)
+            {
+                _overrideCount++;
+                if (choice.ColourOnly)
+                {
+                    DropTexture(entry);
+                    entry.TextureOrigin = TextureOrigins.OVERRIDE;
+                    found = false;
+                }
+                else if (!string.IsNullOrWhiteSpace(choice.Proxy))
+                {
+                    DropTexture(entry);
+                    entry.Proxy = ProxyCatalog.Normalise(choice.Proxy);
+                    entry.TextureOrigin = TextureOrigins.PROXY;
+                    _proxiedMaterials++;
+                    found = false;
+                }
+                else if (!string.IsNullOrWhiteSpace(choice.Image) && entry.TextureSource == null && !found)
+                {
+                    // A material with no bitmap of its own (a plain colour the user gave an image): 1 m repeats.
+                    // (With a bitmap, ReadTexture already tried the image before the locator.)
+                    found = TryUseImage(entry, choice.Image, TextureOrigins.OVERRIDE) || found;
+                }
+            }
+
+            if (!found && entry.Proxy == null && choice == null && _settings.ProxyMissingTextures
+                && entry.TextureState is TextureState.Missing or TextureState.Unreadable)
+            {
+                entry.Proxy = ProxyCatalog.Suggest(entry.Name, entry.Schema);
+                if (entry.Proxy != null)
+                {
+                    entry.TextureOrigin = TextureOrigins.PROXY;
+                    _proxiedMaterials++;
+                }
+            }
+
+            bool lostTexture = entry.TextureState is TextureState.Missing or TextureState.Unreadable or TextureState.Procedural
+                || (choice?.ColourOnly == true && entry.TextureSource != null);
+            if (!found && lostTexture)
+            {
+                if (entry.Colour != shading) { entry.RenderColour = entry.Colour; }
+                entry.Colour = shading;
+                entry.AssetTint = null; // the shaded look has no appearance tint (it would tint the shading colour twice)
+                _fallbackColours++;
+            }
+        }
+
+        /// <summary>
+        /// Clears an embedded texture from an entry (an override chose a proxy or plain colour instead). The image stays
+        /// in the snapshot only if another material uses it (unreferenced images are not written).
+        /// </summary>
+        private void DropTexture(SceneMaterial entry)
+        {
+            if (entry.TextureState == TextureState.Embedded)
+            {
+                entry.TextureState = entry.TextureSource == null ? TextureState.None : TextureState.Missing;
+                _texturedMaterials--;
+            }
+            entry.Texture = null;
+        }
+
+        /// <summary>
+        /// Uses an image file for an entry (an override or a search hit): embedded, or in resolve-only mode just
+        /// checked. False if the file is gone or unreadable (the entry is then unchanged).
+        /// </summary>
+        private bool TryUseImage(SceneMaterial entry, string path, string origin)
+        {
+            bool exists;
+            try { exists = !string.IsNullOrWhiteSpace(path) && File.Exists(path); }
+            catch { exists = false; }
+            if (!exists)
+            {
+                Utilities.Log_Utils.Write($"{_src.Describe()}: override image of “{entry.Name}” not found: {path}");
+                return false;
+            }
+
+            if (_resolveOnly)
+            {
+                _lookups[entry] = new TextureLookup(entry.TextureSource ?? path, path, TextureFound.Override, false);
+            }
+            else
+            {
+                (string Entry, byte[] Bytes)? image = EmbedImage(path);
+                if (image == null) { return false; }
+                _textures[image.Value.Entry] = image.Value.Bytes;
+                entry.Texture = image.Value.Entry;
+            }
+            if (entry.TextureState != TextureState.Embedded) { _texturedMaterials++; }
+            entry.TextureState = TextureState.Embedded;
+            entry.TextureOrigin = origin;
+            return true;
+        }
+
+        /// <summary>
+        /// An asset's tint when its toggle is on (<c>common_Tint_toggle</c> + <c>common_Tint_color</c>), else null.
+        /// </summary>
+        private static Vector3? ReadTint(Visual.Asset asset)
+        {
+            try
+            {
+                if (asset.FindByName("common_Tint_toggle") is Visual.AssetPropertyBoolean { Value: true }
+                    && FindColourAny(asset, "common_Tint_color") is Vector3 tint)
+                {
+                    return tint;
+                }
+            }
+            catch { /* none */ }
+            return null;
         }
 
         /// <summary>
@@ -363,10 +529,11 @@ namespace BimGo.Extraction
         }
 
         /// <summary>
-        /// The texture on a colour slot: the connected bitmap's image (found, resized, embedded) and placement.
+        /// The texture on a colour slot: the connected bitmap's placement, tint and invert, then the image: the user's
+        /// override image if any, else found by the locator (… → remembered search folders), resized and embedded.
         /// A connected procedural map (noise, checker…) leaves the plain colour.
         /// </summary>
-        private void ReadTexture(Visual.AssetProperty slot, SceneMaterial entry)
+        private void ReadTexture(Visual.AssetProperty slot, SceneMaterial entry, TextureOverride choice)
         {
             Visual.Asset bitmap = null;
             try
@@ -387,34 +554,46 @@ namespace BimGo.Extraction
             }
 
             string raw = path.Value;
-            if (string.IsNullOrWhiteSpace(raw)) { return; }
+            if (string.IsNullOrWhiteSpace(raw)) { return; } // "" = no texture, not a missing one
             entry.TextureSource = raw;
 
-            // Placement (real-world size, offset, angle) and tint
+            // Placement (real-world size, offset, angle), tint and invert
             entry.ScaleU = (float)(Metres(bitmap, "texture_RealWorldScaleX", 1.0) / Math.Max(FindDouble(bitmap, "texture_UScale") ?? 1.0, 1e-3));
             entry.ScaleV = (float)(Metres(bitmap, "texture_RealWorldScaleY", 1.0) / Math.Max(FindDouble(bitmap, "texture_VScale") ?? 1.0, 1e-3));
             entry.OffsetU = Metres(bitmap, "texture_RealWorldOffsetX", 0.0);
             entry.OffsetV = Metres(bitmap, "texture_RealWorldOffsetY", 0.0);
             entry.Angle = (float)(FindDouble(bitmap, "texture_WAngle") ?? 0.0);
             Vector3 tint = entry.Tint;
-            if (bitmap.FindByName("common_Tint_toggle") is Visual.AssetPropertyBoolean { Value: true } && FindColourAny(bitmap, "common_Tint_color") is Vector3 t)
-            {
-                tint *= t;
-            }
+            if (ReadTint(bitmap) is Vector3 t) { tint *= t; }
             if (FindDouble(bitmap, "unifiedbitmap_RGBAmount") is double amount && amount > 0.0)
             {
                 tint *= (float)Math.Min(amount, 4.0);
             }
             entry.Tint = tint;
+            entry.Invert = bitmap.FindByName("unifiedbitmap_Invert") is Visual.AssetPropertyBoolean { Value: true };
+
+            // The user's image wins over the asset's path
+            if (!string.IsNullOrWhiteSpace(choice?.Image) && TryUseImage(entry, choice.Image, TextureOrigins.OVERRIDE)) { return; }
 
             // The image
             TextureLookup lookup = _locator.Resolve(raw, DocumentFolder());
             entry.Autodesk = lookup.AutodeskLibrary;
+            if (_resolveOnly) { _lookups[entry] = lookup; }
             if (lookup.Path == null)
             {
                 entry.TextureState = TextureState.Missing;
                 _missingTextures++;
-                Utilities.Log_Utils.Write($"{_src.Describe()}: texture of “{entry.Name}” not found: {raw}");
+                if (!_resolveOnly) { Utilities.Log_Utils.Write($"{_src.Describe()}: texture of “{entry.Name}” not found: {raw}"); }
+                return;
+            }
+
+            string origin = lookup.Found == TextureFound.SearchFolder ? TextureOrigins.SEARCH : TextureOrigins.ASSET;
+            if (lookup.Found == TextureFound.SearchFolder) { _searchHits++; }
+            if (_resolveOnly)
+            {
+                entry.TextureState = TextureState.Embedded; // "found": nothing is decoded in review
+                entry.TextureOrigin = origin;
+                _texturedMaterials++;
                 return;
             }
 
@@ -428,6 +607,7 @@ namespace BimGo.Extraction
             _textures[image.Value.Entry] = image.Value.Bytes;
             entry.Texture = image.Value.Entry;
             entry.TextureState = TextureState.Embedded;
+            entry.TextureOrigin = origin;
             _texturedMaterials++;
         }
 
@@ -529,7 +709,8 @@ namespace BimGo.Extraction
 
             long bytes = _textures.Values.Sum(b => (long)b.Length);
             Utilities.Log_Utils.Write($"Materials: {_materialTable.Count} used, {_texturedMaterials} textured ({_textures.Count} images, {bytes / 1024} KB at ≤ {_textureCap} px), " +
-                $"{_missingTextures} missing, {_unreadableTextures} unreadable, {_proceduralTextures} procedural; {_materialTime.Elapsed.TotalSeconds:F1}s reading appearances. " +
+                $"{_missingTextures} missing, {_unreadableTextures} unreadable, {_proceduralTextures} procedural; {_searchHits} found in search folders, " +
+                $"{_overrideCount} overridden, {_proxiedMaterials} proxied, {_fallbackColours} on the shading colour; {_materialTime.Elapsed.TotalSeconds:F1}s reading appearances. " +
                 $"Library {(_locator.HasLibrary ? "found" : "not found")}, {_locator.ExtraPaths.Count} additional render appearance path(s).");
             return _materialTable.Count == 0
                 ? MaterialData.Empty

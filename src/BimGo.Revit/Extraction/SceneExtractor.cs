@@ -74,7 +74,9 @@ namespace BimGo.Extraction
         /// </summary>
         /// <param name="doc">The document to extract.</param>
         /// <param name="settings">The launch settings.</param>
-        private SceneExtractor(Document doc, LaunchSettings settings, OperationProgress progress)
+        /// <param name="progress">Optional progress / cancellation.</param>
+        /// <param name="resolveOnly">Texture review: read materials and find images, embed nothing.</param>
+        private SceneExtractor(Document doc, LaunchSettings settings, OperationProgress progress, bool resolveOnly = false)
         {
             _doc = doc;
             _settings = settings;
@@ -90,7 +92,8 @@ namespace BimGo.Extraction
                 ComputeReferences = false,
                 IncludeNonVisibleObjects = false
             };
-            _extractMaterials = settings.ExtractTextures;
+            _extractMaterials = settings.ExtractTextures || resolveOnly;
+            _resolveOnly = resolveOnly;
             _textureCap = MaterialData.NearestTextureSize(settings.TextureMaxSize);
             _emissiveKeywords = (settings.EmissiveKeywords ?? LaunchSettings.DefaultEmissiveKeywords())
                 .Select(k => k.Trim().ToLowerInvariant())
@@ -150,84 +153,18 @@ namespace BimGo.Extraction
         {
             var stopwatch = Stopwatch.StartNew();
             IReadOnlyList<CategoryDef> catalog = CategoryCatalog.All;
-            var enabled = new HashSet<string>(_settings.EnabledCategories);
 
             // The existing / new phases first: the walkthrough shows the model as it stands in the new phase
             _phases = PhaseResolver.Resolve(_doc, uiDoc.ActiveView, _settings);
 
             // Materials and textures (opt-in): find where texture images live on this machine, as Revit does
-            if (_extractMaterials)
-            {
-                _locator = TextureLocator.Discover(_doc.Application.VersionNumber);
-                Utilities.Log_Utils.Write($"Textures: Autodesk library {(_locator.HasLibrary ? string.Join("; ", _locator.LibraryRoots) : "not found")}; " +
-                    $"additional render appearance paths: {(_locator.ExtraPaths.Count == 0 ? "none" : string.Join("; ", _locator.ExtraPaths))}; cap {_textureCap} px.");
-            }
+            if (_extractMaterials) { PrepareTextures(); }
 
-            // Active-view-only: the view decides what comes in (null = extract by category)
-            DB.View view = _settings.ActiveViewOnly ? ViewScope.Resolve(uiDoc, _doc) : null;
-            if (_settings.ActiveViewOnly)
-            {
-                Utilities.Log_Utils.Write(view != null
-                    ? $"Active view only: “{view.Name}” ({view.ViewType})."
-                    : "Active view only: no view that shows model elements is available; extracting by category instead.");
-            }
-
-            // The host, then the link instances ticked for this model in the Options dialog (none by default).
-            // In a 3D view the host's geometry is read through the view (its subcategory visibility and detail level).
-            var host = new SourceModel
-            {
-                Doc = _doc,
-                Phases = _phases,
-                GeometryOptions = view is View3D ? new Options { View = view, ComputeReferences = false, IncludeNonVisibleObjects = false } : _geometryOptions
-            };
-            _src = host;
-            var sources = new List<SourceModel> { host };
-            foreach (LinkCandidate candidate in LinkResolver.Selected(_doc, _settings))
-            {
-                if (view != null && ViewScope.HidesLink(view, candidate.InstanceId))
-                {
-                    Utilities.Log_Utils.Write($"Link “{candidate.Name}” is hidden in the active view: skipped.");
-                    continue;
-                }
-                sources.Add(CreateLinkSource(candidate, sources.Count));
-            }
-
-            // Gather candidate elements per source and enabled definition first (needed for the origin)
-            var work = new List<(SourceModel Source, CategoryDef Def, List<Element> Elements)>();
+            // The host and the ticked links, then their candidate elements (needed for the origin)
+            List<SourceModel> sources = PrepareSources(uiDoc, out DB.View view);
+            SourceModel host = sources[0];
             _progress?.Begin("Finding elements", 0.0, 0.08);
-            int sourceNumber = 0;
-            foreach (SourceModel source in sources)
-            {
-                _progress?.Step(sourceNumber++, sources.Count);
-                _progress?.Detail(source.Link == 0 ? _doc.Title : source.Info.Label);
-                _progress?.ThrowIfCancelled();
-                if (view != null)
-                {
-                    GatherVisible(source, view, work);
-                    continue;
-                }
-
-                foreach (CategoryDef def in catalog)
-                {
-                    if (!enabled.Contains(def.Key)) { continue; }
-                    try
-                    {
-                        FilteredElementCollector collector = CategoryResolver.Collect(source.Doc, def);
-                        if (collector == null) { continue; }
-
-                        var elements = new List<Element>();
-                        foreach (Element element in collector)
-                        {
-                            if (IsExtractable(element, source.Phases)) { elements.Add(element); }
-                        }
-                        work.Add((source, def, elements));
-                    }
-                    catch (Exception ex)
-                    {
-                        Utilities.Log_Utils.Write($"{source.Describe()}: {def.Key} skipped: {ex.Message}");
-                    }
-                }
-            }
+            List<(SourceModel Source, CategoryDef Def, List<Element> Elements)> work = Gather(sources, view);
 
             // Scene origin: median of element centres, rounded to whole metres (robust against outliers)
             _origin = ComputeOrigin(work.SelectMany(w => w.Elements.Select(e => (e, w.Source.Transform))));
@@ -331,6 +268,87 @@ namespace BimGo.Extraction
                 SkippedCount = _skippedCount,
                 ExtractionTime = stopwatch.Elapsed
             };
+        }
+
+        /// <summary>
+        /// The host source, then the link instances ticked for this model in the Options dialog (none by default),
+        /// minus links the active view hides when extracting the active view only. In a 3D view the host's geometry
+        /// is read through the view (its subcategory visibility and detail level).
+        /// </summary>
+        /// <param name="uiDoc">The active UIDocument.</param>
+        /// <param name="view">The active view when "active view only" applies (null = extract by category).</param>
+        private List<SourceModel> PrepareSources(UIDocument uiDoc, out DB.View view)
+        {
+            view = _settings.ActiveViewOnly ? ViewScope.Resolve(uiDoc, _doc) : null;
+            if (_settings.ActiveViewOnly)
+            {
+                Utilities.Log_Utils.Write(view != null
+                    ? $"Active view only: “{view.Name}” ({view.ViewType})."
+                    : "Active view only: no view that shows model elements is available; extracting by category instead.");
+            }
+
+            var host = new SourceModel
+            {
+                Doc = _doc,
+                Phases = _phases,
+                GeometryOptions = view is View3D ? new Options { View = view, ComputeReferences = false, IncludeNonVisibleObjects = false } : _geometryOptions
+            };
+            _src = host;
+            var sources = new List<SourceModel> { host };
+            foreach (LinkCandidate candidate in LinkResolver.Selected(_doc, _settings))
+            {
+                if (view != null && ViewScope.HidesLink(view, candidate.InstanceId))
+                {
+                    Utilities.Log_Utils.Write($"Link “{candidate.Name}” is hidden in the active view: skipped.");
+                    continue;
+                }
+                sources.Add(CreateLinkSource(candidate, sources.Count));
+            }
+            return sources;
+        }
+
+        /// <summary>
+        /// The candidate elements per source and enabled definition (by category, or what the active view shows).
+        /// Moves the current progress stage and stops if cancelled. Shared by the extraction and the texture review.
+        /// </summary>
+        private List<(SourceModel Source, CategoryDef Def, List<Element> Elements)> Gather(List<SourceModel> sources, DB.View view)
+        {
+            var enabled = new HashSet<string>(_settings.EnabledCategories ?? new List<string>());
+            var work = new List<(SourceModel Source, CategoryDef Def, List<Element> Elements)>();
+            int sourceNumber = 0;
+            foreach (SourceModel source in sources)
+            {
+                _progress?.Step(sourceNumber++, sources.Count);
+                _progress?.Detail(source.Link == 0 ? _doc.Title : source.Info.Label);
+                _progress?.ThrowIfCancelled();
+                if (view != null)
+                {
+                    GatherVisible(source, view, work);
+                    continue;
+                }
+
+                foreach (CategoryDef def in CategoryCatalog.All)
+                {
+                    if (!enabled.Contains(def.Key)) { continue; }
+                    try
+                    {
+                        FilteredElementCollector collector = CategoryResolver.Collect(source.Doc, def);
+                        if (collector == null) { continue; }
+
+                        var elements = new List<Element>();
+                        foreach (Element element in collector)
+                        {
+                            if (IsExtractable(element, source.Phases)) { elements.Add(element); }
+                        }
+                        work.Add((source, def, elements));
+                    }
+                    catch (Exception ex)
+                    {
+                        Utilities.Log_Utils.Write($"{source.Describe()}: {def.Key} skipped: {ex.Message}");
+                    }
+                }
+            }
+            return work;
         }
 
         /// <summary>

@@ -44,10 +44,17 @@ void main()
 
         /// <summary>
         /// Realistic colour mode (inserted after LIGHTS_GLSL in the scene fragment shader). The material table holds
-        /// four texels per material (MaterialTextures): (colour, fade) (tint, reflectivity) (scale U, scale V, offset
-        /// U, offset V) (cos angle, sin angle, bucket or -1, layer). Images live in one array per size bucket; the
-        /// gradients are taken from the metric coordinates before any branching (textureGrad), so mip selection
-        /// stays correct inside the per-material branches. Keep the four buckets in step with MaterialTextures.BUCKETS.
+        /// five texels per material (MaterialTextures): t0 (colour, fade) t1 (image tint, reflectivity) t2 (scale U,
+        /// scale V, offset U, offset V) t3 (cos angle, sin angle, bucket or -1, layer) t4 (appearance tint, flags;
+        /// 1 = invert the image, 2 = a proxy whose image tint always multiplies). Images live in one array per size bucket; the gradients are taken from the
+        /// metric coordinates before any branching (textureGrad), so mip selection stays correct inside the
+        /// per-material branches. Keep the four buckets in step with MaterialTextures.BUCKETS.
+        /// <para>Order per fragment: image → invert → image tint → fade over the colour → appearance tint over the
+        /// result, all in linear light as Revit's renderer does (checked on Gavin's tint test model: a 50 % fade and an
+        /// inverted image only match Revit's Realistic view when blended linearly). The result goes back to the
+        /// display-referred values the rest of the lighting expects. Proxies are coloured before linearising (their
+        /// tint is worked out in display values). uTintMode: 0 = Revit tint off, otherwise multiply (Revit's blend,
+        /// confirmed on the same model).</para>
         /// </summary>
         public const string MATERIALS_GLSL = @"
 uniform int uRealistic;
@@ -59,6 +66,17 @@ uniform sampler2DArray uTex3;
 uniform int uReflections;
 uniform vec3 uSkyZenith;
 uniform vec3 uSkyHorizon;
+uniform int uTintMode;
+
+// Revit works in linear light: display values (sRGB, approximated by gamma 2.2) in, linear blending, display out
+vec3 toLinear(vec3 c) { return pow(max(c, vec3(0.0)), vec3(2.2)); }
+vec3 toDisplay(vec3 c) { return pow(clamp(c, 0.0, 1.0), vec3(1.0 / 2.2)); }
+
+// Revit tint (a multiply in linear light), or none when switched off
+vec3 applyTint(vec3 c, vec3 tint)
+{
+    return uTintMode == 0 ? c : c * toLinear(tint);
+}
 
 vec3 materialTexture(int bucket, vec3 uvl, vec2 gx, vec2 gy)
 {
@@ -74,7 +92,8 @@ vec4 realisticColour(int id, vec2 uv, vec2 dx, vec2 dy)
     vec4 t0 = texelFetch(uMaterialTable, ivec2(0, id), 0);
     vec4 t1 = texelFetch(uMaterialTable, ivec2(1, id), 0);
     vec4 t3 = texelFetch(uMaterialTable, ivec2(3, id), 0);
-    vec3 colour = t0.rgb;
+    vec4 t4 = texelFetch(uMaterialTable, ivec2(4, id), 0);
+    vec3 colour = toLinear(t0.rgb);
     if (t3.z >= 0.0)
     {
         vec4 t2 = texelFetch(uMaterialTable, ivec2(2, id), 0);
@@ -83,9 +102,21 @@ vec4 realisticColour(int id, vec2 uv, vec2 dx, vec2 dy)
         vec2 inv = vec2(1.0, -1.0) / t2.xy;
         vec2 st = (turn * (uv - t2.zw)) * inv;
         vec3 image = materialTexture(int(t3.z + 0.5), vec3(st, t3.w), (turn * dx) * inv, (turn * dy) * inv);
-        colour = mix(colour, clamp(image * t1.rgb, 0.0, 1.0), t0.a);
+        bool proxy = mod(floor(t4.a * 0.5), 2.0) >= 1.0;
+        if (proxy)
+        {
+            image = toLinear(clamp(image * t1.rgb, 0.0, 1.0)); // the material-colour match, always applied
+        }
+        else
+        {
+            image = toLinear(image);
+            if (mod(t4.a, 2.0) >= 1.0) image = vec3(1.0) - image;
+            image = applyTint(image, t1.rgb);
+        }
+        colour = mix(colour, clamp(image, 0.0, 1.0), t0.a);
     }
-    return vec4(colour, t1.a);
+    colour = applyTint(colour, t4.rgb);
+    return vec4(toDisplay(colour), t1.a);
 }
 
 vec3 skyColour(vec3 dir)

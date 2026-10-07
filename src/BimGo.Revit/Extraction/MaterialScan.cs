@@ -94,6 +94,9 @@ namespace BimGo.Extraction
         private int _documents, _materialCount, _usedMaterials, _noAppearance, _unreadable, _elementsScanned;
         private int _renderForShading;
 
+        /// <summary>Tint and invert findings (build B): one line per asset or bitmap with a tint or invert on.</summary>
+        private readonly List<string> _tintInvert = new();
+
         // The material being dumped
         private string _currentMaterial = string.Empty, _currentDocument = string.Empty, _currentFolder;
         private bool _currentUsed;
@@ -272,6 +275,8 @@ namespace BimGo.Extraction
                 sb.AppendLine($"    Appearance “{appearance.Name}”: schema {schema}; asset name “{asset.Name}”; title “{asset.Title}”; " +
                     $"library “{asset.LibraryName}”; type {asset.AssetType}; {asset.Size} properties");
 
+                NoteTintAndInvert(asset, "appearance", schema);
+
                 // Full dump only for materials in use: unused ones get the header lines above (keeps the report readable)
                 if (_currentUsed) { DumpAsset(asset, schema, depth: 1, slotPrefix: string.Empty); }
                 else { FindTexturesOnly(asset, depth: 1, slotPrefix: string.Empty); }
@@ -413,11 +418,52 @@ namespace BimGo.Extraction
                 Placement = placement.ToString()
             });
             if (lookup.Path != null && !_images.ContainsKey(lookup.Path)) { _images[lookup.Path] = null; }
+            NoteTintAndInvert(asset, string.IsNullOrEmpty(slot) ? "bitmap (root)" : "bitmap " + slot, "UnifiedBitmap");
 
             if (_currentUsed)
             {
                 _materials.AppendLine($"    >>> TEXTURE {(string.IsNullOrEmpty(slot) ? "(root)" : slot)}: {Describe(lookup)}");
                 if (placement.Length > 0) { _materials.AppendLine($"        placement: {placement}"); }
+            }
+        }
+
+        /// <summary>
+        /// Records a tint that is on (<c>common_Tint_toggle</c> or any "…tint_enabled" / "…tint_toggle"), with its
+        /// colour and colour space, and an inverted bitmap (<c>unifiedbitmap_Invert</c>), for the TINT AND INVERT
+        /// section. Used materials only.
+        /// </summary>
+        private void NoteTintAndInvert(Visual.Asset asset, string where, string schema)
+        {
+            if (!_currentUsed) { return; }
+            try
+            {
+                var parts = new List<string>();
+                for (int i = 0; i < asset.Size; i++)
+                {
+                    Visual.AssetProperty property = asset.Get(i);
+                    string name = property?.Name ?? string.Empty;
+                    bool toggle = name.Equals("common_Tint_toggle", StringComparison.OrdinalIgnoreCase)
+                        || name.EndsWith("tint_enabled", StringComparison.OrdinalIgnoreCase)
+                        || name.EndsWith("tint_toggle", StringComparison.OrdinalIgnoreCase);
+                    if (toggle && property is Visual.AssetPropertyBoolean { Value: true } or Visual.AssetPropertyInteger { Value: 1 })
+                    {
+                        string colourName = name.Equals("common_Tint_toggle", StringComparison.OrdinalIgnoreCase)
+                            ? "common_Tint_color"
+                            : name.Substring(0, name.Length - (name.EndsWith("_enabled", StringComparison.OrdinalIgnoreCase) ? "_enabled".Length : "_toggle".Length)) + "_color";
+                        Visual.AssetProperty colour = asset.FindByName(colourName);
+                        Visual.AssetProperty space = asset.FindByName(colourName + "space") ?? asset.FindByName(colourName.Replace("_color", "_colorspace"));
+                        parts.Add($"{name} ON, {colourName} = {(colour == null ? "?" : FormatValue(colour))}{(space == null ? "" : $", {space.Name} = {FormatValue(space)}")}");
+                    }
+                    if (name.Equals("unifiedbitmap_Invert", StringComparison.OrdinalIgnoreCase) && property is Visual.AssetPropertyBoolean { Value: true })
+                    {
+                        parts.Add("unifiedbitmap_Invert ON");
+                    }
+                }
+                if (parts.Count > 0) { _tintInvert.Add($"  {_currentDocument} | {_currentMaterial} | {where} ({schema}) | {string.Join("; ", parts)}"); }
+            }
+            catch (Exception ex)
+            {
+                _tintInvert.Add($"  {_currentDocument} | {_currentMaterial} | {where}: unreadable ({ex.Message})");
             }
         }
 
@@ -670,6 +716,12 @@ namespace BimGo.Extraction
                 sb.AppendLine($"  {Quote(group.Key)} ({(first.Lookup.AutodeskLibrary ? "Autodesk library" : "user image")}) — " +
                     string.Join("; ", group.Select(s => $"{s.Document}: {s.Material} [{s.Slot}]").Distinct().Take(8)));
             }
+
+            // Tint and invert (build B: Revit's tint overlay and inverted images)
+            sb.AppendLine();
+            sb.AppendLine("==================== TINT AND INVERT (used materials) ====================");
+            if (_tintInvert.Count == 0) { sb.AppendLine("None."); }
+            foreach (string line in _tintInvert) { sb.AppendLine(line); }
 
             // Texture lines, compact
             sb.AppendLine();

@@ -1,4 +1,5 @@
 using System.Text.RegularExpressions;
+using BimGo.Scene;
 using Microsoft.Win32;
 
 // The class belongs to the Extraction namespace
@@ -22,7 +23,13 @@ namespace BimGo.Extraction
         ExtraPath,
 
         /// <summary>Beside the Revit model.</summary>
-        DocumentFolder
+        DocumentFolder,
+
+        /// <summary>By exact file name in one of the remembered texture search folders (<see cref="LaunchSettings.TextureSearchFolders"/>).</summary>
+        SearchFolder,
+
+        /// <summary>A per-model override image (<see cref="TextureOverrideSet"/>), not looked up at all.</summary>
+        Override
     }
 
     /// <summary>
@@ -40,7 +47,8 @@ namespace BimGo.Extraction
     /// Material Library roots are probed (standard folders, then the registry) and Revit's additional render appearance
     /// paths are read from Revit.ini. Each discovery step is recorded in <see cref="Notes"/> for diagnostics.
     /// <para>Resolution stages, first hit wins: absolute path → library roots → additional paths → model folder →
-    /// file name in the library's numbered "Mats" folders. Results are cached by raw path.</para>
+    /// file name in the library's numbered "Mats" folders → exact file name in the remembered search folders (indexed
+    /// once per folder and cached while the folder is unchanged). Results are cached by raw path.</para>
     /// </summary>
     internal sealed class TextureLocator
     {
@@ -69,6 +77,8 @@ namespace BimGo.Extraction
 
         private readonly List<string> _libraryRoots = new();
         private readonly List<string> _extraPaths = new();
+        private readonly List<string> _searchFolders = new();
+        private List<TextureFolderIndex> _searchIndexes;
         private readonly List<string> _notes = new();
         private readonly Dictionary<string, TextureLookup> _cache = new(StringComparer.OrdinalIgnoreCase);
 
@@ -77,6 +87,9 @@ namespace BimGo.Extraction
 
         /// <summary>Revit's additional render appearance paths that exist on this machine.</summary>
         public IReadOnlyList<string> ExtraPaths => _extraPaths;
+
+        /// <summary>The remembered texture search folders that exist on this machine.</summary>
+        public IReadOnlyList<string> SearchFolders => _searchFolders;
 
         /// <summary>What discovery checked and found (one line each).</summary>
         public IReadOnlyList<string> Notes => _notes;
@@ -223,6 +236,26 @@ namespace BimGo.Extraction
             }
         }
 
+        /// <summary>
+        /// Sets the remembered texture search folders (missing ones are noted and skipped). Each is indexed the first
+        /// time a texture isn't found by the earlier stages.
+        /// </summary>
+        public void SetSearchFolders(IEnumerable<string> folders)
+        {
+            _searchFolders.Clear();
+            _searchIndexes = null;
+            _cache.Clear();
+            foreach (string folder in folders ?? Enumerable.Empty<string>())
+            {
+                if (string.IsNullOrWhiteSpace(folder)) { continue; }
+                bool exists;
+                try { exists = Directory.Exists(folder); }
+                catch { exists = false; }
+                _notes.Add($"Texture search folder {(exists ? "FOUND" : "absent")}: {folder}");
+                if (exists) { AddUnique(_searchFolders, folder.TrimEnd('\\', '/')); }
+            }
+        }
+
         #endregion
 
         #region Resolution
@@ -298,6 +331,19 @@ namespace BimGo.Extraction
                             if (candidate != null && File.Exists(candidate)) { return Found(candidate, TextureFound.Library); }
                         }
                     }
+                }
+            }
+
+            // 6. Exact file name in the remembered search folders (a unique hit only: two files of the same name in
+            //    a folder are left for the user to choose in "Review textures…")
+            if (_searchFolders.Count > 0)
+            {
+                _searchIndexes ??= _searchFolders.Select(TextureFolderIndex.GetCached).Where(i => i != null).ToList();
+                foreach (TextureFolderIndex index in _searchIndexes)
+                {
+                    TextureSearchResult hit = TextureSearch.RunStage(index, new[] { raw }, TextureMatchStage.Exact).FirstOrDefault();
+                    if (hit?.Chosen != null) { return Found(hit.Chosen, TextureFound.SearchFolder); }
+                    if (hit?.IsAmbiguous == true) { _notes.Add($"Ambiguous in {index.Folder}: {raw} ({hit.Candidates.Count} files)"); }
                 }
             }
 

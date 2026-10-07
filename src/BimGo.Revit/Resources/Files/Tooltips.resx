@@ -132,9 +132,4 @@ Choose what to load and any extra parameters, then pick where to save. The file 
 
 Shows whether BimGo is connected, and lets you bring it to the front, send a fresh snapshot, or end the session.</value>
   </data>
-  <data name="BimGo_MaterialScan" xml:space="preserve">
-    <value>Write a read-only report of this model's materials and textures (diagnostic).
-
-Lists each material's appearance properties, where its texture images are (or aren't) found on this machine, and the image sizes. Linked models that are loaded are included. Nothing in the model changes.</value>
-  </data>
 </root>

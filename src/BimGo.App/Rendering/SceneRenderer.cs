@@ -41,6 +41,9 @@ namespace BimGo.Rendering
 
         /// <summary>Sky reflections on glass (Realistic mode only).</summary>
         public bool Reflections;
+
+        /// <summary>How Revit's tint is drawn (Realistic mode only).</summary>
+        public TintMode Tint;
     }
 
     /// <summary>
@@ -257,7 +260,7 @@ namespace BimGo.Rendering
         private struct SceneUniforms
         {
             public int ViewProj, Model, Eye, LightDir, FogColor, FogDensity, Whitecard, Plan, ClipZ, Override;
-            public int Realistic, Reflections, SkyZenith, SkyHorizon;
+            public int Realistic, Reflections, SkyZenith, SkyHorizon, TintMode;
 
             public static SceneUniforms From(ShaderProgram p)
             {
@@ -287,7 +290,8 @@ namespace BimGo.Rendering
                 Realistic = p.Uniform("uRealistic"),
                 Reflections = p.Uniform("uReflections"),
                 SkyZenith = p.Uniform("uSkyZenith"),
-                SkyHorizon = p.Uniform("uSkyHorizon")
+                SkyHorizon = p.Uniform("uSkyHorizon"),
+                TintMode = p.Uniform("uTintMode")
             };
         }
 
@@ -462,7 +466,32 @@ namespace BimGo.Rendering
             Gl.BindVertexArray(0);
             Gl.BindBuffer(Gl.ARRAY_BUFFER, 0);
 
-            MaterialWarning = _materials.Initialise(materials);
+            MaterialWarning = _materials.Initialise(materials, ProxyPack.Shared, AutoProxy);
+        }
+
+        /// <summary>
+        /// Proxy suggestions for missing images in snapshots made before proxies existed (the "Proxy textures for
+        /// missing images" setting). Set before <see cref="Initialise"/>.
+        /// </summary>
+        public bool AutoProxy { get; set; } = true;
+
+        /// <summary>Proxies take the material's colour (see <see cref="MaterialTextures.ProxyMaterialColour"/>).</summary>
+        public bool ProxyMaterialColour
+        {
+            get => _materials.ProxyMaterialColour;
+            set => _materials.ProxyMaterialColour = value;
+        }
+
+        /// <summary>
+        /// Rebuilds the material table and texture arrays from a changed material set (the Textures panel). The
+        /// per-vertex streams are unchanged: surface coordinates don't depend on the material. GL thread.
+        /// </summary>
+        /// <returns>Null, or a short reason the textures couldn't all be shown.</returns>
+        public string ReloadMaterials(MaterialData materials)
+        {
+            if (_materialVbo == 0 || materials == null || materials.IsEmpty) { return null; }
+            MaterialWarning = _materials.Initialise(materials, ProxyPack.Shared, AutoProxy);
+            return MaterialWarning;
         }
 
         /// <summary>
@@ -1093,6 +1122,7 @@ namespace BimGo.Rendering
             if (!realistic) { return; }
             _materials.Bind();
             Gl.Uniform1(u.Reflections, p.Reflections ? 1 : 0);
+            Gl.Uniform1(u.TintMode, (int)p.Tint);
             SunLighting l = Lighting;
             Vector3 zenith = l.Enabled ? l.Zenith : SKY_ZENITH, horizon = l.Enabled ? l.Horizon : FOG_COLOUR;
             Gl.Uniform3(u.SkyZenith, zenith.X, zenith.Y, zenith.Z);

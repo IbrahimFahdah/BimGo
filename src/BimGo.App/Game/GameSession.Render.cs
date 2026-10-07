@@ -95,6 +95,7 @@ namespace BimGo.Game
                 Whitecard = _whitecard,
                 Realistic = _realistic,
                 Reflections = _reflections,
+                Tint = _tintMode,
                 Plan = false,
                 ClipZ = new Vector2(-1e7f, 1e7f),
                 FogDensity = 0.0022f,
@@ -226,6 +227,7 @@ namespace BimGo.Game
                 Eye = eye,
                 Whitecard = _whitecard,
                 Realistic = _realistic,
+                Tint = _tintMode,
                 Plan = true,
                 ClipZ = new Vector2(elevation - 0.3f, elevation + 1.2f),
                 FogDensity = 0f

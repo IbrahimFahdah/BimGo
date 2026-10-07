@@ -158,6 +158,13 @@
                             <TextBlock VerticalAlignment="Center" Margin="10,0,0,0" FontSize="12" Foreground="{StaticResource Muted}" Text="longest side, px · larger is sharper but uses more GPU memory"/>
                         </StackPanel>
                         <TextBlock x:Name="TextTextureSources" Margin="22,8,0,0" FontSize="12" Foreground="{StaticResource Muted}" TextWrapping="Wrap" Text="—"/>
+                        <CheckBox x:Name="CheckProxyTextures" Margin="22,10,0,0" Content="Proxy textures for missing images"
+                                  ToolTip="Draws a CC0 stand-in texture (brick, timber, carpet…) chosen by material name when an image can't be found. Plain-colour materials are left alone."/>
+                        <StackPanel Orientation="Horizontal" Margin="22,10,0,0">
+                            <Button x:Name="ButtonReviewTextures" Content="Review textures…" Style="{StaticResource SecondaryButton}" Height="30" Padding="14,0" Click="ButtonReviewTextures_Click"
+                                    ToolTip="Lists the materials this Go will read, with missing images. Point at a folder to find them, or pick an image or a proxy per material."/>
+                            <TextBlock x:Name="TextTextureOverrides" VerticalAlignment="Center" Margin="10,0,0,0" FontSize="12" Foreground="{StaticResource Muted}" TextWrapping="Wrap" Text=""/>
+                        </StackPanel>
                     </StackPanel>
                 </Border>
 

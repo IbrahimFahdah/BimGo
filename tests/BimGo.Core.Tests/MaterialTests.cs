@@ -204,5 +204,133 @@ namespace BimGo.Tests
             Assert.AreEqual(1024, settings.TextureMaxSize);
             Assert.AreEqual(ColourMode.Material, settings.Colour);
         }
+
+        [TestMethod]
+        public void Materials_BuildBFieldsRoundTrip()
+        {
+            using var folder = new TempFolder();
+            MaterialData sample = Sample();
+            sample.Materials[0].UniqueId = "uid-brick";
+            sample.Materials[0].Invert = true;
+            sample.Materials[0].AssetTint = new Vector3(0.5f, 0.6f, 0.7f);
+            sample.Materials[0].TextureOrigin = TextureOrigins.OVERRIDE;
+            sample.Materials[2].RenderColour = new Vector3(1f, 1f, 1f);
+            sample.Materials[2].Proxy = "Carpet";
+            sample.Materials[2].TextureOrigin = "PROXY";
+
+            MaterialData got = WriteAndRead(TestData.BuildDocument(materials: sample), folder).Scene.Materials;
+            Assert.AreEqual("uid-brick", got.Materials[0].UniqueId);
+            Assert.IsTrue(got.Materials[0].Invert);
+            Assert.AreEqual(new Vector3(0.5f, 0.6f, 0.7f), got.Materials[0].AssetTint);
+            Assert.AreEqual(TextureOrigins.OVERRIDE, got.Materials[0].TextureOrigin);
+            Assert.AreEqual(new Vector3(1f, 1f, 1f), got.Materials[2].RenderColour);
+            Assert.AreEqual("carpet", got.Materials[2].Proxy, "keywords are stored lower case");
+            Assert.AreEqual(TextureOrigins.PROXY, got.Materials[2].TextureOrigin);
+
+            // Unset optional fields stay unset (and are not written)
+            Assert.IsNull(got.Materials[1].RenderColour);
+            Assert.IsNull(got.Materials[1].AssetTint);
+            Assert.IsNull(got.Materials[1].Proxy);
+            Assert.IsFalse(got.Materials[1].Invert);
+            using ZipArchive zip = ZipFile.OpenRead(folder.File("mat.bimgo"));
+            using var reader = new StreamReader(zip.GetEntry("materials.json").Open());
+            string json = reader.ReadToEnd();
+            Assert.AreEqual(1, CountOf(json, "\"invert\""), "invert is only written when true");
+            Assert.AreEqual(1, CountOf(json, "\"renderColour\""));
+
+            static int CountOf(string text, string part) => (text.Length - text.Replace(part, string.Empty).Length) / part.Length;
+        }
+
+        [TestMethod]
+        public void Materials_BuildAFileLoadsAndUnknownFieldsAreIgnored()
+        {
+            using var folder = new TempFolder();
+            string path = folder.File("builda.bimgo");
+            Assert.IsTrue(BimGoWriter.Write(path, TestData.BuildDocument(materials: Sample()), TestData.Writer, FileKinds.SAVE, out string error), error);
+
+            // A build A table (no build B fields) plus a field from some later build
+            using (ZipArchive zip = ZipFile.Open(path, ZipArchiveMode.Update))
+            {
+                zip.GetEntry("materials.json").Delete();
+                using var writer = new StreamWriter(zip.CreateEntry("materials.json").Open());
+                writer.Write(@"{ ""textureMaxSize"": 512, ""materials"": [
+                    { ""name"": ""Brick"", ""colour"": [0.6, 0.3, 0.2], ""texture"": ""textures/a.jpg"", ""textureState"": ""embedded"", ""futureThing"": { ""x"": 1 } },
+                    { ""name"": ""B2"" }, { ""name"": ""Glass"" }, { ""name"": ""Carpet"", ""texture"": ""textures/b.jpg"", ""textureState"": ""embedded"" } ] }");
+            }
+
+            MaterialData got = BimGoReader.Read(path, null, out error)?.Scene.Materials;
+            Assert.IsNotNull(got, error);
+            Assert.IsFalse(got.IsEmpty);
+            Assert.AreEqual("textures/a.jpg", got.Materials[0].Texture);
+            Assert.IsNull(got.Materials[0].UniqueId);
+            Assert.IsNull(got.Materials[0].TextureOrigin);
+            Assert.IsFalse(got.Materials[0].Invert);
+        }
+
+        [TestMethod]
+        public void MaterialData_WithSharesStreamsMergesAndPrunesImages()
+        {
+            MaterialData sample = Sample();
+            SceneMaterial[] table = sample.Materials.Select(m => m.Clean()).ToArray();
+            table[3].Texture = "textures/c.jpg"; // carpet now uses a new image; b.jpg is no longer referenced
+            byte[] jpegC = { 0xFF, 0xD8, 7, 0xFF, 0xD9 };
+
+            MaterialData changed = sample.With(table, new Dictionary<string, byte[]> { ["textures/c.jpg"] = jpegC, ["textures/unused.jpg"] = jpegC });
+            Assert.AreSame(sample.VertexMaterial, changed.VertexMaterial);
+            Assert.AreSame(sample.VertexUv, changed.VertexUv);
+            Assert.AreEqual(sample.TextureMaxSize, changed.TextureMaxSize);
+            CollectionAssert.AreEquivalent(new[] { "textures/a.jpg", "textures/c.jpg" }, changed.Textures.Keys.ToList());
+            Assert.AreEqual("textures/b.jpg", sample.Materials[3].Texture, "the original is untouched");
+            Assert.AreEqual(2, sample.Textures.Count);
+            Assert.ThrowsException<System.ArgumentException>(() => sample.With(table.Take(2).ToArray()));
+        }
+
+        [TestMethod]
+        public void Document_MaterialsOverrideIsWritten()
+        {
+            using var folder = new TempFolder();
+            BimGoDocument document = TestData.BuildDocument(materials: Sample());
+            SceneMaterial[] table = document.Scene.Materials.Materials.Select(m => m.Clean()).ToArray();
+            table[2].Proxy = "brick";
+            document.Materials = document.Scene.Materials.With(table);
+
+            MaterialData got = WriteAndRead(document, folder).Scene.Materials;
+            Assert.AreEqual("brick", got.Materials[2].Proxy);
+            Assert.IsNull(document.Scene.Materials.Materials[2].Proxy, "the scene snapshot is untouched");
+        }
+
+        [TestMethod]
+        public void Settings_BuildBDefaultsAndSanitise()
+        {
+            var settings = new LaunchSettings();
+            Assert.AreEqual(TintMode.Multiply, settings.RevitTint);
+            Assert.IsTrue(settings.ProxyMissingTextures);
+            Assert.IsTrue(settings.ProxyMaterialColour);
+            Assert.AreEqual(0, settings.TextureSearchFolders.Count);
+
+            Assert.IsTrue(settings.AddTextureSearchFolder(@"D:\Maps\"));
+            Assert.IsFalse(settings.AddTextureSearchFolder(@"d:\maps"), "same folder, already last");
+            for (int i = 0; i < 25; i++) { settings.AddTextureSearchFolder($@"E:\F{i}"); }
+            Assert.AreEqual(LaunchSettings.MAX_TEXTURE_SEARCH_FOLDERS, settings.TextureSearchFolders.Count);
+            Assert.AreEqual(@"E:\F24", settings.TextureSearchFolders[^1]);
+
+            settings.TextureSearchFolders = new List<string> { " ", @"A:\x\", @"a:\X", null, @"B:\y" };
+            settings.RevitTint = (TintMode)7;
+            settings.Sanitise();
+            CollectionAssert.AreEqual(new[] { @"a:\X", @"B:\y" }, settings.TextureSearchFolders);
+            Assert.AreEqual(TintMode.Multiply, settings.RevitTint);
+
+            settings.RevitTint = TintMode.KeepLightness;
+            settings.Sanitise();
+            Assert.AreEqual(TintMode.Multiply, settings.RevitTint, "the retired trial mode reads as multiply");
+
+            settings.RevitTint = TintMode.Off;
+            settings.ProxyMissingTextures = false;
+            LaunchSettings copy = settings.Clone();
+            Assert.AreNotSame(settings.TextureSearchFolders, copy.TextureSearchFolders);
+            CollectionAssert.AreEqual(settings.TextureSearchFolders, copy.TextureSearchFolders);
+            Assert.AreEqual(TintMode.Off, copy.RevitTint);
+            Assert.IsFalse(copy.ProxyMissingTextures);
+        }
     }
 }

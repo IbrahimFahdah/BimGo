@@ -254,6 +254,11 @@ namespace BimGo.Game
                 BuildBookmarksPanel();
                 return;
             }
+            if (IsTexturesPanelOpen)
+            {
+                BuildTexturesPanel();
+                return;
+            }
 
             FontAtlas f = _ui.Atlas;
             InputState input = _window.Input;
@@ -277,7 +282,8 @@ namespace BimGo.Game
             // Button pitch: 54 px, tightened when the column would run into END SESSION (small or high-DPI screens)
             float endY = height - pad - S(48);
             int hiddenThings = HiddenThingsCount();
-            int buttons = (IsFileMode ? 9 : 7) + (hiddenThings > 0 ? 1 : 0);
+            bool texturesButton = HasTexturePanel;
+            int buttons = (IsFileMode ? 9 : 7) + (hiddenThings > 0 ? 1 : 0) + (texturesButton ? 1 : 0);
             float step = Math.Clamp((endY - S(12) - y) / buttons, S(40), S(54));
             float buttonH = step - S(6);
             if (MenuButton(f, leftX, y, leftW, "RESUME", primary: true, danger: false, height: buttonH)) { SetPaused(false); return; }
@@ -309,6 +315,11 @@ namespace BimGo.Game
             y += step;
             if (MenuButton(f, leftX, y, leftW, BookmarksMenuLabel(), false, false, height: buttonH)) { OpenBookmarks(); return; }
             y += step;
+            if (texturesButton)
+            {
+                if (MenuButton(f, leftX, y, leftW, TexturesMenuLabel(), false, false, height: buttonH)) { OpenTextures(); return; }
+                y += step;
+            }
 
             // Walkthrough-only hiding (Scan I / Shift+I, category and link toggles)
             if (hiddenThings > 0)

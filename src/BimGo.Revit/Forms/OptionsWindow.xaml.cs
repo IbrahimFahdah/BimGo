@@ -48,6 +48,9 @@ namespace BimGo.Forms
         private readonly ViewChoice _view;
         private readonly Dictionary<string, Wpf.CheckBox> _linkChecks = new(StringComparer.Ordinal);
 
+        // Materials: the texture review (null where the caller offers none, e.g. no Revit document)
+        private readonly TextureReviewServices _textureServices;
+
         #endregion
 
         /// <summary>
@@ -61,9 +64,12 @@ namespace BimGo.Forms
         /// <param name="phases">The model's phases and their defaults.</param>
         /// <param name="links">The model's link instances and the key the choice is saved under.</param>
         /// <param name="view">The active view (name and how many elements it shows).</param>
+        /// <param name="textureServices">The "Review textures…" callbacks, or null to hide the button.</param>
         internal OptionsWindow(LaunchSettings settings, string spawnDescription, int[] counts,
-            Func<List<string>> scanParameterNames, string primaryButtonText, PhaseChoices phases, LinkChoices links, ViewChoice view)
+            Func<List<string>> scanParameterNames, string primaryButtonText, PhaseChoices phases, LinkChoices links, ViewChoice view,
+            TextureReviewServices textureServices = null)
         {
+            _textureServices = textureServices;
             _settings = settings;
             _counts = counts;
             _scanParameterNames = scanParameterNames;
@@ -257,10 +263,22 @@ namespace BimGo.Forms
         private void LoadTextures()
         {
             CheckTextures.IsChecked = _settings.ExtractTextures;
+            CheckProxyTextures.IsChecked = _settings.ProxyMissingTextures;
+            ButtonReviewTextures.Visibility = _textureServices?.Review != null ? Win.Visibility.Visible : Win.Visibility.Collapsed;
+            UpdateOverrideSummary();
             ComboTextureSize.Items.Clear();
             foreach (int size in MaterialData.TEXTURE_SIZES) { ComboTextureSize.Items.Add($"{size} px"); }
             ComboTextureSize.SelectedIndex = Math.Max(0, Array.IndexOf(MaterialData.TEXTURE_SIZES, MaterialData.NearestTextureSize(_settings.TextureMaxSize)));
 
+            LoadTextureSourcesText();
+            UpdateTextureControls();
+        }
+
+        /// <summary>
+        /// Where textures will be found on this machine (one line under the tick).
+        /// </summary>
+        private void LoadTextureSourcesText()
+        {
             try
             {
                 Extraction.TextureLocator locator = Extraction.TextureLocator.Discover(Globals.REVIT_VERSION_STR);
@@ -268,19 +286,98 @@ namespace BimGo.Forms
                 string extra = locator.ExtraPaths.Count == 0
                     ? "no additional render appearance paths set in Revit Options"
                     : $"{locator.ExtraPaths.Count} additional render appearance path{(locator.ExtraPaths.Count == 1 ? "" : "s")}: {string.Join("; ", locator.ExtraPaths)}";
-                TextTextureSources.Text = $"{library}; {extra}.";
+                int search = _settings.TextureSearchFolders?.Count ?? 0;
+                string folders = search == 0 ? string.Empty : $"; {search} remembered texture search folder{(search == 1 ? "" : "s")}";
+                TextTextureSources.Text = $"{library}; {extra}{folders}.";
             }
             catch (Exception ex)
             {
                 TextTextureSources.Text = "Texture folders could not be checked (see the log).";
                 Utilities.Log_Utils.Write($"Texture folder check failed: {ex.Message}");
             }
-            UpdateTextureControls();
         }
 
         private void UpdateTextureControls()
         {
-            ComboTextureSize.IsEnabled = CheckTextures.IsChecked == true;
+            bool on = CheckTextures.IsChecked == true;
+            ComboTextureSize.IsEnabled = on;
+            CheckProxyTextures.IsEnabled = on;
+            ButtonReviewTextures.IsEnabled = on;
+        }
+
+        /// <summary>
+        /// "n materials with your texture choice" for this model (from its override file).
+        /// </summary>
+        private void UpdateOverrideSummary()
+        {
+            try
+            {
+                TextureOverrideSet overrides = TextureOverrideSet.Load(_links.HostKey);
+                int count = overrides.Documents.Values.Sum(d => d.Count);
+                TextTextureOverrides.Text = count == 0 ? string.Empty : $"{count} material{(count == 1 ? "" : "s")} with your texture choice in this model";
+            }
+            catch (Exception ex)
+            {
+                TextTextureOverrides.Text = string.Empty;
+                Utilities.Log_Utils.Write($"Texture overrides unreadable: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Runs the texture review with the choices as they stand in this window (categories, active view, links,
+        /// phases), then opens the review window.
+        /// </summary>
+        private void ButtonReviewTextures_Click(object sender, Win.RoutedEventArgs e)
+        {
+            if (_textureServices?.Review == null) { return; }
+            if (!ReadPhases(out string existingPhase, out string newPhase)) { return; }
+
+            LaunchSettings trial = _settings.Clone();
+            List<string> enabled = SelectedKeys();
+            bool viewOnly = CheckViewOnly.IsChecked == true;
+            if (enabled.Count == 0 && !viewOnly)
+            {
+                Win.MessageBox.Show(this, "Tick at least one category to load (or load only what the active view shows).", "BimGo", Win.MessageBoxButton.OK, Win.MessageBoxImage.Warning);
+                return;
+            }
+            if (enabled.Count > 0) { trial.EnabledCategories = enabled; }
+            trial.ActiveViewOnly = viewOnly;
+            trial.ExistingPhase = existingPhase;
+            trial.NewPhase = newPhase;
+            trial.ExtractTextures = true;
+            trial.ProxyMissingTextures = CheckProxyTextures.IsChecked == true;
+            trial.SetLinksFor(_links.HostKey, SelectedLinks());
+
+            Extraction.TextureReview review;
+            try
+            {
+                var progress = new Utilities.OperationProgress();
+                using (ProgressWindow.Show("Reviewing textures", progress, _textureServices.Owner))
+                {
+                    review = _textureServices.Review(trial, progress);
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+            catch (Exception ex)
+            {
+                Utilities.Log_Utils.Write($"Texture review failed: {ex}");
+                Win.MessageBox.Show(this, $"The texture review failed:\n{ex.Message}", "BimGo", Win.MessageBoxButton.OK, Win.MessageBoxImage.Warning);
+                return;
+            }
+
+            if (review.Rows.Count == 0)
+            {
+                Win.MessageBox.Show(this, "None of the elements this Go would load carry a material.", "BimGo", Win.MessageBoxButton.OK, Win.MessageBoxImage.Information);
+                return;
+            }
+
+            var window = new TextureReviewWindow(review, _textureServices, _settings) { Owner = this };
+            window.ShowDialog();
+            UpdateOverrideSummary();
+            LoadTextureSourcesText();
         }
 
         /// <summary>
@@ -343,6 +440,7 @@ namespace BimGo.Forms
                 : RadioMaterial.IsChecked == true ? ColourMode.Material
                 : ColourMode.Whitecard;
             _settings.ExtractTextures = CheckTextures.IsChecked == true;
+            _settings.ProxyMissingTextures = CheckProxyTextures.IsChecked == true;
             _settings.TextureMaxSize = MaterialData.TEXTURE_SIZES[Math.Clamp(ComboTextureSize.SelectedIndex, 0, MaterialData.TEXTURE_SIZES.Length - 1)];
             _settings.MaxStepHeightMm = step;
             _settings.Msaa = ComboMsaa.SelectedIndex switch { 2 => 4, 1 => 2, _ => 0 };

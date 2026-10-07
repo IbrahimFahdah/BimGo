@@ -63,8 +63,20 @@ namespace BimGo.Commands.Cmds_BimGo
                 ElementCount = viewUsable ? ViewScope.Count(doc, activeView) : 0
             };
 
+            // "Review textures…": a resolve-only pass over what this Go would load, and the full material report
+            var textures = new Forms.TextureReviewServices
+            {
+                Review = (trial, progress) => SceneExtractor.Review(uiDoc, trial, progress),
+                ExportReport = progress =>
+                {
+                    string path = MaterialScan.Run(doc, uiApp.Application.VersionNumber, progress, out string summary);
+                    return (path, summary);
+                },
+                Owner = uiApp.MainWindowHandle
+            };
+
             var dialog = new Forms.OptionsWindow(settings, SceneExtractor.DescribeSpawn(uiDoc), counts,
-                () => ParameterScanner.ScanNames(doc), primaryButtonText, phases, links, view);
+                () => ParameterScanner.ScanNames(doc), primaryButtonText, phases, links, view, textures);
             new WindowInteropHelper(dialog).Owner = uiApp.MainWindowHandle;
             if (dialog.ShowDialog() != true) { return null; }
 

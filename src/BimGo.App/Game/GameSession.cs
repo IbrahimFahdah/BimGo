@@ -98,6 +98,11 @@ namespace BimGo.Game
         // no materials, but the choice is kept) and sky reflections on glass
         private bool _realistic;
         private bool _reflections;
+
+        // Realistic mode: how Revit's tint is drawn, and CC0 proxies for missing images (files made before proxies)
+        private TintMode _tintMode;
+        private bool _proxyMissing;
+        private bool _proxyMaterialColour;
         private float _fov;
         private float _sensitivity;
         private bool _invertY;
@@ -176,6 +181,9 @@ namespace BimGo.Game
             _whitecard = settings.Colour == ColourMode.Whitecard;
             _realistic = settings.Colour == ColourMode.Realistic;
             _reflections = settings.Reflections;
+            _tintMode = settings.RevitTint == TintMode.Off ? TintMode.Off : TintMode.Multiply;
+            _proxyMissing = settings.ProxyMissingTextures;
+            _proxyMaterialColour = settings.ProxyMaterialColour;
             _msaa = settings.Msaa;
             _ambientOcclusion = settings.AmbientOcclusion;
             _fov = settings.FieldOfView;
@@ -217,8 +225,9 @@ namespace BimGo.Game
             Utilities.Log_Utils.Write($"Batches {_batches.Batches.Length} / chunks {_batches.Chunks.Length}, BVH nodes {_bvh.NodeCount} in {stopwatch.ElapsedMilliseconds} ms. GL {_window.GlVersion}: {Native.Gl.GetString(Native.Gl.RENDERER)}");
 
             DrawLoadingFrame("Uploading geometry…");
-            _renderer = new SceneRenderer();
+            _renderer = new SceneRenderer { AutoProxy = _proxyMissing, ProxyMaterialColour = _proxyMaterialColour };
             _renderer.Initialise(Scene, _batches);
+            InitialiseTextures();
             if (_renderer.MaterialWarning != null) { Toast(_renderer.MaterialWarning, 6f); }
             else if (_realistic && !_renderer.HasMaterials)
             {
@@ -539,7 +548,7 @@ namespace BimGo.Game
             if (input.IsPressed(Vk.VK_ESCAPE))
             {
                 if (captured) { current.OnCancel(); }
-                else if (_paused && (ClosePush() || CloseComments() || CloseBookmarks())) { /* back to the pause menu */ }
+                else if (_paused && (ClosePush() || CloseComments() || CloseBookmarks() || CloseTextures())) { /* back to the pause menu */ }
                 else { SetPaused(!_paused); }
             }
             if (input.IsPressed(Vk.VK_F1)) { _showHelp = !_showHelp; }
@@ -875,6 +884,9 @@ namespace BimGo.Game
             LaunchSettings settings = LaunchSettings.LoadOrDefault();
             settings.Colour = _whitecard ? ColourMode.Whitecard : _realistic ? ColourMode.Realistic : ColourMode.Material;
             settings.Reflections = _reflections;
+            settings.RevitTint = _tintMode;
+            settings.ProxyMissingTextures = _proxyMissing;
+            settings.ProxyMaterialColour = _proxyMaterialColour;
             settings.Msaa = _msaa;
             settings.AmbientOcclusion = _ambientOcclusion;
             settings.ArtificialLights = _lightMode;
