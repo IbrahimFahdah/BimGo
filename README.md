@@ -1,5 +1,7 @@
 # BimGo — First-Person BIM Walkthroughs
 
+> **Try it in your browser:** [ibrahimfahdah.github.io/BimGo](https://ibrahimfahdah.github.io/BimGo/), or [open the sample model directly](https://ibrahimfahdah.github.io/BimGo/?model=/BimGo/samples/BimGo%20Sample%20Pavilion.bimgo). Chrome or Edge recommended; nothing to install.
+
 BimGo (formerly **RvtGo**) turns a Revit model into an FPS-style, first-person walkthrough with collision, gravity, walkable stairs, a room readout and eight tool guns: **Scan**, **Measure**, **Portal**, **Comment**, **Teleport**, **Demolish**, **Gizmo** and **Clone**. It renders with a small custom OpenGL engine (own renderer, window and input; GL function bindings from Silk.NET, see §10).
 
 It comes in two parts:

@@ -1,5 +1,7 @@
 # BimGo Web
 
+**Try it:** https://ibrahimfahdah.github.io/BimGo/ · [open the sample model directly](https://ibrahimfahdah.github.io/BimGo/?model=/BimGo/samples/BimGo%20Sample%20Pavilion.bimgo)
+
 BimGo for the browser: a TypeScript + WebGL2 port of the BimGo walkthrough app, hosted on GitHub Pages at https://ibrahimfahdah.github.io/BimGo/. No model yet? Press **TRY THE SAMPLE**. The plan and the notes for each phase are in `ai/261007_Web/`; the main README (§11) has the details.
 
 ```
