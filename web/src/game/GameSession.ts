@@ -2,13 +2,16 @@ import { type EditRequest, type EditResult, EditOp } from '../core/edits/EditMes
 import { type JournalEntry, JournalOps } from '../core/edits/EditJournal';
 import { FileKinds } from '../core/format/BimGoFormat';
 import type { BimGoDocument } from '../core/format/BimGoReader';
-import { writeBimGo } from '../core/format/BimGoWriter';
+import { SidecarJson, writeBimGo } from '../core/format/BimGoWriter';
 import type { BookmarkRecord, CommentRecord, VisibilitySettings } from '../core/format/DocumentModels';
 import { setCurrentUser } from '../core/format/DocumentModels';
 import { Mat4 } from '../core/math/Matrix4x4';
 import { clamp, type Vec3, Vec3 as V, vec3 } from '../core/math/Vector';
 import { CATEGORIES, findCategory, KEY_DOORS } from '../core/scene/CategoryCatalog';
-import { FileEditSource } from '../core/sources/ModelSource';
+import { linkLabel } from '../core/scene/LinkInfo';
+import type { SidecarKind } from '../core/live/LiveProtocol';
+import { LiveSessionSource } from '../core/sources/LiveSessionSource';
+import { FileEditSource, type ModelSource } from '../core/sources/ModelSource';
 import type { RoomInfo, SceneData } from '../core/scene/SceneData';
 import { CoordinateReadout, SharedTransform, SiteCoordinates } from '../core/scene/SiteCoordinates';
 import { gl } from '../engine/gl/Gl';
@@ -47,8 +50,22 @@ import { Textures } from './Textures';
 import type { ViewerSettings } from './ViewerSettings';
 import { ColourMode } from './ViewerSettings';
 
-/** Why a walkthrough ended. */
-export type SessionEnd = 'closed';
+/** Why a walkthrough ended: closed, or a newer Revit snapshot is ready (reload where the player stands). */
+export type SessionEnd = 'closed' | 'reload';
+
+/** Where the player stands, in Revit internal metres, carried across a live reload (port of SessionPose). */
+export interface SessionPose {
+  feet: Vec3;
+  yaw: number;
+  pitch: number;
+  flying: boolean;
+  home: Vec3;
+  homeYaw: number;
+  homePitch: number;
+  homeFlying: boolean;
+  activeGun: number;
+  showMap: boolean;
+}
 
 const HELP_ROWS: [string, string][] = [
   ['WASD', 'Move'],
@@ -68,6 +85,7 @@ const HELP_ROWS: [string, string][] = [
   ['[ ]', 'Sun time −/+ 5 min (Shift: 1 min)'],
   ['TAB · ESC / P', 'Minimap · Pause menu'],
   ['CTRL+S · Z · Y', 'Save · Undo · Redo'],
+  ['F5 · R (SCAN)', 'Live: refresh · Show in Revit'],
   ['F11 · SHIFT+F12', 'Fullscreen · Screenshot'],
   ['F1', 'Hide help · BimGo Web ' + __BIMGO_VERSION__]
 ];
@@ -143,7 +161,7 @@ export class GameSession implements GunHost, EditHost {
 
   // #region Edits and the document
 
-  readonly source: FileEditSource;
+  readonly source: ModelSource;
   private readonly hostedBy = new Map<number, number[]>();
   private readonly editCallbacks = new Map<number, (result: EditResult) => void>();
   private readonly pendingRequests = new Map<number, EditRequest>();
@@ -159,6 +177,10 @@ export class GameSession implements GunHost, EditHost {
   private fileHandle: FileSystemFileHandle | null;
   private saving: { title: string; progress: ProgressState; abort: AbortController } | null = null;
   private editCancelledAt = -10;
+  private reloadRequested = false;
+  private modelChangesShown = 0;
+  private readonly sidecarRevision = new Map<SidecarKind, number>();
+  private readonly sidecarTimer = new Map<SidecarKind, number>();
   private readonly unloadGuard = (e: BeforeUnloadEvent) => {
     if (!this.isDirty) { return; }
     e.preventDefault();
@@ -213,7 +235,8 @@ export class GameSession implements GunHost, EditHost {
     readonly ui: UiBatch,
     readonly document: BimGoDocument,
     readonly settings: ViewerSettings,
-    fileHandle: FileSystemFileHandle | null = null
+    fileHandle: FileSystemFileHandle | null = null,
+    source: ModelSource | null = null
   ) {
     const scene = document.scene;
     this.scene = scene;
@@ -227,7 +250,7 @@ export class GameSession implements GunHost, EditHost {
     this.hidden = new Array<boolean>(scene.elements.length).fill(false);
     this.fileHandle = fileHandle;
     this.documentName = document.name;
-    this.source = new FileEditSource(scene, document.name);
+    this.source = source ?? new FileEditSource(scene, document.name);
     scene.elements.forEach((record, e) => {
       // Only host elements are looked up by id: linked models have their own id namespaces
       if (record.link > 0) { return; }
@@ -260,6 +283,10 @@ export class GameSession implements GunHost, EditHost {
   get editPoint(): Vec3 { return this.editor.point; }
   get currentLevelName(): string { return this.levelNameAt(this.player.feet.z); }
   get isCaptured(): boolean { return this.window.isCaptured; }
+  /** The live Revit session, or null for a .bimgo file. */
+  get live(): LiveSessionSource | null { return this.source instanceof LiveSessionSource ? this.source : null; }
+  get isFileMode(): boolean { return !this.source.isRevit; }
+  get isLiveConnected(): boolean { return this.live?.connected ?? false; }
 
   // #endregion
 
@@ -329,6 +356,7 @@ export class GameSession implements GunHost, EditHost {
 
     this.spawn();
     this.markSaved();
+    this.markSidecarsWritten();
     globalThis.addEventListener('beforeunload', this.unloadGuard);
 
     const links = this.scene.links.length > 0 ? ` · ${this.scene.links.length} linked model${this.scene.links.length === 1 ? '' : 's'}` : '';
@@ -427,8 +455,10 @@ export class GameSession implements GunHost, EditHost {
       }
       return null;
     }
-    this.pumpSource();
+    this.pumpSource(dt);
+    this.updateLive(dt);
     this.updateTitle();
+    if (this.reloadRequested) { return 'reload'; }
     this.updateFrame();
     if (this.ended) { return 'closed'; }
 
@@ -497,6 +527,7 @@ export class GameSession implements GunHost, EditHost {
     if (input.isPressed(Vk.F1)) { this.showHelp = !this.showHelp; }
     if (input.isPressed(Vk.F11)) { toggleFullscreen(); }
     if (input.isPressed(Vk.F12) && input.isDown(Vk.SHIFT)) { this.screenshotRequested = true; }
+    if (input.isPressed(Vk.F5) || (input.isPressed(Vk.key('R')) && input.isDown(Vk.SHIFT) && !this.paused)) { this.refreshFromRevit(); }
 
     // Ctrl+S save (Shift: save as), Ctrl+Z undo, Ctrl+Y / Ctrl+Shift+Z redo
     if (input.isDown(Vk.CONTROL)) {
@@ -1458,7 +1489,9 @@ export class GameSession implements GunHost, EditHost {
     const x = this.s(20), y = this.s(20), w = this.s(250), h = this.s(146);
     ui.panel(x, y, w, h, UiTheme.PANEL, UiTheme.PANEL_BORDER);
     const titleWidth = ui.text(f.bold, x + this.s(14), y + this.s(11), 'BIMGO', UiTheme.TEXT, this.s(2));
-    ui.text(f.small, x + this.s(14) + titleWidth + this.s(8), y + this.s(15), 'FILE', UiTheme.GOOD, this.s(1));
+    const live = this.live;
+    const badge = !live ? 'FILE' : live.closed ? 'REVIT · ENDED' : live.connected ? 'LIVE · REVIT' : 'REVIT · OFFLINE';
+    ui.text(f.small, x + this.s(14) + titleWidth + this.s(8), y + this.s(15), badge, !live || live.connected ? UiTheme.GOOD : UiTheme.DANGER, this.s(1));
 
     if (this.settings.showFps) {
       this.text.clear().appendNumber(this.fps, 0).append(' fps · ').appendNumber(this.frameMs, 1).append(' ms');
@@ -1500,6 +1533,9 @@ export class GameSession implements GunHost, EditHost {
 
     ui.text(f.body, labelX, rowY, 'VIEW', UiTheme.TEXT_MUTED);
     ui.text(f.body, valueX, rowY, this.colourModeLabel(), UiTheme.TEXT);
+    if (live && (live.modelChanges > 0 || live.refreshing)) {
+      ui.textRight(f.small, x + w - this.s(14), rowY + this.s(2), live.refreshing ? 'REFRESHING…' : `${live.modelChanges} CHANGES · F5`, UiTheme.ACCENT, this.s(1));
+    }
   }
 
   colourModeLabel(): string {
@@ -1721,8 +1757,8 @@ export class GameSession implements GunHost, EditHost {
   }
 
   /** Delivers the source's answers (recording accepted edits). */
-  private pumpSource(): void {
-    this.source.pump();
+  private pumpSource(dt: number): void {
+    this.source.pump(dt);
     for (let result = this.source.takeResult(); result; result = this.source.takeResult()) {
       const request = this.pendingRequests.get(result.ticket);
       this.pendingRequests.delete(result.ticket);
@@ -1855,6 +1891,10 @@ export class GameSession implements GunHost, EditHost {
 
   /** Ctrl+Z: removes the last entry and rebuilds the walkthrough from the rest. */
   undo(): void {
+    if (!this.isFileMode) {
+      this.toast('Edits are in Revit: undo them there, then press F5 to refresh');
+      return;
+    }
     if (this.guns[this.activeGun].capturesInput) { return; }
     const last = this.journal.removeLast();
     if (!last) {
@@ -1869,6 +1909,10 @@ export class GameSession implements GunHost, EditHost {
 
   /** Ctrl+Y / Ctrl+Shift+Z: puts the last undone edit back (on top of the current state, as a full replay would). */
   redo(): void {
+    if (!this.isFileMode) {
+      this.toast('Edits are in Revit: redo them there, then press F5 to refresh');
+      return;
+    }
     if (this.guns[this.activeGun].capturesInput) { return; }
     const entry = this.journal.redo();
     if (!entry) {
@@ -1894,6 +1938,167 @@ export class GameSession implements GunHost, EditHost {
 
   // #endregion
 
+  // #region Live session (port of GameSession.Live.cs)
+
+  /** Per frame: Revit's notices, the model-changed hint, sidecar writes, and a reload once a newer snapshot is ready. */
+  private updateLive(dt: number): void {
+    const live = this.live;
+    if (!live) { return; }
+
+    for (let notice = live.takeNotice(); notice !== null; notice = live.takeNotice()) {
+      if (notice) { this.toast(notice, 4); }
+    }
+    if (live.modelChanges > this.modelChangesShown) {
+      if (this.modelChangesShown === 0) { this.toast('The model changed in Revit: press F5 to load the changes', 4); }
+      this.modelChangesShown = live.modelChanges;
+    }
+    this.syncSidecars(dt);
+
+    // Reload where the player stands, once nothing is in flight
+    if (live.snapshotReady && !this.reloadRequested) {
+      const busy = live.pending > 0 || this.guns[this.activeGun].capturesInput || this.editor.active;
+      if (!busy) {
+        this.flushSidecars();
+        this.reloadRequested = true;
+      }
+    }
+  }
+
+  /** F5 / Shift+R: asks Revit for a fresh snapshot (the walkthrough reloads where you stand when it arrives). */
+  refreshFromRevit(): void {
+    const live = this.live;
+    if (!live) {
+      this.toast('Refresh needs a live Revit session (press Go in Revit)');
+      return;
+    }
+    if (!live.connected) {
+      this.toast(live.closed ? 'The Revit session has ended' : 'Not connected to Revit');
+      return;
+    }
+    if (live.pending > 0) {
+      this.toast('Waiting for Revit to finish your edits first');
+      return;
+    }
+    if (live.refreshing) {
+      this.toast('Revit is already extracting a fresh snapshot…');
+      return;
+    }
+    if (live.requestRefresh()) {
+      this.sound.play(SoundId.UiClick);
+      this.toast('Asking Revit for a fresh snapshot…', 4);
+    }
+  }
+
+  /** Scan, R: selects and shows the element in Revit (a linked element: its link instance, or the element in it). */
+  showInRevit(element: number, dynamicId: number): void {
+    if (element < 0) { return; }
+    const live = this.live;
+    if (!live) {
+      this.toast('Show in Revit needs a live Revit session (press Go in Revit)');
+      return;
+    }
+    if (!live.connected) {
+      this.toast('Not connected to Revit');
+      return;
+    }
+
+    const record = this.scene.elements[element];
+    const link = record.link > 0 ? this.scene.links.find(l => l.index === record.link) ?? null : null;
+    let revitId = record.elementId;
+    if (link) {
+      if (link.instanceId <= 0) {
+        this.toast('That element is in a linked model');
+        return;
+      }
+      revitId = link.instanceId;
+    }
+    if (dynamicId > 0) { revitId = this.dynamics.find(dynamicId)?.revitId ?? 0; }
+    if (revitId <= 0) {
+      this.toast("That clone hasn't been created in Revit yet");
+      return;
+    }
+
+    const sent = link ? live.showLinkedElement(link.instanceId, record.elementId) : live.showElements([revitId]);
+    if (sent) {
+      this.sound.play(SoundId.UiClick);
+      this.toast(link ? `Showing it in the link “${linkLabel(link)}” in Revit…` : 'Showing in Revit…');
+    }
+  }
+
+  /** Where the player stands (Revit internal metres), for carrying across a reload. */
+  capturePose(): SessionPose {
+    const o = this.scene.originOffset, p = this.player;
+    return {
+      feet: V.add(p.feet, o), yaw: p.yaw, pitch: p.pitch, flying: p.flying,
+      home: V.add(p.homeFeet, o), homeYaw: p.homeYaw, homePitch: p.homePitch, homeFlying: p.homeFlying,
+      activeGun: this.activeGun, showMap: this.showMap
+    };
+  }
+
+  /** Puts the player back where a pose says (the new snapshot's origin may differ). */
+  applyPose(pose: SessionPose): void {
+    const o = this.scene.originOffset, p = this.player;
+    if (pose.flying !== p.flying) { p.toggleFly(); }
+    p.teleportTo(V.sub(pose.feet, o), pose.yaw, pose.pitch);
+    p.setHomeTo(V.sub(pose.home, o), pose.homeYaw, pose.homePitch, pose.homeFlying);
+    if (pose.activeGun >= 0 && pose.activeGun < this.guns.length) { this.activeGun = pose.activeGun; }
+    this.showMap = pose.showMap;
+  }
+
+  /** The sidecar revisions now (comments, bookmarks, sun, visibility). */
+  private sidecarRevisions(): [SidecarKind, number][] {
+    return [['comments', this.comments.revision], ['bookmarks', this.bookmarks.revision], ['sun', this.sun.revision], ['visibility', this.visibilityRevision]];
+  }
+
+  private markSidecarsWritten(): void {
+    for (const [kind, revision] of this.sidecarRevisions()) { this.sidecarRevision.set(kind, revision); }
+  }
+
+  /**
+   * Live sessions keep comments, bookmarks, the sun and visibility beside the Revit model (the add-in writes the
+   * files): changes are sent once they settle (the sun waits while its day plays).
+   */
+  private syncSidecars(dt: number): void {
+    if (!this.live?.hello.sidecars) { return; }
+    for (const [kind, revision] of this.sidecarRevisions()) {
+      if (revision === this.sidecarRevision.get(kind)) {
+        this.sidecarTimer.delete(kind);
+        continue;
+      }
+      const delay = kind === 'sun' ? 2 : kind === 'visibility' ? 1 : 0.4;
+      const left = (this.sidecarTimer.get(kind) ?? delay) - dt;
+      if (left > 0 || (kind === 'sun' && this.sun.playing)) {
+        this.sidecarTimer.set(kind, Math.max(left, 0));
+        continue;
+      }
+      this.writeSidecar(kind, revision);
+    }
+  }
+
+  /** Sends every changed sidecar now (before a reload or close). */
+  private flushSidecars(): void {
+    if (!this.live?.hello.sidecars) { return; }
+    for (const [kind, revision] of this.sidecarRevisions()) {
+      if (revision !== this.sidecarRevision.get(kind)) { this.writeSidecar(kind, revision); }
+    }
+  }
+
+  private writeSidecar(kind: SidecarKind, revision: number): void {
+    const live = this.live;
+    if (!live) { return; }
+    const document = kind === 'comments' ? SidecarJson.comments(this.comments.toDocument())
+      : kind === 'bookmarks' ? SidecarJson.bookmarks(this.bookmarks.toDocument())
+        : kind === 'sun' ? SidecarJson.sun(this.sun.settings)
+          : SidecarJson.visibility(this.toVisibilitySettings());
+    // Not connected: kept dirty, so it goes once the link is back
+    if (live.writeSidecar(kind, document)) {
+      this.sidecarRevision.set(kind, revision);
+      this.sidecarTimer.delete(kind);
+    }
+  }
+
+  // #endregion
+
   // #region Save
 
   /** Everything Save writes, as one comparable value. */
@@ -1903,7 +2108,7 @@ export class GameSession implements GunHost, EditHost {
 
   /** True when edits, comments, bookmarks, the sun, visibility or materials changed since the last save. */
   get isDirty(): boolean {
-    return this.comments !== undefined && this.saveKey !== this.savedKey;
+    return this.isFileMode && this.comments !== undefined && this.saveKey !== this.savedKey;
   }
 
   private markSaved(): void {
@@ -1912,7 +2117,7 @@ export class GameSession implements GunHost, EditHost {
   }
 
   private updateTitle(): void {
-    const title = `${this.documentName}${this.isDirty ? ' *' : ''} · BimGo`;
+    const title = this.isFileMode ? `${this.documentName}${this.isDirty ? ' *' : ''} · BimGo` : `${this.scene.modelTitle} · Revit · BimGo`;
     if (title === this.lastTitle) { return; }
     this.lastTitle = title;
     this.window.setTitle(title);
@@ -1948,8 +2153,10 @@ export class GameSession implements GunHost, EditHost {
     this.window.setCaptured(false);
     this.window.input.releaseAll();
 
+    // A live walkthrough is saved as a new file (the model itself is already up to date in Revit)
+    if (!this.isFileMode) { saveAs = true; }
     let handle: FileSystemFileHandle | null = null;
-    let name = this.documentName;
+    let name = this.isFileMode ? this.documentName : `${safeFileName(this.scene.modelTitle)}.bimgo`;
     const picker = (window as unknown as SavePickerWindow).showSaveFilePicker;
     try {
       if (!saveAs && this.fileHandle && await canWrite(this.fileHandle)) {
@@ -1983,7 +2190,8 @@ export class GameSession implements GunHost, EditHost {
         visibility: this.toVisibilitySettings(),
         materials: this.textures.current,
         savedBy: this.settings.userName
-      }, { generator: 'BimGo Web', version: __BIMGO_VERSION__ }, FileKinds.SAVE, f => { saving.progress.fraction = f; }, saving.abort.signal);
+      }, { generator: 'BimGo Web', version: __BIMGO_VERSION__ }, this.isFileMode ? FileKinds.SAVE : FileKinds.SESSION_SAVE,
+      f => { saving.progress.fraction = f; }, saving.abort.signal);
 
       if (handle) {
         saving.progress.stage = 'Writing to disk';
@@ -1995,7 +2203,7 @@ export class GameSession implements GunHost, EditHost {
           await writable.abort().catch(() => undefined);
           throw e;
         }
-        this.fileHandle = handle;
+        if (this.isFileMode) { this.fileHandle = handle; }
       } else {
         downloadBlob(blob, name);
       }
@@ -2010,11 +2218,14 @@ export class GameSession implements GunHost, EditHost {
       this.window.input.releaseAll();
     }
 
-    this.documentName = name;
-    this.source.displayName = name;
-    this.markSaved();
+    if (this.source instanceof FileEditSource) {
+      this.documentName = name;
+      this.source.displayName = name;
+      this.markSaved();
+    }
     this.sound.play(SoundId.Commit);
-    this.toast(handle ? `Saved ${name}` : `Saved ${name} to your Downloads folder`, handle ? 2.6 : 4);
+    const pending = this.source.pending > 0 ? ` (${this.source.pending} edit${this.source.pending === 1 ? ' was' : 's were'} still waiting for Revit and not included)` : '';
+    this.toast((handle ? `Saved ${name}` : `Saved ${name} to your Downloads folder`) + pending, handle && !pending ? 2.6 : 5);
     return true;
   }
 
@@ -2033,6 +2244,7 @@ export class GameSession implements GunHost, EditHost {
   /** Releases GPU resources, sound and the mouse. */
   dispose(): void {
     globalThis.removeEventListener('beforeunload', this.unloadGuard);
+    if (this.comments) { this.flushSidecars(); }
     this.saving?.abort.abort();
     this.window.setCaptured(false);
     this.settings.save();

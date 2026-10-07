@@ -9,6 +9,10 @@ namespace BimGo.Live
     /// The Revit side of one live session (one per open document that has pressed Go): the session folder and
     /// session.json, the message channel, the heartbeat, snapshots, and the edit applier.
     ///
+    /// Two channels carry the same messages: the session folders (the desktop app) and, once a browser walkthrough is
+    /// requested, a WebSocket served by <see cref="LiveDispatcher.Server"/> (the browser viewer). Messages go out on
+    /// both; whichever client is attached answers.
+    ///
     /// Threads: the heartbeat timer and the channel's watcher run on thread-pool threads and only do file IO;
     /// everything touching the Revit API (snapshots, edits, selection) runs on the Revit thread via
     /// <see cref="LiveDispatcher"/>.
@@ -21,6 +25,9 @@ namespace BimGo.Live
 
         private readonly object _lock = new();
         private readonly FolderChannel _channel;
+        private readonly SocketChannel _socket;
+        private SocketServer _server;
+        private string _token;
         private System.Threading.Timer _heartbeat;
         private int _added, _modified, _deleted;
         private volatile bool _appAttached;
@@ -52,6 +59,9 @@ namespace BimGo.Live
             Directory.CreateDirectory(LiveProtocol.SnapshotsFolder(id));
             _channel = new FolderChannel(id, LiveProtocol.ToAppFolder(id), LiveProtocol.ToRevitFolder(id), "revit");
             _channel.MessageArrived += LiveDispatcher.Raise;
+            _socket = new SocketChannel(id, "browser");
+            _socket.MessageArrived += LiveDispatcher.Raise;
+            _socket.ConnectionChanged += OnBrowserConnectionChanged;
             LiveSessions.WriteInfo(Info);
 
             _heartbeat = new System.Threading.Timer(_ => Heartbeat(), null, LiveProtocol.HEARTBEAT_SECONDS * 1000, LiveProtocol.HEARTBEAT_SECONDS * 1000);
@@ -72,8 +82,14 @@ namespace BimGo.Live
         /// <summary>Applies the app's edits.</summary>
         public Bridge.RevitEditor Editor { get; } = new();
 
-        /// <summary>True if an app's heartbeat is fresh.</summary>
-        public bool AppAttached => _appAttached;
+        /// <summary>True if an app's heartbeat is fresh, or a browser viewer is connected.</summary>
+        public bool AppAttached => _appAttached || _socket.Connected;
+
+        /// <summary>True while a browser viewer is connected.</summary>
+        public bool BrowserConnected => _socket.Connected;
+
+        /// <summary>True once the session is served to browsers (<see cref="EnableBrowser"/>).</summary>
+        public bool BrowserEnabled => _server != null;
 
         /// <summary>True once closed.</summary>
         public bool IsClosed => _closed;
@@ -82,11 +98,15 @@ namespace BimGo.Live
 
         #region Messages
 
-        /// <summary>Takes the next message from the app, if any.</summary>
-        public bool TryReceive(out Envelope envelope) => _channel.TryReceive(out envelope);
+        /// <summary>Takes the next message from the app or the browser, if any.</summary>
+        public bool TryReceive(out Envelope envelope) => _channel.TryReceive(out envelope) || _socket.TryReceive(out envelope);
 
-        /// <summary>Sends a message to the app.</summary>
-        public void Send(string type, object payload, string replyTo = null) => _channel.Send(type, payload, replyTo);
+        /// <summary>Sends a message to the app and the browser (each ignores answers to requests it didn't make).</summary>
+        public void Send(string type, object payload, string replyTo = null)
+        {
+            _channel.Send(type, payload, replyTo);
+            _socket.Send(type, payload, replyTo);
+        }
 
         /// <summary>
         /// Counts model changes made outside BimGo (Revit thread; flushed to the app with the heartbeat).
@@ -99,6 +119,66 @@ namespace BimGo.Live
                 _modified += modified;
                 _deleted += deleted;
             }
+        }
+
+        #endregion
+
+        #region Browser
+
+        /// <summary>
+        /// Serves this session to the browser viewer (Revit thread): registers it with the loopback server under a
+        /// fresh one-time token. Calling it again keeps the token (an open page stays connected).
+        /// </summary>
+        public void EnableBrowser(SocketServer server)
+        {
+            if (_server == server) { return; }
+            _server?.Unregister(SessionId);
+            _server = server;
+            _token = SocketServer.NewToken();
+            server.Register(SessionId, _token, _socket, SnapshotPath);
+        }
+
+        /// <summary>
+        /// The address that opens this session in the browser viewer. The token travels in the fragment, which the
+        /// browser never sends to the viewer's web server.
+        /// </summary>
+        public string BrowserUrl(string viewerUrl)
+        {
+            if (_server == null) { return null; }
+            string separator = viewerUrl.Contains('?') ? "&" : "?";
+            return $"{viewerUrl}{separator}live=127.0.0.1:{_server.Port}&session={SessionId}#token={_token}";
+        }
+
+        /// <summary>The newest snapshot's download address, or null.</summary>
+        public string LatestSnapshotUrl
+        {
+            get
+            {
+                int number;
+                lock (_lock) { number = Info.SnapshotNumber; }
+                return _server != null && number > 0 ? _server.SnapshotUrl(SessionId, number) : null;
+            }
+        }
+
+        /// <summary>
+        /// A snapshot's file by number (the server streams it), or null when it has been cleaned up.
+        /// </summary>
+        private string SnapshotPath(int number)
+        {
+            try
+            {
+                return Directory.GetFiles(LiveProtocol.SnapshotsFolder(SessionId), $"{number:D4}-*{BimGoFormat.EXTENSION}").FirstOrDefault();
+            }
+            catch (IOException)
+            {
+                return null;
+            }
+        }
+
+        private void OnBrowserConnectionChanged()
+        {
+            LiveDispatcher.MarkStatusDirty();
+            Utilities.Log_Utils.Write($"Session {SessionId}: browser {(_socket.Connected ? "connected" : "disconnected")}.");
         }
 
         #endregion
@@ -157,7 +237,8 @@ namespace BimGo.Live
                 Elements = scene.Elements.Length,
                 Triangles = scene.TriangleCount,
                 Seconds = Math.Round(scene.ExtractionTime.TotalSeconds, 2),
-                Reason = reason
+                Reason = reason,
+                SnapshotUrl = _server?.SnapshotUrl(SessionId, number)
             };
         }
 
@@ -206,7 +287,7 @@ namespace BimGo.Live
                         _added = _modified = _deleted = 0;
                     }
                 }
-                if (changes != null) { _channel.Send(MessageTypes.MODEL_CHANGED, changes); }
+                if (changes != null) { Send(MessageTypes.MODEL_CHANGED, changes); }
 
                 bool attached = LiveSessions.ReadAttachment(SessionId)?.IsAlive() == true;
                 if (attached != _appAttached)
@@ -235,7 +316,7 @@ namespace BimGo.Live
             _closed = true;
             try
             {
-                _channel.Send(MessageTypes.SESSION_CLOSING, new MessagePayload { Success = true, Message = reason });
+                Send(MessageTypes.SESSION_CLOSING, new MessagePayload { Success = true, Message = reason });
                 lock (_lock)
                 {
                     Info.State = SessionStates.CLOSED;
@@ -261,6 +342,10 @@ namespace BimGo.Live
             _heartbeat = null;
             _channel.MessageArrived -= LiveDispatcher.Raise;
             _channel.Dispose();
+            _server?.Unregister(SessionId);
+            _socket.MessageArrived -= LiveDispatcher.Raise;
+            _socket.ConnectionChanged -= OnBrowserConnectionChanged;
+            _socket.Dispose();
         }
 
         private static string SafePath(Document doc)

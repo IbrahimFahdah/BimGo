@@ -282,7 +282,7 @@ namespace BimGo.Tests
             CollectionAssert.AreEquivalent(new[] { "textures/a.jpg", "textures/c.jpg" }, changed.Textures.Keys.ToList());
             Assert.AreEqual("textures/b.jpg", sample.Materials[3].Texture, "the original is untouched");
             Assert.AreEqual(2, sample.Textures.Count);
-            Assert.ThrowsException<System.ArgumentException>(() => sample.With(table.Take(2).ToArray()));
+            Assert.ThrowsExactly<System.ArgumentException>(() => sample.With(table.Take(2).ToArray()));
         }
 
         [TestMethod]

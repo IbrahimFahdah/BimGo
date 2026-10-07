@@ -152,6 +152,14 @@ export class Player {
     this.controller.velocity = rotated;
   }
 
+  /** Sets home to a given pose (a live reload keeps the home the player had). */
+  setHomeTo(feet: Vec3, yaw: number, pitch: number, flying: boolean): void {
+    this.homeFeet = vec3(feet.x, feet.y, feet.z);
+    this.homeYaw = yaw;
+    this.homePitch = pitch;
+    this.homeFlying = flying;
+  }
+
   setHome(): void {
     this.homeFeet = vec3(this.feet.x, this.feet.y, this.feet.z);
     this.homeYaw = this.yaw;

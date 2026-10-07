@@ -53,6 +53,10 @@ export class ScanGun extends Gun {
   }
 
   override onKeys(input: InputState): void {
+    if (input.isPressed(Vk.key('R')) && this.target >= 0) {
+      this.session.showInRevit(this.target, this.locked >= 0 ? this.lockedDynamic : this.hoverDynamic);
+    }
+
     // I: hide the target in the walkthrough only; Shift+I: isolate its category (again: restore)
     if (input.isPressed(Vk.key('I'))) {
       if (input.isDown(Vk.SHIFT)) { this.session.toggleIsolateCategory(this.target); }
@@ -109,6 +113,7 @@ export class ScanGun extends Gun {
     const scene = this.session.scene;
 
     ui.text(f.small, x, y, this.locked >= 0 ? 'SCAN · TARGET' : 'SCAN · HOVER', UiTheme.SCAN_LABEL, this.s(1.1));
+    if (this.session.isLiveConnected) { ui.textRight(f.small, x + width, y, 'R  REVIT', UiTheme.TEXT_MUTED, this.s(1)); }
     y += this.s(20);
 
     if (target < 0) {

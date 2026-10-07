@@ -24,6 +24,7 @@ namespace BimGo.Live
         private static ExternalEvent _event;
         private static nint _revitWindow;
         private static volatile bool _statusDirty = true;
+        private static SocketServer _server;
 
         /// <summary>The ribbon's status button (its text shows the session state).</summary>
         public static PushButton StatusButton { get; set; }
@@ -70,6 +71,47 @@ namespace BimGo.Live
                 HOSTS.Clear();
             }
             foreach (SessionHost host in hosts) { host.Close(reason); }
+            lock (LOCK)
+            {
+                _server?.Dispose();
+                _server = null;
+            }
+        }
+
+        #endregion
+
+        #region Browser
+
+        /// <summary>The loopback server for browser walkthroughs, or null until the first one.</summary>
+        public static SocketServer Server
+        {
+            get { lock (LOCK) { return _server; } }
+        }
+
+        /// <summary>
+        /// Starts the loopback server on first use (one per Revit, shared by its sessions). Only the viewer's origin and
+        /// the local dev server may connect.
+        /// </summary>
+        /// <exception cref="System.Net.Sockets.SocketException">No local port could be opened.</exception>
+        public static SocketServer EnsureServer(LaunchSettings settings)
+        {
+            lock (LOCK)
+            {
+                _server ??= SocketServer.Start(new[] { settings.WebViewerUrl, "http://localhost:5173", "http://127.0.0.1:5173" });
+                return _server;
+            }
+        }
+
+        /// <summary>
+        /// Opens a session in the browser viewer (Revit thread). A viewer that is already connected just receives the
+        /// new snapshot, so no second tab opens.
+        /// </summary>
+        /// <returns>Null on success, else a reason.</returns>
+        public static string OpenInBrowser(SessionHost host, LaunchSettings settings)
+        {
+            if (host.BrowserConnected) { return null; }
+            string url = host.BrowserUrl(settings.WebViewerUrl);
+            return url == null ? "The session is not served to the browser." : Utilities.App_Utils.OpenUrl(url);
         }
 
         #endregion
@@ -200,7 +242,10 @@ namespace BimGo.Live
                         DocTitle = host.Info.DocTitle,
                         RevitVersion = host.Info.RevitVersion,
                         PhaseName = host.Info.PhaseName,
-                        ExistingPhaseName = host.Info.ExistingPhaseName
+                        ExistingPhaseName = host.Info.ExistingPhaseName,
+                        SnapshotNumber = host.Info.SnapshotNumber,
+                        SnapshotUrl = host.LatestSnapshotUrl,
+                        Sidecars = !string.IsNullOrEmpty(host.Info.CommentsPath)
                     }, envelope.Id);
                     MarkStatusDirty();
                     break;
@@ -226,6 +271,14 @@ namespace BimGo.Live
 
                 case MessageTypes.JOURNAL_APPLY:
                     host.Send(MessageTypes.JOURNAL_RESULT, PushJournal(host, envelope.Read<JournalApplyPayload>()), envelope.Id);
+                    break;
+
+                case MessageTypes.SIDECAR_READ:
+                    host.Send(MessageTypes.SIDECAR_DATA, LiveSidecars.Read(host.Info.CommentsPath, envelope.Read<SidecarPayload>()?.Kind), envelope.Id);
+                    break;
+
+                case MessageTypes.SIDECAR_WRITE:
+                    host.Send(MessageTypes.SIDECAR_RESULT, LiveSidecars.Write(host.Info.CommentsPath, envelope.Read<SidecarPayload>()), envelope.Id);
                     break;
 
                 case MessageTypes.DETACH:

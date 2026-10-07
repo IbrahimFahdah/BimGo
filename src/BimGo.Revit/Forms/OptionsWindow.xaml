@@ -68,6 +68,8 @@
         <Border DockPanel.Dock="Bottom" Background="White" BorderBrush="{StaticResource CardBorder}" BorderThickness="0,1,0,0" Padding="24,14">
             <DockPanel>
                 <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                    <CheckBox x:Name="CheckBrowser" Content="Open in the browser" VerticalAlignment="Center" Margin="0,0,18,0" Visibility="Collapsed"
+                              ToolTip="Walk the model in the BimGo web viewer instead of the BimGo app. Edits still come back to this model."/>
                     <Button x:Name="ButtonCancel" Content="Cancel" Style="{StaticResource SecondaryButton}" IsCancel="True" Margin="0,0,10,0" Click="ButtonCancel_Click"/>
                     <Button x:Name="ButtonLaunch" Content="Launch BimGo" Style="{StaticResource PrimaryButton}" IsDefault="True" Click="ButtonLaunch_Click"/>
                 </StackPanel>

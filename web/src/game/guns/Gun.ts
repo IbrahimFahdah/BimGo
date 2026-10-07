@@ -41,6 +41,8 @@ export interface GunHost {
   readonly currentLevelName: string;
   readonly isEditingComment: boolean;
   readonly editPoint: Vec3;
+  /** True while a live Revit session is connected. */
+  readonly isLiveConnected: boolean;
   toast(message: string, seconds?: number): void;
   flash(colour: number, seconds: number): void;
   pick(origin: Vec3, direction: Vec3, maxDistance: number): RayHit | null;
@@ -50,6 +52,7 @@ export interface GunHost {
   toggleIsolateCategory(element: number): void;
   beginCommentEdit(point: Vec3, elementId: number, level: string): void;
   editComment(record: CommentRecord): void;
+  showInRevit(element: number, dynamicId: number): void;
 }
 
 /**

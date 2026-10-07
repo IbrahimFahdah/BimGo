@@ -215,6 +215,19 @@ namespace BimGo.Scene
         /// <summary>Load comments from the JSON sidecar.</summary>
         public bool LoadComments { get; set; } = true;
 
+        /// <summary>
+        /// Go opens the walkthrough in the browser viewer (<see cref="WebViewerUrl"/>) instead of BimGo.exe. Edits,
+        /// refresh and "show in Revit" travel over a loopback WebSocket (127.0.0.1 only, one-time token per session).
+        /// Also used automatically when BimGo.exe is not installed.
+        /// </summary>
+        public bool OpenInBrowser { get; set; }
+
+        /// <summary>The browser viewer's address (its origin is the only website allowed to connect).</summary>
+        public string WebViewerUrl { get; set; } = DEFAULT_WEB_VIEWER_URL;
+
+        /// <summary>The default browser viewer (GitHub Pages).</summary>
+        public const string DEFAULT_WEB_VIEWER_URL = "https://ibrahimfahdah.github.io/BimGo/";
+
         /// <summary>Show the FPS readout.</summary>
         public bool ShowFps { get; set; } = true;
 
@@ -418,6 +431,14 @@ namespace BimGo.Scene
         public void Sanitise()
         {
             EnabledCategories ??= Scene.CategoryCatalog.DefaultEnabledKeys();
+            if (!Uri.TryCreate(WebViewerUrl?.Trim(), UriKind.Absolute, out Uri viewer) || (viewer.Scheme != Uri.UriSchemeHttps && viewer.Scheme != Uri.UriSchemeHttp))
+            {
+                WebViewerUrl = DEFAULT_WEB_VIEWER_URL;
+            }
+            else
+            {
+                WebViewerUrl = viewer.GetLeftPart(UriPartial.Path);
+            }
             ExtraParameters = (ExtraParameters ?? new List<string>())
                 .Where(n => !string.IsNullOrWhiteSpace(n))
                 .Select(n => n.Trim())

@@ -65,9 +65,10 @@ namespace BimGo.Forms
         /// <param name="links">The model's link instances and the key the choice is saved under.</param>
         /// <param name="view">The active view (name and how many elements it shows).</param>
         /// <param name="textureServices">The "Review textures…" callbacks, or null to hide the button.</param>
+        /// <param name="offerBrowser">Show "Open in the browser" (Go only).</param>
         internal OptionsWindow(LaunchSettings settings, string spawnDescription, int[] counts,
             Func<List<string>> scanParameterNames, string primaryButtonText, PhaseChoices phases, LinkChoices links, ViewChoice view,
-            TextureReviewServices textureServices = null)
+            TextureReviewServices textureServices = null, bool offerBrowser = false)
         {
             _textureServices = textureServices;
             _settings = settings;
@@ -87,6 +88,7 @@ namespace BimGo.Forms
             RunSpawn.Text = spawnDescription;
             if (!string.IsNullOrEmpty(primaryButtonText)) { ButtonLaunch.Content = primaryButtonText; }
             ButtonScanParameters.IsEnabled = scanParameterNames != null;
+            CheckBrowser.Visibility = offerBrowser ? Win.Visibility.Visible : Win.Visibility.Collapsed;
             BuildCategoryCards();
             BuildLinkList();
             LoadFromSettings();
@@ -193,6 +195,8 @@ namespace BimGo.Forms
             CheckInvertY.IsChecked = _settings.InvertY;
             CheckVSync.IsChecked = _settings.VSync;
             CheckComments.IsChecked = _settings.LoadComments;
+            CheckBrowser.IsChecked = _settings.OpenInBrowser || Utilities.App_Utils.FindExe() == null;
+            CheckBrowser.IsEnabled = Utilities.App_Utils.FindExe() != null;
             LoadSnap();
             ComboShadowQuality.SelectedIndex = Math.Clamp((int)_settings.ShadowQuality, 0, 2);
             ComboArtificialLights.SelectedIndex = Math.Clamp((int)_settings.ArtificialLights, 0, 2);
@@ -449,6 +453,7 @@ namespace BimGo.Forms
             _settings.InvertY = CheckInvertY.IsChecked == true;
             _settings.VSync = CheckVSync.IsChecked == true;
             _settings.LoadComments = CheckComments.IsChecked == true;
+            if (CheckBrowser.Visibility == Win.Visibility.Visible && CheckBrowser.IsEnabled) { _settings.OpenInBrowser = CheckBrowser.IsChecked == true; }
             _settings.GizmoSnap = CheckSnap.IsChecked == true;
             _settings.SnapMoveMm = LaunchSettings.SNAP_MOVE_STEPS_MM[Math.Max(ComboSnapMove.SelectedIndex, 0)];
             _settings.SnapAngleDeg = LaunchSettings.SNAP_ANGLE_STEPS_DEG[Math.Max(ComboSnapAngle.SelectedIndex, 0)];

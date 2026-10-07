@@ -1,6 +1,10 @@
-import { BimGoReadError, BimGoReader } from '../core/format/BimGoReader';
+import { type BimGoDocument, BimGoReadError, BimGoReader } from '../core/format/BimGoReader';
+import { readBookmarkDocument, readCommentDocument, readSunSettings, readVisibility } from '../core/format/DocumentModels';
+import { LiveClient, LiveConnectError } from '../core/live/LiveClient';
+import { type LaunchInfo, MessageTypes, readHelloAck, readLaunch } from '../core/live/LiveProtocol';
+import { LiveSessionSource } from '../core/sources/LiveSessionSource';
 import { UiBatch } from '../engine/ui/UiBatch';
-import { GameSession } from '../game/GameSession';
+import { GameSession, type SessionPose } from '../game/GameSession';
 import { drawProgress, type ProgressState } from '../game/ProgressScreen';
 import { ViewerSettings } from '../game/ViewerSettings';
 import { Vk } from '../platform/input';
@@ -32,7 +36,7 @@ export class AppShell {
   session: GameSession | null = null;
   private previous = 0;
 
-  constructor(canvas: HTMLCanvasElement, version: string) {
+  constructor(canvas: HTMLCanvasElement, private readonly version: string) {
     this.window = new GameWindow(canvas);
     this.ui.initialise(this.window.dpiScale);
     this.home = new HomeScreen(this.window, this.ui, this.recent, version);
@@ -59,8 +63,16 @@ export class AppShell {
     void this.openFromUrl();
   }
 
-  /** Opens the model named by ?model=, if it is on this site (never another origin). */
+  /**
+   * Opens the live Revit session in ?live=…&session=…#token=… (Go in Revit), else the model named by ?model=, if it is
+   * on this site (never another origin).
+   */
   private async openFromUrl(): Promise<void> {
+    const launch = this.readLaunch();
+    if (launch) {
+      this.openLive(launch, null);
+      return;
+    }
     const model = new URLSearchParams(location.search).get('model');
     if (!model) { return; }
     const url = new URL(model, location.href);
@@ -76,6 +88,99 @@ export class AppShell {
     } catch (e) {
       this.home.setMessage(`Could not download ${name}: ${e instanceof Error ? e.message : String(e)}`, true);
     }
+  }
+
+  /**
+   * The live-session launch parameters. The token is moved out of the address bar (so it doesn't end up in bookmarks
+   * or shared links) into this tab's session storage, where a reload of the tab still finds it.
+   */
+  private readLaunch(): LaunchInfo | null {
+    const launch = readLaunch(location.search, location.hash);
+    if (!launch) { return null; }
+    const key = `bimgo-live-token:${launch.sessionId}`;
+    try {
+      if (launch.token) {
+        sessionStorage.setItem(key, launch.token);
+        history.replaceState(null, '', location.pathname + location.search);
+      } else {
+        launch.token = sessionStorage.getItem(key) ?? '';
+      }
+    } catch {
+      // Storage blocked: the token stays in this page only
+    }
+    return launch;
+  }
+
+  /**
+   * Connects to Revit (or reuses the connection on a reload), downloads the session's snapshot, loads the sidecars
+   * kept beside the model, and starts the walkthrough. A reload puts the player back where they stood.
+   */
+  private openLive(launch: LaunchInfo | null, reload: { source: LiveSessionSource; pose: SessionPose } | null): void {
+    const loading: Loading = {
+      title: reload ? `Reloading ${reload.source.displayName} from Revit` : 'Connecting to Revit',
+      progress: { stage: '', detail: '', fraction: 0, canCancel: true, cancelRequested: false },
+      abort: new AbortController()
+    };
+    this.loading = loading;
+    const signal = loading.abort.signal;
+    const report = (stage: string, fraction: number, detail = '') => {
+      loading.progress.stage = stage;
+      loading.progress.detail = detail;
+      loading.progress.fraction = fraction;
+    };
+
+    void (async () => {
+      let source = reload?.source ?? null;
+      let session: GameSession | null = null;
+      try {
+        if (!source) {
+          if (!launch?.token) { throw new LiveConnectError('This link has no session key: press Go in Revit again.'); }
+          const client = new LiveClient(launch);
+          report('Connecting to Revit on this computer', 0, 'If the browser asks to access devices on your local network, allow it.');
+          await client.connect();
+          const ack = readHelloAck((await client.request(MessageTypes.HELLO, { appPid: 0, appVersion: `BimGo Web ${this.version}` })).payload);
+          source = new LiveSessionSource(client, ack, ack.snapshotNumber, `BimGo Web ${this.version}`);
+        }
+        throwIfAborted(signal);
+
+        const ready = reload ? source.snapshotReady : { snapshotNumber: source.hello.snapshotNumber, snapshotUrl: source.hello.snapshotUrl, elements: 0, triangles: 0, reason: 'go' };
+        const url = source.snapshotUrl(ready);
+        if (!ready || !url) {
+          throw new LiveConnectError(source.hello.snapshotNumber === 0 ? 'Revit has no snapshot for this session yet: press Go in Revit.'
+            : 'This BimGo add-in cannot serve the browser viewer: update it, then press Go again.');
+        }
+        loading.title = `Opening ${source.displayName} from Revit`;
+        report('Downloading the snapshot from Revit', 0.02);
+        const blob = await source.client.fetchSnapshot(url, f => report('Downloading the snapshot from Revit', 0.02 + 0.33 * f), signal);
+        const document = await BimGoReader.read(blob, `${source.displayName}.bimgo`, { step: f => report('Reading the model', 0.35 + 0.3 * f), signal });
+        source.snapshotNumber = ready.snapshotNumber;
+        source.snapshotReady = null;
+        source.modelChanges = 0;
+
+        report('Reading comments and bookmarks beside the model', 0.66);
+        await loadSidecars(source, document);
+        throwIfAborted(signal);
+
+        loading.title = `Preparing ${document.scene.modelTitle}`;
+        session = new GameSession(this.window, this.ui, document, this.settings, null, source);
+        await session.prepare((stage, f) => report(stage, 0.7 + 0.3 * f), signal);
+        if (reload) { session.applyPose(reload.pose); }
+        this.session = session;
+        this.home.setMessage('', false);
+      } catch (e) {
+        session?.dispose();
+        source?.close();
+        const cancelled = signal.aborted || (e instanceof DOMException && e.name === 'AbortError');
+        const reason = e instanceof Error ? e.message : String(e);
+        if (!cancelled) { console.error(e); }
+        this.home.setMessage(cancelled ? 'Cancelled.'
+          : e instanceof LiveConnectError ? `Could not open the Revit session: ${reason} (Chrome or Edge, with Revit open and the session still running.)`
+            : `The Revit session could not be loaded: ${reason}`, !cancelled);
+        forgetLaunch();
+      } finally {
+        this.loading = null;
+      }
+    })();
   }
 
   private frame(now: number): void {
@@ -98,7 +203,9 @@ export class AppShell {
         this.loading.abort.abort();
       }
     } else if (this.session) {
-      if (this.session.frame(dt) === 'closed') { this.closeSession(); }
+      const end = this.session.frame(dt);
+      if (end === 'closed') { this.closeSession(); }
+      else if (end === 'reload') { this.reloadLive(); }
     } else if (!window.isMinimised) {
       const action = this.home.frame();
       if (action?.kind === 'browse') { this.browse(); }
@@ -159,10 +266,45 @@ export class AppShell {
     })();
   }
 
+  /** A newer Revit snapshot is ready: reload it on the same connection, where the player stands. */
+  private reloadLive(): void {
+    const session = this.session!, source = session.live!;
+    const pose = session.capturePose();
+    session.dispose();
+    this.session = null;
+    this.openLive(null, { source, pose });
+  }
+
   private closeSession(): void {
+    const live = this.session?.live ?? null;
     this.session?.dispose();
     this.session = null;
+    if (live) {
+      live.close();
+      forgetLaunch();
+    }
     this.window.setTitle('BimGo');
     this.window.input.releaseAll();
   }
+}
+
+/** The sidecars kept beside the Revit model replace the snapshot's empty ones (comments, bookmarks, sun, visibility). */
+async function loadSidecars(source: LiveSessionSource, document: BimGoDocument): Promise<void> {
+  if (!source.hello.sidecars) { return; }
+  const [comments, bookmarks, sun, visibility] = await Promise.all([
+    source.readSidecar('comments'), source.readSidecar('bookmarks'), source.readSidecar('sun'), source.readSidecar('visibility')
+  ]);
+  if (comments) { document.comments = readCommentDocument(comments); }
+  if (bookmarks) { document.bookmarks = readBookmarkDocument(bookmarks); }
+  if (sun) { document.sun = readSunSettings(sun); }
+  if (visibility) { document.visibility = readVisibility(visibility); }
+}
+
+/** After a live session: a reload of the page opens the home screen, not the ended session. */
+function forgetLaunch(): void {
+  if (new URLSearchParams(location.search).has('live')) { history.replaceState(null, '', location.pathname); }
+}
+
+function throwIfAborted(signal: AbortSignal): void {
+  if (signal.aborted) { throw new DOMException('Cancelled.', 'AbortError'); }
 }

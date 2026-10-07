@@ -46,6 +46,24 @@ namespace BimGo.Utilities
         public static string AttachInApp(string sessionId) => Start("--session", sessionId);
 
         /// <summary>
+        /// Opens an address in the default browser.
+        /// </summary>
+        /// <returns>Null on success, else a reason.</returns>
+        public static string OpenUrl(string url)
+        {
+            try
+            {
+                Process.Start(new ProcessStartInfo(url) { UseShellExecute = true })?.Dispose();
+                return null;
+            }
+            catch (Exception ex)
+            {
+                Log_Utils.Write($"Could not open the browser: {ex}");
+                return ex.Message;
+            }
+        }
+
+        /// <summary>
         /// Starts BimGo.exe with arguments.
         /// </summary>
         private static string Start(params string[] arguments)

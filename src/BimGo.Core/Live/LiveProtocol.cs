@@ -198,6 +198,21 @@ namespace BimGo.Live
 
         /// <summary>Revit → app: the per-entry outcome of a push or dry run (<see cref="JournalResultPayload"/>).</summary>
         public const string JOURNAL_RESULT = "journal.result";
+
+        /// <summary>
+        /// Browser → Revit: read a sidecar beside the model (<see cref="SidecarPayload"/> with <see cref="SidecarPayload.Kind"/>).
+        /// The desktop app reads the files itself; a browser can't, so the add-in does it (additive to protocol 1).
+        /// </summary>
+        public const string SIDECAR_READ = "sidecar.read";
+
+        /// <summary>Revit → browser: a sidecar's contents (<see cref="SidecarPayload"/>; no document when there is none yet).</summary>
+        public const string SIDECAR_DATA = "sidecar.data";
+
+        /// <summary>Browser → Revit: replace a sidecar (<see cref="SidecarPayload"/> with the document).</summary>
+        public const string SIDECAR_WRITE = "sidecar.write";
+
+        /// <summary>Revit → browser: the write's outcome (<see cref="SidecarPayload"/> with success and message).</summary>
+        public const string SIDECAR_RESULT = "sidecar.result";
     }
 
     /// <summary>
@@ -329,6 +344,41 @@ namespace BimGo.Live
         public string RevitVersion { get; set; } = string.Empty;
         public string PhaseName { get; set; }
         public string ExistingPhaseName { get; set; }
+
+        /// <summary>The newest snapshot's number (additive: the browser loads it straight away).</summary>
+        public int SnapshotNumber { get; set; }
+
+        /// <summary>Where the browser downloads the newest snapshot, or null (desktop app / none yet).</summary>
+        public string SnapshotUrl { get; set; }
+
+        /// <summary>True when sidecars (comments, bookmarks, sun, visibility) can be read and written over the link.</summary>
+        public bool Sidecars { get; set; }
+    }
+
+    /// <summary>
+    /// Values of <see cref="SidecarPayload.Kind"/>.
+    /// </summary>
+    public static class SidecarKinds
+    {
+        public const string COMMENTS = "comments";
+        public const string BOOKMARKS = "bookmarks";
+        public const string SUN = "sun";
+        public const string VISIBILITY = "visibility";
+    }
+
+    /// <summary>
+    /// sidecar.read / .data / .write / .result: one of the JSON files kept beside the Revit model.
+    /// </summary>
+    public sealed class SidecarPayload
+    {
+        /// <summary>One of <see cref="SidecarKinds"/>.</summary>
+        public string Kind { get; set; } = string.Empty;
+
+        /// <summary>The document (same shape as inside a .bimgo), or null.</summary>
+        public JsonElement? Document { get; set; }
+
+        public bool Success { get; set; } = true;
+        public string Message { get; set; }
     }
 
     public sealed class RefreshRequestPayload
@@ -347,6 +397,9 @@ namespace BimGo.Live
 
         /// <summary>"go" (Go pressed in Revit) or "refresh" (requested by the app).</summary>
         public string Reason { get; set; } = "refresh";
+
+        /// <summary>Where the browser downloads it (additive), or null for the desktop app.</summary>
+        public string SnapshotUrl { get; set; }
     }
 
     public sealed class SelectPayload

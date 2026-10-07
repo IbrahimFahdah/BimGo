@@ -23,8 +23,9 @@ namespace BimGo.Commands.Cmds_BimGo
         /// </summary>
         /// <param name="uiApp">The UIApplication.</param>
         /// <param name="primaryButtonText">The confirm button's text.</param>
+        /// <param name="offerBrowser">Offer "Open in the browser" (Go).</param>
         /// <returns>The settings, or null if cancelled.</returns>
-        public static LaunchSettings ShowOptions(UIApplication uiApp, string primaryButtonText)
+        public static LaunchSettings ShowOptions(UIApplication uiApp, string primaryButtonText, bool offerBrowser = false)
         {
             UIDocument uiDoc = uiApp.ActiveUIDocument;
             Document doc = uiDoc.Document;
@@ -76,7 +77,7 @@ namespace BimGo.Commands.Cmds_BimGo
             };
 
             var dialog = new Forms.OptionsWindow(settings, SceneExtractor.DescribeSpawn(uiDoc), counts,
-                () => ParameterScanner.ScanNames(doc), primaryButtonText, phases, links, view, textures);
+                () => ParameterScanner.ScanNames(doc), primaryButtonText, phases, links, view, textures, offerBrowser);
             new WindowInteropHelper(dialog).Owner = uiApp.MainWindowHandle;
             if (dialog.ShowDialog() != true) { return null; }
 
@@ -101,8 +102,9 @@ namespace BimGo.Commands.Cmds_BimGo
 
     /// <summary>
     /// Go: opens the launch options, extracts a snapshot of the model into the document's live session and opens it
-    /// in the BimGo app (starting the app, or handing the session to the running one). Demolish / move / clone
-    /// edits made in the app come back to this model. Pressing Go again re-extracts and the app reloads.
+    /// in the BimGo app (starting the app, or handing the session to the running one) or, when chosen (or when the app
+    /// is not installed), in the browser viewer. Demolish / move / clone edits made in the walkthrough come back to this
+    /// model. Pressing Go again re-extracts and the walkthrough reloads.
     /// </summary>
     [Transaction(TransactionMode.ReadOnly)]
     public class Cmd_Launch : IExternalCommand
@@ -120,15 +122,11 @@ namespace BimGo.Commands.Cmds_BimGo
             UIDocument uiDoc = uiApp.ActiveUIDocument;
             if (!CommandSteps.CheckDocument(uiDoc, out string reason)) { return FormCallers.Cancelled(reason); }
 
-            if (Utilities.App_Utils.FindExe() == null)
-            {
-                return FormCallers.Error($"The BimGo app was not found.\n\nInstall it (or build it) to:\n{Utilities.App_Utils.InstalledExePath}");
-            }
-
             try
             {
-                LaunchSettings settings = CommandSteps.ShowOptions(uiApp, "Launch BimGo");
+                LaunchSettings settings = CommandSteps.ShowOptions(uiApp, "Launch BimGo", offerBrowser: true);
                 if (settings == null) { return Result.Cancelled; }
+                bool browser = settings.OpenInBrowser || Utilities.App_Utils.FindExe() == null;
 
                 // Extraction (Revit API thread) and the snapshot, with a progress window and Cancel
                 var progress = new Utilities.OperationProgress();
@@ -146,6 +144,19 @@ namespace BimGo.Commands.Cmds_BimGo
                 // The document's live session: snapshot + announce (an attached app reloads)
                 Live.LiveDispatcher.EnsureEvent(uiApp);
                 Live.SessionHost host = Live.LiveDispatcher.GetOrCreate(uiDoc.Document);
+                if (browser)
+                {
+                    // Served before the snapshot is announced, so a connected viewer gets its download address
+                    try
+                    {
+                        host.EnableBrowser(Live.LiveDispatcher.EnsureServer(settings));
+                    }
+                    catch (System.Net.Sockets.SocketException ex)
+                    {
+                        window?.Dispose();
+                        return FormCallers.Error($"BimGo could not open a local port for the browser viewer:\n{ex.Message}");
+                    }
+                }
                 progress.Begin("Writing the snapshot", 0.85, 1.0);
                 bool announced = Live.LiveDispatcher.Announce(host, scene, "go", replyTo: null, progress);
                 window?.Dispose();
@@ -155,9 +166,10 @@ namespace BimGo.Commands.Cmds_BimGo
                     return FormCallers.Error($"The snapshot could not be written. See the log:\n{Utilities.Log_Utils.LogPath}");
                 }
 
-                // Start the app on this session, or hand the session to the running app (which comes to the front)
-                string error = Utilities.App_Utils.AttachInApp(host.SessionId);
-                if (error != null) { return FormCallers.Error($"BimGo could not be started:\n{error}"); }
+                // The browser viewer (a connected one reloads by itself), or the app: start it on this session, or hand
+                // the session to the running app (which comes to the front)
+                string error = browser ? Live.LiveDispatcher.OpenInBrowser(host, settings) : Utilities.App_Utils.AttachInApp(host.SessionId);
+                if (error != null) { return FormCallers.Error($"BimGo could not be {(browser ? "opened in the browser" : "started")}:\n{error}"); }
                 return Result.Succeeded;
             }
             catch (OperationCanceledException)
@@ -228,7 +240,9 @@ namespace BimGo.Commands.Cmds_BimGo
                 switch (dialog.Show())
                 {
                     case UI.TaskDialogResult.CommandLink1:
-                        string error = Utilities.App_Utils.AttachInApp(host.SessionId);
+                        string error = host.BrowserEnabled
+                            ? Live.LiveDispatcher.OpenInBrowser(host, LaunchSettings.LoadOrDefault())
+                            : Utilities.App_Utils.AttachInApp(host.SessionId);
                         if (error != null) { return FormCallers.Error($"BimGo could not be started:\n{error}"); }
                         break;
 

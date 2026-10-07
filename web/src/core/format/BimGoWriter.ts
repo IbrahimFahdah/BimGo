@@ -283,6 +283,21 @@ async function writeMaterials(zip: ZipWriter, materials: MaterialData, json: (v:
 
 // #region JSON helpers
 
+/**
+ * The sidecar documents in the same JSON as inside a .bimgo (live sessions keep them beside the Revit model, written by
+ * the add-in): nulls left out, float32 values in their shortest form.
+ */
+export const SidecarJson = {
+  comments: (d: CommentDocument): Json => plain(commentDocument(d)),
+  bookmarks: (d: BookmarkDocument): Json => plain(bookmarkDocument(d)),
+  sun: (s: SunSettings): Json => plain(sunSettings(s)),
+  visibility: (v: VisibilitySettings): Json => plain(v)
+};
+
+function plain(value: unknown): Json {
+  return JSON.parse(JSON.stringify(value, replacer)) as Json;
+}
+
 /** Leaves nulls out, as the desktop's WhenWritingNull does. */
 function replacer(_key: string, value: unknown): unknown {
   return value === null ? undefined : value;

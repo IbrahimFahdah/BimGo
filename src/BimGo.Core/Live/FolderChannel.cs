@@ -16,7 +16,7 @@ namespace BimGo.Live
     /// Transport-agnostic callers only use Send / TryReceive, so named pipes could replace the folders later.
     /// Thread-safe. Never throws from Send / TryReceive.
     /// </summary>
-    public sealed class FolderChannel : IDisposable
+    public sealed class FolderChannel : ILiveChannel
     {
         private readonly string _sessionId;
         private readonly string _outbox;
