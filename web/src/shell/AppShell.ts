@@ -209,8 +209,22 @@ export class AppShell {
     } else if (!window.isMinimised) {
       const action = this.home.frame();
       if (action?.kind === 'browse') { this.browse(); }
+      else if (action?.kind === 'sample') { void this.openSample(); }
     }
     window.input.endFrame();
+  }
+
+  /** The sample model shipped with the site (for visitors without a .bimgo yet). */
+  private async openSample(): Promise<void> {
+    if (this.loading) { return; }
+    const name = 'BimGo Sample Pavilion.bimgo';
+    try {
+      const response = await fetch(`${import.meta.env.BASE_URL}samples/${encodeURIComponent(name)}`);
+      if (!response.ok) { throw new Error(`${response.status} ${response.statusText}`); }
+      this.open({ file: new File([await response.blob()], name), handle: null });
+    } catch (e) {
+      this.home.setMessage(`Could not download the sample: ${e instanceof Error ? e.message : String(e)}`, true);
+    }
   }
 
   /** The Open dialog (one at a time). */

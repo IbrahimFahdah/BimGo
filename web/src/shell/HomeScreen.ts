@@ -8,7 +8,7 @@ import type { GameWindow } from '../platform/window';
 import type { RecentFiles } from './RecentFiles';
 
 /** What the home screen asks the shell to do this frame. */
-export type HomeAction = { kind: 'browse' } | null;
+export type HomeAction = { kind: 'browse' } | { kind: 'sample' } | null;
 
 /**
  * The start screen, drawn on the canvas with the same immediate-mode UI as the HUD (port of
@@ -90,6 +90,8 @@ export class HomeScreen {
     y += this.s(44);
 
     if (this.button(f, input, leftX, y, leftW, 'OPEN .BIMGO…', true)) { action = { kind: 'browse' }; }
+    y += this.s(60);
+    if (this.button(f, input, leftX, y, leftW, 'TRY THE SAMPLE', false)) { action = { kind: 'sample' }; }
     y += this.s(72);
 
     if (this.message) {
@@ -103,7 +105,7 @@ export class HomeScreen {
     y += this.s(18);
     ui.text(f.small, leftX, y, 'WALK A MODEL LIVE', UiTheme.TEXT_MUTED, this.s(1.6));
     y += this.s(22);
-    ui.textWrapped(f.body, leftX, y, leftW, 'Live sessions with Revit are coming to the web version. For now, use Go in Revit with the BimGo desktop app.', UiTheme.TEXT_SOFT, 6);
+    ui.textWrapped(f.body, leftX, y, leftW, 'In Revit: Go → tick Open in the browser. Edits come back to the model; F5 loads changes made in Revit. Chrome or Edge.', UiTheme.TEXT_SOFT, 6);
 
     // ---- Right: recent files
     action = this.drawRecent(f, input, rightX, pad, rightW, height - pad - pad) ?? action;

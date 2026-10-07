@@ -109,3 +109,17 @@ describe.runIf(existsSync(SNOWDON))('Snowdon Towers export', () => {
       `${s.elements.length} elements, ${s.levels.length} levels, ${s.rooms.length} rooms, ${s.lighting.lights.length} lights, spawn ${s.spawn?.source ?? 'none'}`);
   }, 60000);
 });
+
+describe('sample model', () => {
+  it('reads the shipped sample', async () => {
+    const { openAsBlob } = await import('node:fs');
+    const { resolve } = await import('node:path');
+    const doc = await BimGoReader.read(await openAsBlob(resolve(__dirname, '../public/samples/BimGo Sample Pavilion.bimgo')), 'BimGo Sample Pavilion.bimgo');
+    expect(doc.scene.elements.length).toBeGreaterThan(40);
+    expect(doc.scene.rooms.map(r => r.name)).toEqual(['Lobby', 'Cafe', 'Studio']);
+    expect(doc.scene.lighting.lights.length).toBe(7);
+    expect(doc.scene.elements.some(e => e.movable)).toBe(true);
+    expect(doc.bookmarks.bookmarks.length).toBe(3);
+    expect(doc.sun?.enabled).toBe(true);
+  });
+});
