@@ -65,3 +65,20 @@ export function formatSize(bytes: number): string {
   while (value >= 1024 && unit < units.length - 1) { value /= 1024; unit++; }
   return `${value.toFixed(value < 10 ? 1 : 0)} ${units[unit]}`;
 }
+
+/** Saves a blob through the browser's download (screenshots, CSV exports). */
+export function downloadBlob(blob: Blob, name: string): void {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+
+/** A file name without characters Windows / macOS refuse. */
+export function safeFileName(name: string): string {
+  return name.replace(/[\\/:*?"<>|]+/g, '_').trim() || 'BimGo';
+}

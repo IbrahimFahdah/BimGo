@@ -134,6 +134,24 @@ export class Player {
     if (pitch !== undefined) { this.pitch = pitch; }
   }
 
+  /**
+   * Turns the velocity with a portal's yaw change and makes sure the player leaves along the exit direction at a
+   * minimum speed (so they don't fall straight back in).
+   */
+  rotateVelocity(angle: number, minimumSpeedAlong: number, exitDirection: Vec3): void {
+    const v = this.controller.velocity;
+    const c = Math.cos(angle), s = Math.sin(angle);
+    const rotated = vec3(v.x * c - v.y * s, v.x * s + v.y * c, v.z);
+    const along = rotated.x * exitDirection.x + rotated.y * exitDirection.y;
+    if (along < minimumSpeedAlong) {
+      const extra = minimumSpeedAlong - along;
+      rotated.x += exitDirection.x * extra;
+      rotated.y += exitDirection.y * extra;
+      rotated.z += exitDirection.z * extra;
+    }
+    this.controller.velocity = rotated;
+  }
+
   setHome(): void {
     this.homeFeet = vec3(this.feet.x, this.feet.y, this.feet.z);
     this.homeYaw = this.yaw;
