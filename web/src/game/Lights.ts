@@ -1,6 +1,8 @@
+import { Mat4 } from '../core/math/Matrix4x4';
 import { type Vec3, vec3 } from '../core/math/Vector';
 import { kelvinToRgb } from '../core/scene/LightingData';
 import type { SceneData } from '../core/scene/SceneData';
+import type { DynamicSet } from '../engine/physics/DynamicSet';
 import type { FpsCamera } from '../engine/render/FpsCamera';
 import { ArtificialLighting } from '../engine/render/LightShadows';
 import { SceneBatches } from '../engine/render/SceneBatches';
@@ -18,7 +20,7 @@ const LIGHT_SCALE = 1 / (4 * Math.PI) / 100;
 
 /**
  * Picks the nearest lights in view each frame and fills the renderer's light list (port of
- * BimGo.App/Game/GameSession.Lights.cs, without moved / cloned fixtures until editing lands).
+ * BimGo.App/Game/GameSession.Lights.cs). Moved and cloned fixtures carry their light with them.
  */
 export class Lights {
   private readonly colour: Vec3[];
@@ -26,6 +28,8 @@ export class Lights {
   private readonly pickLight = new Int32Array(ArtificialLighting.MAX_LIGHTS);
   private readonly pickDistance = new Float32Array(ArtificialLighting.MAX_LIGHTS);
   private readonly pickPosition: Vec3[] = Array.from({ length: ArtificialLighting.MAX_LIGHTS }, () => vec3());
+  private readonly pickKey = new Float64Array(ArtificialLighting.MAX_LIGHTS);
+  private readonly lightOfElement = new Map<number, number>();
   private readonly viewPlanes = new Float32Array(24);
   private pickCount = 0;
   private candidateCount = 0;
@@ -37,6 +41,7 @@ export class Lights {
       return vec3(c.x * s, c.y * s, c.z * s);
     });
     this.radius = Float32Array.from(lights, l => Math.min(Math.max(Math.sqrt(l.lumens) * 0.16, 2.5), 9));
+    lights.forEach((l, i) => { if (!this.lightOfElement.has(l.element)) { this.lightOfElement.set(l.element, i); } });
   }
 
   get hasAny(): boolean {
@@ -45,7 +50,7 @@ export class Lights {
 
   /** Fills the light list for this frame. */
   update(a: ArtificialLighting, mode: LightMode, intensity: number, bloomIntensity: number, bloomFailed: boolean,
-    sun: SunLighting, camera: FpsCamera, groupVisible: boolean[], userHidden: boolean[]): void {
+    sun: SunLighting, camera: FpsCamera, groupVisible: boolean[], userHidden: boolean[], hidden: boolean[], dynamics: DynamicSet): void {
     a.clear();
     if (mode === LightMode.Off || !this.hasAny) { return; }
 
@@ -59,7 +64,7 @@ export class Lights {
 
     const scale = brightness * lerp(1, 0.35, day);
     if (scale <= 0) { return; }
-    this.pick(camera, groupVisible, userHidden);
+    this.pick(camera, groupVisible, userHidden, hidden, dynamics);
 
     // Fade the farthest picked lights when some were left out
     let fadeFrom = Number.MAX_VALUE, fadeTo = Number.MAX_VALUE;
@@ -76,12 +81,12 @@ export class Lights {
       a.position.set([p.x, p.y, p.z, this.radius[i]], k * 4);
       a.colour.set([c.x * scale, c.y * scale, c.z * scale, lights[i].downward], k * 4);
       a.shadow.set([-1, fade, 0, 0], k * 4);
-      a.key[k] = i;
+      a.key[k] = this.pickKey[k];
     }
     a.count = this.pickCount;
   }
 
-  private pick(camera: FpsCamera, groupVisible: boolean[], userHidden: boolean[]): void {
+  private pick(camera: FpsCamera, groupVisible: boolean[], userHidden: boolean[], hidden: boolean[], dynamics: DynamicSet): void {
     this.pickCount = 0;
     this.candidateCount = 0;
 
@@ -95,11 +100,24 @@ export class Lights {
     for (let i = 0; i < lights.length; i++) {
       const e = lights[i].element;
       if (userHidden[e] || !groupVisible[SceneBatches.groupOf(elements[e])]) { continue; }
-      this.consider(i, lights[i].position, camera.position);
+      if (!hidden[e]) {
+        this.consider(i, lights[i].position, camera.position, i);
+        continue;
+      }
+      // Hidden in the static scene: moved (follow it) or removed (dark)
+      const moved = dynamics.findOriginal(e);
+      if (!moved || !dynamics.isActive(moved)) { continue; }
+      this.consider(i, Mat4.transformPoint(lights[i].position, moved.model), camera.position, moved.id * 0x100000 + i);
+    }
+    for (const instance of dynamics.instances) {
+      if (!instance.isClone || !dynamics.isActive(instance)) { continue; }
+      const i = this.lightOfElement.get(instance.element);
+      if (i === undefined) { continue; }
+      this.consider(i, Mat4.transformPoint(lights[i].position, instance.model), camera.position, instance.id * 0x100000 + i);
     }
   }
 
-  private consider(light: number, position: Vec3, eye: Vec3): void {
+  private consider(light: number, position: Vec3, eye: Vec3, key: number): void {
     const radius = this.radius[light], planes = this.viewPlanes;
     for (let p = 0; p < 24; p += 4) {
       if (planes[p] * position.x + planes[p + 1] * position.y + planes[p + 2] * position.z + planes[p + 3] < -radius) { return; }
@@ -116,11 +134,13 @@ export class Lights {
       this.pickLight[slot] = this.pickLight[slot - 1];
       this.pickDistance[slot] = this.pickDistance[slot - 1];
       this.pickPosition[slot] = this.pickPosition[slot - 1];
+      this.pickKey[slot] = this.pickKey[slot - 1];
       slot--;
     }
     this.pickLight[slot] = light;
     this.pickDistance[slot] = distance;
     this.pickPosition[slot] = position;
+    this.pickKey[slot] = key;
     if (this.pickCount < max) { this.pickCount++; }
   }
 }

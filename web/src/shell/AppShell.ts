@@ -29,7 +29,7 @@ export class AppShell {
   private readonly home: HomeScreen;
   private browsing = false;
   private loading: Loading | null = null;
-  private session: GameSession | null = null;
+  session: GameSession | null = null;
   private previous = 0;
 
   constructor(canvas: HTMLCanvasElement, version: string) {
@@ -38,6 +38,8 @@ export class AppShell {
     this.home = new HomeScreen(this.window, this.ui, this.recent, version);
     this.window.setTitle('BimGo');
     this.window.onCaptureLost = () => this.session?.onCaptureLost();
+    // Dev server only (removed from builds): lets automated browser checks drive the app
+    if (import.meta.env.DEV) { (window as unknown as { __bimgo: unknown }).__bimgo = this; }
   }
 
   /** Starts the frame loop; opens ?model=<same-origin URL> when given (sample links, testing). */
@@ -116,7 +118,7 @@ export class AppShell {
   }
 
   /** Reads a file (progress screen, Esc cancels) and starts a walkthrough; failures go back to the home screen. */
-  private open(picked: PickedFile): void {
+  open(picked: PickedFile): void {
     const { file } = picked;
     if (!hasBimGoExtension(file.name)) {
       this.home.setMessage(`${file.name} is not a .bimgo file.`, true);
@@ -141,7 +143,7 @@ export class AppShell {
         const document = await BimGoReader.read(file, file.name, { step: f => report('Reading the model', f), signal });
         this.recent.touch(file.name, file.size);
         loading.title = `Preparing ${document.scene.modelTitle}`;
-        session = new GameSession(this.window, this.ui, document, this.settings);
+        session = new GameSession(this.window, this.ui, document, this.settings, picked.handle);
         await session.prepare(report, signal);
         this.session = session;
         this.home.setMessage('', false);

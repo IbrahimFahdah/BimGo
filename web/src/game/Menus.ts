@@ -157,6 +157,7 @@ export class PauseMenu {
 
   /** Closes an open list (Esc); false when none was open. */
   closePanels(): boolean {
+    if (this.session.textures?.close()) { return true; }
     if (this.commentsOpen) { this.commentsOpen = false; this.commentDeleteArmed = null; return true; }
     if (this.bookmarksOpen) { this.bookmarksOpen = false; this.bookmarkDeleteArmed = null; return true; }
     return false;
@@ -167,6 +168,7 @@ export class PauseMenu {
   build(): void {
     if (this.commentsOpen) { this.buildCommentsPanel(); return; }
     if (this.bookmarksOpen) { this.buildBookmarksPanel(); return; }
+    if (this.session.textures?.open) { this.session.textures.build(); return; }
 
     const session = this.session, ui = session.ui, f = ui.atlas, w = this.w;
     const input = session.input;
@@ -188,7 +190,8 @@ export class PauseMenu {
 
     const endY = height - pad - this.s(48);
     const hiddenThings = session.hiddenThingsCount;
-    const buttons = 6 + (hiddenThings > 0 ? 1 : 0);
+    const texturesButton = session.textures?.available ?? false;
+    const buttons = 7 + (hiddenThings > 0 ? 1 : 0) + (texturesButton ? 1 : 0);
     const step = Math.min(Math.max((endY - this.s(12) - y) / buttons, this.s(40)), this.s(54));
     const buttonH = step - this.s(6);
 
@@ -204,17 +207,26 @@ export class PauseMenu {
     const bookmarks = session.bookmarks.bookmarks.length;
     if (w.menuButton(f, leftX, y, leftW, bookmarks === 0 ? 'BOOKMARKS' : `BOOKMARKS (${bookmarks})`, false, false, true, buttonH)) { this.openBookmarks(); return; }
     y += step;
+    if (texturesButton) {
+      if (w.menuButton(f, leftX, y, leftW, session.textures.menuLabel(), false, false, true, buttonH)) { session.textures.show(); return; }
+      y += step;
+    }
     if (hiddenThings > 0) {
       if (w.menuButton(f, leftX, y, leftW, `SHOW ALL (${hiddenThings} HIDDEN)`, false, false, true, buttonH)) { session.showAll(); }
       y += step;
     }
+    // Save in place (Chrome / Edge) or download; Save As picks a new file
+    const half = (leftW - this.s(6)) / 2;
+    if (w.menuButton(f, leftX, y, half, session.isDirty ? 'SAVE *' : 'SAVE', false, false, true, buttonH)) { void session.save(false); return; }
+    if (w.menuButton(f, leftX + half + this.s(6), y, half, 'SAVE AS', false, false, true, buttonH)) { void session.save(true); return; }
+    y += step;
     if (w.menuButton(f, leftX, y, leftW, 'CLEAR MARKERS', false, false, true, buttonH)) {
       // Every gun's markers except comments (persistent: use X with the Comment gun)
       for (const gun of session.guns) { if (gun !== session.commentGun) { gun.clearMarkers(); } }
       session.toast('Markers cleared (comments are kept)');
     }
 
-    if (w.menuButton(f, leftX, endY, leftW, 'CLOSE MODEL', false, true)) { session.ended = true; return; }
+    if (w.menuButton(f, leftX, endY, leftW, 'CLOSE MODEL', false, true)) { session.requestClose(); return; }
 
     // ---- Middle: geometry toggles
     if (midW > this.s(300)) { this.buildCategoryCards(f, midX, pad, midW); }
@@ -223,9 +235,9 @@ export class PauseMenu {
     this.buildDisplayCard(f, rightX, pad, rightW);
 
     const scene = session.scene;
-    const journal = session.document.journal.count;
+    const journal = session.journal.count;
     ui.textRight(f.small, width - this.s(56), height - this.s(28),
-      `${session.document.name} · ${scene.elements.length.toLocaleString('en')} elements · ${(scene.geometry.indices.length / 3).toLocaleString('en')} tris · ${journal} ${journal === 1 ? 'edit' : 'edits'}`,
+      `${session.document.name} · ${scene.elements.length.toLocaleString('en')} elements · ${(scene.geometry.indices.length / 3).toLocaleString('en')} tris · ${journal} ${journal === 1 ? 'edit' : 'edits'}${session.isDirty ? ' · unsaved changes (Ctrl+S)' : ''}`,
       UiTheme.TEXT_FAINT, this.s(0.5));
   }
 
@@ -332,7 +344,7 @@ export class PauseMenu {
     const settings = session.settings;
     ui.text(f.small, x, top + this.s(2), 'WORLD & DISPLAY', UiTheme.TEXT_MUTED, this.s(1.8));
     const cardTop = top + this.s(26);
-    ui.panel(x, cardTop, width, this.s(440), UiTheme.CARD, UiTheme.CARD_BORDER);
+    ui.panel(x, cardTop, width, this.s(468), UiTheme.CARD, UiTheme.CARD_BORDER);
 
     const ix = x + this.s(14), iw = width - this.s(28);
     let y = cardTop + this.s(14);
@@ -350,8 +362,8 @@ export class PauseMenu {
     if (colour !== settings.colour) {
       settings.colour = colour;
       settings.save();
-      if (colour === ColourMode.Realistic) {
-        session.toast('Realistic materials come to the web viewer in a later update: material colours are shown meanwhile.', 5);
+      if (colour === ColourMode.Realistic && !session.renderer.hasMaterials) {
+        session.toast('No textures in this file: export again from Revit with “Extract materials and textures” ticked to see them.', 5);
       }
     }
     y += this.s(64);
@@ -374,6 +386,9 @@ export class PauseMenu {
     y += this.s(28);
     const ao = w.checkbox(f, ix, y, iw, 'Ambient occlusion', settings.ambientOcclusion);
     if (ao !== settings.ambientOcclusion) { settings.ambientOcclusion = ao; settings.save(); }
+    y += this.s(28);
+    const reflections = w.checkbox(f, ix, y, iw, 'Sky reflections on glass (Realistic)', settings.reflections);
+    if (reflections !== settings.reflections) { settings.reflections = reflections; settings.save(); }
     y += this.s(40);
 
     // Author name for comments and bookmarks (the browser has no user name)

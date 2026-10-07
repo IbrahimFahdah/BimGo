@@ -31,6 +31,8 @@ export interface BimGoDocument {
   /** The file name (the browser has no path). */
   name: string;
   readFormatVersion: number;
+  /** The manifest as read (the writer keeps its extraction settings and provenance). */
+  manifest: Json;
 }
 
 /** Progress and cancellation for a read (replaces OperationProgress). */
@@ -115,7 +117,8 @@ async function readDocument(file: Blob, name: string, progress?: ReadProgress): 
     createdUtc: str(manifest.createdUtc, ''),
     kind: str(manifest.kind, FileKinds.EXPORT),
     name,
-    readFormatVersion: formatVersion
+    readFormatVersion: formatVersion,
+    manifest
   };
 }
 

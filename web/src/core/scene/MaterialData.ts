@@ -145,3 +145,26 @@ function clampVec(v: Vec3, min: number, max: number, fallback: Vec3): Vec3 {
 export function vertexUv(m: MaterialData, i: number): Vec2 {
   return { x: m.vertexUv[i * 2] ?? 0, y: m.vertexUv[i * 2 + 1] ?? 0 };
 }
+
+/**
+ * A changed material table over the same vertex streams (port of MaterialData.With): textures no material references
+ * any more are dropped; added images join.
+ */
+export function withMaterials(data: MaterialData, materials: SceneMaterial[], addedTextures?: Map<string, Uint8Array>): MaterialData {
+  if (materials.length !== data.materials.length) {
+    throw new Error('The material table must keep its length (the vertex indices point into it).');
+  }
+  const referenced = new Set(materials.map(m => m.texture).filter((t): t is string => t !== null));
+  const textures = new Map<string, Uint8Array>();
+  for (const [key, bytes] of data.textures) { if (referenced.has(key)) { textures.set(key, bytes); } }
+  for (const [key, bytes] of addedTextures ?? []) { if (referenced.has(key) && bytes.length > 0) { textures.set(key, bytes); } }
+  return { materials, vertexMaterial: data.vertexMaterial, vertexUv: data.vertexUv, textures, textureMaxSize: data.textureMaxSize };
+}
+
+/** A copy of a material (the table is edited by replacing entries). */
+export function copyMaterial(m: SceneMaterial): SceneMaterial {
+  return { ...m, colour: { ...m.colour }, tint: { ...m.tint }, renderColour: m.renderColour ? { ...m.renderColour } : null, assetTint: m.assetTint ? { ...m.assetTint } : null };
+}
+
+/** Texture origins (port of TextureOrigins). */
+export const TextureOrigins = { ASSET: 'asset', SEARCH: 'search', OVERRIDE: 'override', PROXY: 'proxy' } as const;

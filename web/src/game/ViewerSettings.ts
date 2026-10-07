@@ -30,6 +30,14 @@ export class ViewerSettings {
   lightMode = LightMode.Lights;
   lightIntensity = 1;
   bloomIntensity = 1;
+  /** Realistic: Revit's tint (multiply) on. */
+  revitTint = true;
+  /** Realistic: sky reflections on glass. */
+  reflections = true;
+  /** Realistic: CC0 proxies for missing images. */
+  proxyMissing = true;
+  /** Realistic: proxies take the material's colour. */
+  proxyMaterialColour = true;
 
   get whitecard(): boolean {
     return this.colour === ColourMode.Whitecard;
@@ -53,6 +61,9 @@ export class ViewerSettings {
     if (typeof raw.lightMode === 'number' && raw.lightMode >= 0 && raw.lightMode <= 2) { s.lightMode = raw.lightMode; }
     if (typeof raw.lightIntensity === 'number') { s.lightIntensity = clamp(raw.lightIntensity, 0, 2); }
     if (typeof raw.bloomIntensity === 'number') { s.bloomIntensity = clamp(raw.bloomIntensity, 0, 2); }
+    for (const key of ['revitTint', 'reflections', 'proxyMissing', 'proxyMaterialColour'] as const) {
+      if (typeof raw[key] === 'boolean') { s[key] = raw[key] as boolean; }
+    }
     return s;
   }
 
@@ -69,7 +80,11 @@ export class ViewerSettings {
       ambientOcclusion: this.ambientOcclusion,
       lightMode: this.lightMode,
       lightIntensity: this.lightIntensity,
-      bloomIntensity: this.bloomIntensity
+      bloomIntensity: this.bloomIntensity,
+      revitTint: this.revitTint,
+      reflections: this.reflections,
+      proxyMissing: this.proxyMissing,
+      proxyMaterialColour: this.proxyMaterialColour
     });
   }
 }

@@ -1,5 +1,6 @@
 import { type Vec3, vec3 } from '../../core/math/Vector';
 import type { Bvh } from './Bvh';
+import type { DynamicSet } from './DynamicSet';
 import { closestSegmentTriangle } from './GeoMath';
 
 /** What a move touched (port of MoveResult). */
@@ -45,6 +46,8 @@ export class CharacterController {
 
   /** Per element: true = collides. */
   collisionMask: boolean[] | null = null;
+  /** Moved / cloned elements (collide through their transforms). */
+  dynamics: DynamicSet | null = null;
 
   private readonly closest = new Float64Array(6);
 
@@ -209,6 +212,19 @@ export class CharacterController {
         }
       }
 
+      // Moved / cloned elements
+      const dynamicCount = this.dynamics ? this.dynamics.collectTriangles(minX, minY, minZ, maxX, maxY, maxZ) : 0;
+      const dynamic = this.dynamics?.triangles;
+      for (let i = 0; i < dynamicCount && dynamic; i++) {
+        const o = i * 9;
+        if (!triangleOverlaps(dynamic, o, minX, minY, minZ, maxX, maxY, maxZ)) { continue; }
+        if (this.pushOut(feet, height, dynamic, o, result)) {
+          pushed = true;
+          minX = feet.x - pad; minY = feet.y - pad; minZ = feet.z - 0.02;
+          maxX = feet.x + pad; maxY = feet.y + pad; maxZ = feet.z + height + 0.02;
+        }
+      }
+
       if (feet.z < this.groundZ) {
         feet.z = this.groundZ;
         result.ground = true;
@@ -288,6 +304,11 @@ export class CharacterController {
     const results = this.bvh.results, tris = this.bvh.triangles;
     for (let i = 0; i < count; i++) {
       if (closestSegmentTriangle(px, py, pz, px, py, qz, tris, results[i] * 9, this.closest) < limit) { return true; }
+    }
+
+    const dynamicCount = this.dynamics ? this.dynamics.collectTriangles(feet.x - R, feet.y - R, feet.z, feet.x + R, feet.y + R, feet.z + height) : 0;
+    for (let i = 0; i < dynamicCount; i++) {
+      if (closestSegmentTriangle(px, py, pz, px, py, qz, this.dynamics!.triangles, i * 9, this.closest) < limit) { return true; }
     }
     return false;
   }

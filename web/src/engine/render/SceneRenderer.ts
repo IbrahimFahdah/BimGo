@@ -10,6 +10,10 @@ import {
 } from '../gl/Shaders';
 import { FpsCamera } from './FpsCamera';
 import { ArtificialLighting, LightShadows } from './LightShadows';
+import { MaterialTextures } from './MaterialTextures';
+import type { ProxyPack } from './ProxyPack';
+import type { DynamicInstance, DynamicSet } from '../physics/DynamicSet';
+import type { MaterialData } from '../../core/scene/MaterialData';
 import type { SceneBatches } from './SceneBatches';
 import { ScreenEffects } from './ScreenEffects';
 import { ShadowMaps, type ShadowPreset } from './ShadowMaps';
@@ -27,6 +31,10 @@ export interface SceneDrawParams {
   fogDensity: number;
   sun: boolean;
   realistic: boolean;
+  /** Realistic: sky reflections on glass. */
+  reflections?: boolean;
+  /** Realistic: 0 = Revit tint off, 1 = multiply. */
+  tintMode?: number;
 }
 
 type Uniforms = Record<string, WebGLUniformLocation | null>;
@@ -84,6 +92,13 @@ export class SceneRenderer {
   private readonly identity = Mat4.identity();
   private hasTransparent = false;
 
+  // Moved / cloned elements: their triangles copied once into a small index buffer, drawn with a model matrix
+  private dynamicVao: WebGLVertexArrayObject | null = null;
+  private dynamicIbo: WebGLBuffer | null = null;
+  private dynamicIndices: number[] = [];
+  private readonly dynamicRanges = new Map<number, [number, number, number, number]>();
+  private dynamicDirty = false;
+
   // Sun shadows
   readonly shadows = new ShadowMaps();
   private readonly cascadeDirty = new Array<boolean>(ShadowMaps.MAX_CASCADES).fill(false);
@@ -104,6 +119,15 @@ export class SceneRenderer {
   private readonly lightsToRender: number[] = [];
   private lightShadowsReported = false;
 
+  // Realistic materials
+  readonly materials = new MaterialTextures();
+  private materialVbo: WebGLBuffer | null = null;
+  private uvVbo: WebGLBuffer | null = null;
+  /** Null, or why some textures could not be shown. */
+  materialWarning: string | null = null;
+  /** Proxy suggestions for missing images (the "Proxy textures for missing images" setting). */
+  autoProxy = true;
+
   /** This frame's sun and sky (set by the session before UpdateShadows). */
   lighting: SunLighting = NO_SUN;
 
@@ -111,6 +135,7 @@ export class SceneRenderer {
   chunksDrawn = 0;
 
   get hasEmissive(): boolean { return this.emissiveVbo !== null; }
+  get hasMaterials(): boolean { return this.materialVbo !== null && this.materials.ready; }
   get fogColour(): Vec3 { return this.lighting.enabled ? this.lighting.horizon : SceneRenderer.FOG_COLOUR; }
 
   // #region Setup
@@ -129,7 +154,7 @@ export class SceneRenderer {
     this.groundGeometryProgram = ShaderProgram.create('ao ground geometry', GROUND_VS, GEOMETRY_GROUND_FS);
 
     this.scene = locations(this.sceneProgram, ['uViewProj', 'uModel', 'uEye', 'uLightDir', 'uFogColor', 'uFogDensity', 'uWhitecard',
-      'uPlan', 'uClipZ', 'uOverride', 'uRealistic', ...LIGHT_UNIFORMS, ...AO_UNIFORMS, ...ARTIFICIAL_UNIFORMS]);
+      'uPlan', 'uClipZ', 'uOverride', 'uRealistic', 'uReflections', 'uTintMode', 'uSkyZenith', 'uSkyHorizon', ...LIGHT_UNIFORMS, ...AO_UNIFORMS, ...ARTIFICIAL_UNIFORMS]);
     this.sky = locations(this.skyProgram, ['uInvViewProj', 'uEye', 'uSun', 'uSunDir', 'uZenith', 'uHorizon', 'uSunDisc']);
     this.ground = locations(this.groundProgram, ['uViewProj', 'uCenter', 'uHalf', 'uEye', 'uFogColor', ...LIGHT_UNIFORMS, ...AO_UNIFORMS, ...ARTIFICIAL_UNIFORMS]);
     this.depthU = locations(this.shadowDepthProgram, ['uViewProj', 'uModel']);
@@ -158,6 +183,8 @@ export class SceneRenderer {
 
     // Glowing surfaces: a second vertex stream (left disabled when there are none: reads as no glow)
     this.uploadEmissive(scene);
+    this.uploadMaterialStreams(scene);
+    this.createDynamicVao();
 
     let maxChunks = 1;
     for (const batch of batches.batches) {
@@ -221,6 +248,127 @@ export class SceneRenderer {
     gl.bindVertexArray(null);
   }
 
+  /** The VAO for moved / cloned elements: the same vertex streams, its own index buffer. */
+  private createDynamicVao(): void {
+    this.dynamicVao = gl.createVertexArray();
+    gl.bindVertexArray(this.dynamicVao);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.vbo);
+    setVertexLayout();
+    if (this.emissiveVbo) {
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.emissiveVbo);
+      gl.enableVertexAttribArray(3);
+      gl.vertexAttribPointer(3, 4, gl.UNSIGNED_BYTE, true, 4, 0);
+    }
+    if (this.materialVbo) {
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.materialVbo);
+      gl.enableVertexAttribArray(4);
+      gl.vertexAttribPointer(4, 1, gl.UNSIGNED_SHORT, false, 2, 0);
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.uvVbo);
+      gl.enableVertexAttribArray(5);
+      gl.vertexAttribPointer(5, 2, gl.FLOAT, false, 8, 0);
+    }
+    this.dynamicIbo = gl.createBuffer();
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.dynamicIbo);
+    gl.bindVertexArray(null);
+  }
+
+  /** Makes an element's triangles available to the dynamic pass (copied once per source element; clones share them). */
+  ensureDynamicGeometry(element: number): void {
+    if (this.dynamicRanges.has(element)) { return; }
+    const r = this.batches.ranges, src = this.batches.indices;
+    const opaqueStart = this.dynamicIndices.length, opaqueCount = r[element * 4 + 1];
+    for (let i = 0; i < opaqueCount; i++) { this.dynamicIndices.push(src[r[element * 4] + i]); }
+    const transparentStart = this.dynamicIndices.length, transparentCount = r[element * 4 + 3];
+    for (let i = 0; i < transparentCount; i++) { this.dynamicIndices.push(src[r[element * 4 + 2] + i]); }
+    this.dynamicRanges.set(element, [opaqueStart, opaqueCount, transparentStart, transparentCount]);
+    this.dynamicDirty = true;
+  }
+
+  private flushDynamic(): void {
+    if (!this.dynamicDirty) { return; }
+    this.dynamicDirty = false;
+    gl.bindVertexArray(this.dynamicVao);
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, Uint32Array.from(this.dynamicIndices), gl.DYNAMIC_DRAW);
+    gl.bindVertexArray(null);
+  }
+
+  /** Draws the active moved / cloned elements of one pass with the scene program. */
+  drawDynamic(p: SceneDrawParams, set: DynamicSet | null, transparent: boolean): void {
+    if (!set || set.instances.length === 0) { return; }
+    this.flushDynamic();
+    this.sceneProgram.use();
+    this.applyUniforms(p, 0, 0, 0, 0, !transparent);
+    this.drawDynamicInstances(set, p.planes, transparent, this.scene.uModel);
+  }
+
+  /** Draws a moved / cloned element again with a colour override (highlights). */
+  drawDynamicHighlight(p: SceneDrawParams, instance: DynamicInstance, r: number, g: number, b: number, a: number): void {
+    if (!this.dynamicRanges.has(instance.element)) { return; }
+    this.flushDynamic();
+    this.sceneProgram.use();
+    this.applyUniforms(p, r, g, b, a, true);
+    gl.bindVertexArray(this.dynamicVao);
+    this.drawDynamicRange(instance, false, this.scene.uModel);
+    this.drawDynamicRange(instance, true, this.scene.uModel);
+    gl.uniformMatrix4fv(this.scene.uModel, false, this.identity);
+    gl.bindVertexArray(null);
+  }
+
+  private drawDynamicInstances(set: DynamicSet, planes: Float32Array, transparent: boolean, modelUniform: WebGLUniformLocation | null): void {
+    gl.bindVertexArray(this.dynamicVao);
+    for (const instance of set.instances) {
+      if (!set.isActive(instance) || !this.dynamicRanges.has(instance.element)) { continue; }
+      if (!FpsCamera.isVisible(planes, instance.worldBounds)) { continue; }
+      this.drawDynamicRange(instance, transparent, modelUniform);
+    }
+    gl.uniformMatrix4fv(modelUniform, false, this.identity);
+    gl.bindVertexArray(null);
+  }
+
+  private drawDynamicRange(instance: DynamicInstance, transparent: boolean, modelUniform: WebGLUniformLocation | null): void {
+    const range = this.dynamicRanges.get(instance.element)!;
+    const start = transparent ? range[2] : range[0], count = transparent ? range[3] : range[1];
+    if (count <= 0) { return; }
+    gl.uniformMatrix4fv(modelUniform, false, instance.model);
+    gl.drawElements(gl.TRIANGLES, count, gl.UNSIGNED_INT, start * 4);
+  }
+
+  /** Moved / cloned elements for the passes below (set by the session each frame). */
+  dynamics: DynamicSet | null = null;
+
+  /**
+   * Realistic mode: the per-vertex material index (ushort → float, attribute 4) and surface coordinates (float2,
+   * attribute 5). Skipped when the file has no materials.
+   */
+  private uploadMaterialStreams(scene: SceneData): void {
+    const m = scene.materials;
+    const vertices = scene.geometry.vertexCount;
+    if (m.materials.length === 0 || m.vertexMaterial.length !== vertices) { return; }
+    gl.bindVertexArray(this.vao);
+    this.materialVbo = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.materialVbo);
+    gl.bufferData(gl.ARRAY_BUFFER, m.vertexMaterial, gl.STATIC_DRAW);
+    gl.enableVertexAttribArray(4);
+    gl.vertexAttribPointer(4, 1, gl.UNSIGNED_SHORT, false, 2, 0);
+    this.uvVbo = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.uvVbo);
+    gl.bufferData(gl.ARRAY_BUFFER, m.vertexUv.length === vertices * 2 ? m.vertexUv : new Float32Array(vertices * 2), gl.STATIC_DRAW);
+    gl.enableVertexAttribArray(5);
+    gl.vertexAttribPointer(5, 2, gl.FLOAT, false, 8, 0);
+    gl.bindVertexArray(null);
+  }
+
+  /**
+   * Builds (or rebuilds, from the Textures panel) the material table and texture arrays. Asynchronous: Realistic
+   * shows material colours until it resolves.
+   * @returns Null, or a short reason the textures couldn't all be shown.
+   */
+  async loadMaterials(materials: MaterialData, proxies: ProxyPack | null): Promise<string | null> {
+    if (this.materialVbo === null || materials.materials.length === 0) { return null; }
+    this.materialWarning = await this.materials.initialise(materials, proxies, this.autoProxy);
+    return this.materialWarning;
+  }
+
   // #endregion
 
   // #region Element visibility
@@ -270,6 +418,7 @@ export class SceneRenderer {
       this.shadows.bind();
       return this.shadows.lastError;
     }
+    this.flushDynamic();
     this.shadows.fit(camera, this.lighting.sunDirection, sceneBounds, sceneKey, this.lighting.glass, this.cascadeDirty);
 
     let rendered = 0;
@@ -307,6 +456,7 @@ export class SceneRenderer {
     gl.uniformMatrix4fv(this.depthU.uViewProj, false, matrix);
     gl.uniformMatrix4fv(this.depthU.uModel, false, this.identity);
     this.drawBatches(planes, groupVisible, false, false);
+    if (this.dynamics && this.dynamics.instances.length > 0) { this.drawDynamicInstances(this.dynamics, planes, false, this.depthU.uModel); }
     gl.disable(gl.POLYGON_OFFSET_FILL);
     gl.colorMask(true, true, true, true);
 
@@ -322,6 +472,7 @@ export class SceneRenderer {
       gl.uniform1f(this.transmitU.uGlass, this.lighting.glass);
       gl.uniform1i(this.transmitU.uWhitecard, whitecard ? 1 : 0);
       this.drawBatches(planes, groupVisible, true, false);
+      if (this.dynamics && this.dynamics.instances.length > 0) { this.drawDynamicInstances(this.dynamics, planes, true, this.transmitU.uModel); }
       gl.disable(gl.BLEND);
       gl.depthFunc(gl.LEQUAL);
       gl.depthMask(true);
@@ -384,7 +535,9 @@ export class SceneRenderer {
     this.geometryProgram.use();
     this.applyGeometry(this.geometryU, camera.viewProjection, eye, right, up, forward);
     gl.uniform1f(this.geometryU.uGlow, glow ? 1 : 0);
+    this.flushDynamic();
     this.drawBatches(camera.planes, groupVisible, false, false);
+    if (this.dynamics && this.dynamics.instances.length > 0) { this.drawDynamicInstances(this.dynamics, camera.planes, false, this.geometryU.uModel); }
 
     this.groundGeometryProgram.use();
     this.applyGeometry(this.groundGeometryU, camera.viewProjection, eye, right, up, forward);
@@ -440,6 +593,7 @@ export class SceneRenderer {
 
     this.lightShadows.assign(a, sceneKey, this.lightSlot, this.lightsToRender);
     if (this.lightsToRender.length > 0) {
+      this.flushDynamic();
       gl.enable(gl.DEPTH_TEST);
       gl.depthFunc(gl.LEQUAL);
       gl.disable(gl.BLEND);
@@ -456,6 +610,7 @@ export class SceneRenderer {
           const planes = this.lightShadows.beginFace(this.lightSlot[k], face, matrix);
           gl.uniformMatrix4fv(this.depthU.uViewProj, false, matrix);
           this.drawBatches(planes, groupVisible, false, false);
+          if (this.dynamics && this.dynamics.instances.length > 0) { this.drawDynamicInstances(this.dynamics, planes, false, this.depthU.uModel); }
         }
         this.lightShadows.markRendered(this.lightSlot[k], x, y, z, radius, sceneKey);
       }
@@ -602,8 +757,8 @@ export class SceneRenderer {
     gl.uniformMatrix4fv(u.uViewProj, false, p.viewProjection);
     gl.uniformMatrix4fv(u.uModel, false, this.identity);
     gl.uniform3f(u.uEye, p.eye.x, p.eye.y, p.eye.z);
-    const l = SceneRenderer.LIGHT_DIR;
-    gl.uniform3f(u.uLightDir, l.x, l.y, l.z);
+    const dir = SceneRenderer.LIGHT_DIR;
+    gl.uniform3f(u.uLightDir, dir.x, dir.y, dir.z);
     const fog = p.sun ? this.fogColour : SceneRenderer.FOG_COLOUR;
     gl.uniform3f(u.uFogColor, fog.x, fog.y, fog.z);
     this.applyLight(u, p.sun, transmit);
@@ -615,7 +770,17 @@ export class SceneRenderer {
     gl.uniform1i(u.uPlan, p.plan ? 1 : 0);
     gl.uniform2f(u.uClipZ, p.clipZMin, p.clipZMax);
     gl.uniform4f(u.uOverride, r, g, b, a);
-    gl.uniform1i(u.uRealistic, 0);
+
+    const realistic = p.realistic && !p.whitecard && this.hasMaterials;
+    gl.uniform1i(u.uRealistic, realistic ? 1 : 0);
+    if (!realistic) { return; }
+    this.materials.bind();
+    gl.uniform1i(u.uReflections, p.reflections ? 1 : 0);
+    gl.uniform1i(u.uTintMode, p.tintMode ?? 1);
+    const l = this.lighting;
+    const zenith = l.enabled ? l.zenith : SceneRenderer.SKY_ZENITH, horizon = l.enabled ? l.horizon : SceneRenderer.FOG_COLOUR;
+    gl.uniform3f(u.uSkyZenith, zenith.x, zenith.y, zenith.z);
+    gl.uniform3f(u.uSkyHorizon, horizon.x, horizon.y, horizon.z);
   }
 
   /** The classic sky's zenith (matches SKY_FS with the sun off). */
@@ -630,12 +795,17 @@ export class SceneRenderer {
     this.shadows.dispose();
     this.effects.dispose();
     this.lightShadows.dispose();
+    this.materials.dispose();
+    gl.deleteBuffer(this.materialVbo);
+    gl.deleteBuffer(this.uvVbo);
     for (const t of this.placeholders) { gl.deleteTexture(t); }
     gl.deleteBuffer(this.emissiveVbo);
     gl.deleteBuffer(this.vbo);
     gl.deleteBuffer(this.ibo);
     gl.deleteVertexArray(this.vao);
     gl.deleteVertexArray(this.emptyVao);
+    gl.deleteVertexArray(this.dynamicVao);
+    gl.deleteBuffer(this.dynamicIbo);
   }
 }
 

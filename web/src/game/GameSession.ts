@@ -1,14 +1,20 @@
+import { type EditRequest, type EditResult, EditOp } from '../core/edits/EditMessages';
+import { type JournalEntry, JournalOps } from '../core/edits/EditJournal';
+import { FileKinds } from '../core/format/BimGoFormat';
 import type { BimGoDocument } from '../core/format/BimGoReader';
-import type { BookmarkRecord, CommentRecord } from '../core/format/DocumentModels';
+import { writeBimGo } from '../core/format/BimGoWriter';
+import type { BookmarkRecord, CommentRecord, VisibilitySettings } from '../core/format/DocumentModels';
 import { setCurrentUser } from '../core/format/DocumentModels';
 import { Mat4 } from '../core/math/Matrix4x4';
 import { clamp, type Vec3, Vec3 as V, vec3 } from '../core/math/Vector';
 import { CATEGORIES, findCategory, KEY_DOORS } from '../core/scene/CategoryCatalog';
+import { FileEditSource } from '../core/sources/ModelSource';
 import type { RoomInfo, SceneData } from '../core/scene/SceneData';
 import { CoordinateReadout, SharedTransform, SiteCoordinates } from '../core/scene/SiteCoordinates';
 import { gl } from '../engine/gl/Gl';
 import { Bvh, type RayHit } from '../engine/physics/Bvh';
 import { CharacterController } from '../engine/physics/CharacterController';
+import { type DynamicInstance, DynamicSet } from '../engine/physics/DynamicSet';
 import { FpsCamera } from '../engine/render/FpsCamera';
 import { Overlay3D } from '../engine/render/Overlay3D';
 import { SceneBatches } from '../engine/render/SceneBatches';
@@ -24,6 +30,7 @@ import { downloadBlob, safeFileName } from '../platform/files';
 import { type InputState, Vk } from '../platform/input';
 import type { GameWindow } from '../platform/window';
 import { CommentGun } from './guns/CommentGun';
+import { CloneGun, type EditHost, GizmoGun, HammerGun } from './guns/EditGuns';
 import type { AimInfo, Gun, GunHost, Highlight } from './guns/Gun';
 import { MeasureGun } from './guns/MeasureGun';
 import { PortalGun } from './guns/PortalGun';
@@ -31,10 +38,12 @@ import { ScanGun } from './guns/ScanGun';
 import { TeleportGun } from './guns/TeleportGun';
 import { LightMode, Lights } from './Lights';
 import { PauseMenu, TextEditor } from './Menus';
+import { drawProgress, type ProgressState } from './ProgressScreen';
 import { Player } from './Player';
 import { BookmarkStore, CommentStore } from './Stores';
 import { SunPanel } from './SunPanel';
 import { SunState } from './SunState';
+import { Textures } from './Textures';
 import type { ViewerSettings } from './ViewerSettings';
 import { ColourMode } from './ViewerSettings';
 
@@ -48,7 +57,8 @@ const HELP_ROWS: [string, string][] = [
   ['V', 'Fly / walk (no-clip)'],
   ['PGUP / PGDN', 'Level up / down'],
   ['H · SHIFT+H', 'Go home · Set home here'],
-  ['1–5 · WHEEL', 'Select tool'],
+  ['1–8 · WHEEL', 'Select tool'],
+  ['6 · 7 · 8', 'Demolish · Gizmo · Clone'],
   ['I · SHIFT+I', 'Scan: hide target · isolate its category'],
   ['X', "Clear this tool's markers"],
   ['B · ALT+1–9', 'Bookmark this view · Go to bookmark'],
@@ -57,18 +67,21 @@ const HELP_ROWS: [string, string][] = [
   ['O · SHIFT+O', 'Shadows on/off · Sun panel'],
   ['[ ]', 'Sun time −/+ 5 min (Shift: 1 min)'],
   ['TAB · ESC / P', 'Minimap · Pause menu'],
+  ['CTRL+S · Z · Y', 'Save · Undo · Redo'],
   ['F11 · SHIFT+F12', 'Fullscreen · Screenshot'],
   ['F1', 'Hide help · BimGo Web ' + __BIMGO_VERSION__]
 ];
 
 const THUMB_WIDTH = 192, THUMB_HEIGHT = 108;
+const SNAP_MOVE_STEPS_MM = [5, 10, 25, 50, 100, 250, 500, 1000];
+const SNAP_ANGLE_STEPS_DEG = [1, 5, 10, 15, 30, 45, 90];
 
 /**
  * One walkthrough of a model (port of BimGo.App/Game/GameSession.cs with its Render, Visibility, Coordinates,
- * Bookmarks, Screenshot and Thumbnails partials; menus and text entry live in Menus.ts). The browser drives it one
- * animation frame at a time.
+ * Bookmarks, Screenshot, Thumbnails, Edits and Document partials; menus and text entry live in Menus.ts, the editing
+ * tools in guns/EditGuns.ts). The browser drives it one animation frame at a time.
  */
-export class GameSession implements GunHost {
+export class GameSession implements GunHost, EditHost {
   private static readonly TICK = 1 / 120;
   private static readonly PICK_DISTANCE = 250;
   private static readonly GROUND_BELOW_LOWEST_LEVEL = 0.1;
@@ -84,6 +97,7 @@ export class GameSession implements GunHost {
   batches!: SceneBatches;
   renderer!: SceneRenderer;
   private bvh!: Bvh;
+  dynamics!: DynamicSet;
   player!: Player;
   comments!: CommentStore;
   bookmarks!: BookmarkStore;
@@ -93,6 +107,9 @@ export class GameSession implements GunHost {
   commentGun!: CommentGun;
   readonly menu: PauseMenu;
   readonly sunPanel: SunPanel;
+  textures!: Textures;
+  /** Bumped by every change that Save would write (comments, bookmarks, materials, edits…). */
+  dirtyRevision = 0;
   sun!: SunState;
   lights!: Lights;
   /** Set once the user picks a shadow quality (the automatic downgrade then leaves it alone). */
@@ -113,12 +130,40 @@ export class GameSession implements GunHost {
   private readonly pickMask: boolean[];
   private readonly collisionMask: boolean[];
   private readonly userHidden: boolean[];
+  /** Static elements hidden by edits (demolished, deleted, or stood in for by their moved instance). */
+  private readonly hidden: boolean[];
   userHiddenCount = 0;
   private isolateBackup: boolean[] | null = null;
   private readonly elementIndexById = new Map<number, number>();
   private readonly elementIndexByUniqueId = new Map<string, number>();
   private readonly levelNamesUpper: string[];
   private readonly doorCategory: number;
+
+  // #endregion
+
+  // #region Edits and the document
+
+  readonly source: FileEditSource;
+  private readonly hostedBy = new Map<number, number[]>();
+  private readonly editCallbacks = new Map<number, (result: EditResult) => void>();
+  private readonly pendingRequests = new Map<number, EditRequest>();
+  private nextCloneKey = 0;
+  gizmoSnap = false;
+  snapMoveMm = 50;
+  snapAngleDeg = 15;
+  private visibilityRevision = 0;
+  private dynamicsSignature = '';
+  private savedKey = '';
+  private lastTitle = '';
+  documentName: string;
+  private fileHandle: FileSystemFileHandle | null;
+  private saving: { title: string; progress: ProgressState; abort: AbortController } | null = null;
+  private editCancelledAt = -10;
+  private readonly unloadGuard = (e: BeforeUnloadEvent) => {
+    if (!this.isDirty) { return; }
+    e.preventDefault();
+    e.returnValue = '';
+  };
 
   // #endregion
 
@@ -167,7 +212,8 @@ export class GameSession implements GunHost {
     private readonly window: GameWindow,
     readonly ui: UiBatch,
     readonly document: BimGoDocument,
-    readonly settings: ViewerSettings
+    readonly settings: ViewerSettings,
+    fileHandle: FileSystemFileHandle | null = null
   ) {
     const scene = document.scene;
     this.scene = scene;
@@ -178,9 +224,17 @@ export class GameSession implements GunHost {
     this.pickMask = new Array<boolean>(scene.elements.length).fill(false);
     this.collisionMask = new Array<boolean>(scene.elements.length).fill(false);
     this.userHidden = new Array<boolean>(scene.elements.length).fill(false);
+    this.hidden = new Array<boolean>(scene.elements.length).fill(false);
+    this.fileHandle = fileHandle;
+    this.documentName = document.name;
+    this.source = new FileEditSource(scene, document.name);
     scene.elements.forEach((record, e) => {
       // Only host elements are looked up by id: linked models have their own id namespaces
       if (record.link > 0) { return; }
+      if (record.hostId > 0) {
+        const list = this.hostedBy.get(record.hostId);
+        if (list) { list.push(record.elementId); } else { this.hostedBy.set(record.hostId, [record.elementId]); }
+      }
       if (!this.elementIndexById.has(record.elementId)) { this.elementIndexById.set(record.elementId, e); }
       if (record.uniqueId && !this.elementIndexByUniqueId.has(record.uniqueId)) { this.elementIndexByUniqueId.set(record.uniqueId, e); }
     });
@@ -235,9 +289,12 @@ export class GameSession implements GunHost {
     this.sound.initialise();
     console.info(`Batches ${this.batches.batches.length} / chunks ${this.batches.chunkTotal}, BVH nodes ${this.bvh.nodeCount} in ${Math.round(performance.now() - started)} ms.`);
 
+    this.dynamics = new DynamicSet(this.bvh, this.scene.elements, this.groupVisible);
+    this.renderer.dynamics = this.dynamics;
     const controller = new CharacterController(this.bvh);
     controller.stepHeight = this.settings.maxStepHeightMm / 1000;
     controller.collisionMask = this.collisionMask;
+    controller.dynamics = this.dynamics;
     this.player = new Player(controller);
     this.refreshMasks();
 
@@ -252,19 +309,31 @@ export class GameSession implements GunHost {
     this.bookmarks = new BookmarkStore(this.scene.modelTitle, this.scene.originOffset);
     this.bookmarks.loadFrom(this.document.bookmarks);
     this.initialiseVisibility();
+    const skipped = this.replayJournal();
     this.sun = new SunState(this.scene.site, this.document.sun);
     this.lights = new Lights(this.scene);
+    this.textures = new Textures(this);
+    this.textures.applyRendererOptions();
+    void this.textures.load().then(() => {
+      const missing = this.textures.missingCount;
+      if (missing > 0 && this.settings.colour === ColourMode.Realistic && !this.renderer.materialWarning) {
+        this.toast(`${missing} material${missing === 1 ? ' is' : 's are'} missing an image: Esc → TEXTURES to find them.`, 5);
+      }
+    });
 
     this.portalGun = new PortalGun(this);
     this.commentGun = new CommentGun(this);
-    this.guns = [new ScanGun(this), new MeasureGun(this), this.portalGun, this.commentGun, new TeleportGun(this)];
+    this.guns = [new ScanGun(this), new MeasureGun(this), this.portalGun, this.commentGun, new TeleportGun(this),
+      new HammerGun(this), new GizmoGun(this), new CloneGun(this)];
     this.guns.forEach((g, i) => { g.key = String(i + 1); });
 
     this.spawn();
-    this.window.setTitle(`${this.scene.modelTitle} · BimGo`);
+    this.markSaved();
+    globalThis.addEventListener('beforeunload', this.unloadGuard);
 
     const links = this.scene.links.length > 0 ? ` · ${this.scene.links.length} linked model${this.scene.links.length === 1 ? '' : 's'}` : '';
-    const edits = this.document.journal.count > 0 ? ` · ${this.document.journal.count} saved edit${this.document.journal.count === 1 ? '' : 's'} (not shown yet)` : '';
+    const count = this.journal.count;
+    const edits = count > 0 ? ` · ${count} edit${count === 1 ? '' : 's'}${skipped > 0 ? ` (${skipped} not applied: their elements are missing)` : ''}` : '';
     const start = this.startedAtSavedHome ? ' Starting at your saved home (Shift+H sets it).' : '';
     if (this.scene.phaseNote) { this.toast(this.scene.phaseNote, 6); }
     else {
@@ -322,10 +391,11 @@ export class GameSession implements GunHost {
 
   refreshMasks(): void {
     this.sceneRevision++;
+    this.visibilityRevision++;
     this.updateGroupVisibility();
     const elements = this.scene.elements;
     for (let e = 0; e < elements.length; e++) {
-      const visible = this.groupVisible[SceneBatches.groupOf(elements[e])] && !this.userHidden[e];
+      const visible = this.groupVisible[SceneBatches.groupOf(elements[e])] && !this.userHidden[e] && !this.hidden[e];
       this.pickMask[e] = visible;
       // Doors render as modelled but are always no-clip, so openings stay walkable
       this.collisionMask[e] = visible && elements[e].categoryIndex !== this.doorCategory;
@@ -349,6 +419,16 @@ export class GameSession implements GunHost {
    */
   frame(dt: number): SessionEnd | null {
     this.clock += dt;
+    if (this.saving) {
+      const saving = this.saving;
+      if (drawProgress(this.ui, this.window.width, this.window.height, saving.title, saving.progress, this.window.input)) {
+        saving.progress.cancelRequested = true;
+        saving.abort.abort();
+      }
+      return null;
+    }
+    this.pumpSource();
+    this.updateTitle();
     this.updateFrame();
     if (this.ended) { return 'closed'; }
 
@@ -374,7 +454,19 @@ export class GameSession implements GunHost {
 
   /** Called when the browser released the mouse (Esc, focus loss). */
   onCaptureLost(): void {
+    if (this.saving) { return; }
+    if (this.guns[this.activeGun]?.capturesInput) {
+      this.cancelEdit();
+      return;
+    }
+    if (this.clock - this.editCancelledAt < 0.5) { return; }
     if (!this.paused && !this.editor.active && !this.sunPanel.open) { this.setPaused(true); }
+  }
+
+  /** Esc while moving or cloning: puts things back (the browser also frees the mouse; that doesn't pause). */
+  private cancelEdit(): void {
+    this.guns[this.activeGun].onCancel();
+    this.editCancelledAt = this.clock;
   }
 
   private updateFrame(): void {
@@ -395,12 +487,32 @@ export class GameSession implements GunHost {
 
     // Esc releases the mouse in the browser (onCaptureLost pauses); P and Esc toggle while it is free, and Esc
     // first closes an open list (comments / bookmarks)
-    if (input.isPressed(Vk.ESCAPE) || input.isPressed(Vk.key('P'))) {
+    if (input.isPressed(Vk.ESCAPE) && !this.paused && this.guns[this.activeGun].capturesInput) {
+      this.cancelEdit();
+    } else if (input.isPressed(Vk.ESCAPE) && this.clock - this.editCancelledAt < 0.5) {
+      // The same Esc already cancelled an edit (the browser released the mouse first)
+    } else if (input.isPressed(Vk.ESCAPE) || input.isPressed(Vk.key('P'))) {
       if (!(this.paused && input.isPressed(Vk.ESCAPE) && this.menu.closePanels())) { this.setPaused(!this.paused); }
     }
     if (input.isPressed(Vk.F1)) { this.showHelp = !this.showHelp; }
     if (input.isPressed(Vk.F11)) { toggleFullscreen(); }
     if (input.isPressed(Vk.F12) && input.isDown(Vk.SHIFT)) { this.screenshotRequested = true; }
+
+    // Ctrl+S save (Shift: save as), Ctrl+Z undo, Ctrl+Y / Ctrl+Shift+Z redo
+    if (input.isDown(Vk.CONTROL)) {
+      if (input.isPressed(Vk.key('S'))) {
+        void this.save(input.isDown(Vk.SHIFT));
+        return;
+      }
+      if (!this.paused && input.isPressedOrRepeated(Vk.key('Z'))) {
+        if (input.isDown(Vk.SHIFT)) { this.redo(); } else { this.undo(); }
+        return;
+      }
+      if (!this.paused && input.isPressedOrRepeated(Vk.key('Y'))) {
+        this.redo();
+        return;
+      }
+    }
 
     // Alt+1..9 (Ctrl+1..9 in fullscreen, where the browser lets the page have it): jump to a bookmark
     if (!this.paused && (input.isDown(Vk.MENU) || input.isDown(Vk.CONTROL))) {
@@ -426,7 +538,7 @@ export class GameSession implements GunHost {
     }
     if (input.isPressed(Vk.PRIOR)) { this.teleportLevel(+1); }
     if (input.isPressed(Vk.NEXT)) { this.teleportLevel(-1); }
-    if (input.isPressed(Vk.key('X'))) { this.guns[this.activeGun].clearMarkers(); }
+    if (input.isPressed(Vk.key('X')) && !this.guns[this.activeGun].capturesInput) { this.guns[this.activeGun].clearMarkers(); }
     if (input.isPressed(Vk.key('B'))) {
       this.addBookmarkHere();
       return;
@@ -548,7 +660,7 @@ export class GameSession implements GunHost {
     this.homeSetUntil = this.clock + 2;
     this.sound.play(SoundId.Commit);
     this.flash(UiTheme.BOOKMARK, 0.2);
-    this.toast('Home set here: H returns here (stored with the file once saving is available)', 3.5);
+    this.toast('Home set here: H returns here (saved with the file: Ctrl+S)', 3.5);
   }
 
   private teleportLevel(direction: number): void {
@@ -595,14 +707,26 @@ export class GameSession implements GunHost {
   }
 
   pick(origin: Vec3, direction: Vec3, maxDistance: number): RayHit | null {
-    return this.bvh.raycast(origin, direction, maxDistance, this.pickMask);
+    const hit = this.bvh.raycast(origin, direction, maxDistance, this.pickMask);
+    // A moved or cloned element in front of the static hit wins
+    return this.dynamics?.raycast(origin, direction, hit ? hit.distance : maxDistance) ?? hit;
   }
 
-  isTargetPresent(element: number, _dynamicId: number): boolean {
-    return element >= 0 && !this.userHidden[element];
+  /** True if a pick target still exists: a visible static element or an active dynamic instance. */
+  isTargetPresent(element: number, dynamicId: number): boolean {
+    if (dynamicId > 0) {
+      const instance = this.dynamics.find(dynamicId);
+      return instance !== null && this.dynamics.isActive(instance);
+    }
+    return element >= 0 && !this.hidden[element] && !this.userHidden[element];
   }
 
   // #endregion
+
+  /** Something Save would write has changed (the title gets a *). */
+  markDirty(): void {
+    this.dirtyRevision++;
+  }
 
   // #region Sun and lights
 
@@ -852,8 +976,9 @@ export class GameSession implements GunHost {
     this.userHidden[element] = hidden;
     this.userHiddenCount += hidden ? 1 : -1;
     this.sceneRevision++;
-    this.renderer.setElementHidden(element, hidden);
-    const visible = !hidden && this.groupVisible[SceneBatches.groupOf(this.scene.elements[element])];
+    this.visibilityRevision++;
+    this.renderer.setElementHidden(element, hidden || this.hidden[element]);
+    const visible = !hidden && !this.hidden[element] && this.groupVisible[SceneBatches.groupOf(this.scene.elements[element])];
     this.pickMask[element] = visible;
     this.collisionMask[element] = visible && this.scene.elements[element].categoryIndex !== this.doorCategory;
   }
@@ -1007,6 +1132,8 @@ export class GameSession implements GunHost {
       eye: this.camera.position,
       whitecard: this.settings.whitecard,
       realistic: this.settings.colour === ColourMode.Realistic,
+      reflections: this.settings.reflections,
+      tintMode: this.settings.revitTint ? 1 : 0,
       plan: false,
       clipZMin: -1e7,
       clipZMax: 1e7,
@@ -1018,6 +1145,7 @@ export class GameSession implements GunHost {
   private render(): void {
     const width = this.window.width, height = this.window.height;
     const renderer = this.renderer, settings = this.settings;
+    this.trackDynamics();
 
     // ---- Sun lighting and shadow maps (only changed cascades re-render)
     renderer.lighting = this.sun.lighting();
@@ -1030,7 +1158,7 @@ export class GameSession implements GunHost {
 
     // ---- Artificial lights for this frame (after the sun: daylight dims them), and their cached shadow maps
     this.lights.update(renderer.artificial, settings.lightMode, settings.lightIntensity, settings.bloomIntensity, this.bloomFailed,
-      renderer.lighting, this.camera, this.groupVisible, this.userHidden);
+      renderer.lighting, this.camera, this.groupVisible, this.userHidden, this.hidden, this.dynamics);
     const lightShadowError = renderer.updateLightShadows(this.groupVisible, this.shadowSceneKey);
     if (lightShadowError) { this.toast(lightShadowError, 6); }
 
@@ -1053,6 +1181,7 @@ export class GameSession implements GunHost {
     this.renderer.drawSky(this.camera);
     const p = this.sceneParams();
     this.renderer.drawStatic(p, this.groupVisible, false);
+    this.renderer.drawDynamic(p, this.dynamics, false);
     this.renderer.drawGround(this.camera, this.groundZ);
 
     // Gun highlights (scan target…)
@@ -1065,8 +1194,11 @@ export class GameSession implements GunHost {
       gl.enable(gl.POLYGON_OFFSET_FILL);
       gl.polygonOffset(-1, -2);
       for (const h of this.highlights) {
-        if (h.element >= 0 && this.pickMask[h.element]) {
-          const [r, g, b] = Rgba.toVector(h.colour);
+        const [r, g, b] = Rgba.toVector(h.colour);
+        if (h.dynamicId > 0) {
+          const instance = this.dynamics.find(h.dynamicId);
+          if (instance && this.dynamics.isActive(instance)) { this.renderer.drawDynamicHighlight(p, instance, r, g, b, h.strength); }
+        } else if (h.element >= 0 && this.pickMask[h.element]) {
           this.renderer.drawElementHighlight(p, h.element, r, g, b, h.strength);
         }
       }
@@ -1079,6 +1211,7 @@ export class GameSession implements GunHost {
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
     gl.depthMask(false);
     this.renderer.drawStatic(p, this.groupVisible, true);
+    this.renderer.drawDynamic(p, this.dynamics, true);
     gl.depthMask(true);
     gl.disable(gl.BLEND);
 
@@ -1128,10 +1261,12 @@ export class GameSession implements GunHost {
     FpsCamera.extractPlanes(viewProjection, this.mapPlanes);
 
     gl.enable(gl.DEPTH_TEST);
-    this.renderer.drawStatic({
+    const plan: SceneDrawParams = {
       viewProjection, planes: this.mapPlanes, eye, whitecard: this.settings.whitecard, realistic: false,
       plan: true, clipZMin: elevation - 0.3, clipZMax: elevation + 1.2, fogDensity: 0, sun: false
-    }, this.groupVisible, false);
+    };
+    this.renderer.drawStatic(plan, this.groupVisible, false);
+    this.renderer.drawDynamic(plan, this.dynamics, false);
 
     gl.disable(gl.SCISSOR_TEST);
     gl.viewport(0, 0, this.window.width, this.window.height);
@@ -1371,7 +1506,7 @@ export class GameSession implements GunHost {
     switch (this.settings.colour) {
       case ColourMode.Whitecard: return 'Whitecard';
       case ColourMode.Material: return 'Material colour';
-      default: return 'Realistic (colours)';
+      default: return this.renderer?.hasMaterials ? 'Realistic' : 'Realistic (no textures)';
     }
   }
 
@@ -1471,8 +1606,434 @@ export class GameSession implements GunHost {
 
   // #endregion
 
+  // #region Edits (port of GameSession.Edits.cs)
+
+  get editsGoToRevit(): boolean { return this.source.isRevit; }
+  get editsLocalOnly(): boolean { return this.source.isRevit && !this.source.canEdit; }
+  get editTargetName(): string { return this.source.isRevit ? 'Revit' : 'the file'; }
+  get journal() { return this.document.journal; }
+
+  /** Hides or restores a static element (drawing, picking, collision and shadows). */
+  setStaticHidden(element: number, hidden: boolean): void {
+    if (this.hidden[element] === hidden) { return; }
+    this.hidden[element] = hidden;
+    this.sceneRevision++;
+    this.renderer.setElementHidden(element, hidden || this.userHidden[element]);
+    const record = this.scene.elements[element];
+    const visible = this.groupVisible[SceneBatches.groupOf(record)] && !hidden && !this.userHidden[element];
+    this.pickMask[element] = visible;
+    this.collisionMask[element] = visible && record.categoryIndex !== this.doorCategory;
+  }
+
+  /** The dynamic instance standing in for a static element, created on first use (the static copy is hidden). */
+  makeDynamic(element: number): DynamicInstance {
+    const existing = this.dynamics.findOriginal(element);
+    if (existing) { return existing; }
+    this.renderer.ensureDynamicGeometry(element);
+    const instance = this.dynamics.create(element, vec3(), 0, this.scene.elements[element].elementId, false, 0);
+    this.setStaticHidden(element, true);
+    return instance;
+  }
+
+  /** Puts a moved original back into the static scene if it is untransformed (after a cancelled move). */
+  restoreIfUnmoved(instance: DynamicInstance | null): void {
+    if (!instance || instance.isClone || instance.hidden) { return; }
+    if (V.lengthSquared(instance.offset) > 1e-10 || Math.abs(instance.angle) > 1e-6) { return; }
+    this.dynamics.remove(instance);
+    this.setStaticHidden(instance.element, false);
+  }
+
+  /** An uncommitted clone starting at the source's current transform (cloneKey > 0 when replaying). */
+  createClone(element: number, source: DynamicInstance | null, cloneKey = 0): DynamicInstance {
+    this.renderer.ensureDynamicGeometry(element);
+    if (cloneKey <= 0) { cloneKey = ++this.nextCloneKey; } else { this.nextCloneKey = Math.max(this.nextCloneKey, cloneKey); }
+    return this.dynamics.create(element, source ? V.copy(source.offset) : vec3(), source?.angle ?? 0, 0, true, cloneKey);
+  }
+
+  /** Hides everything reported as deleted / demolished; returns how many game objects were hidden. */
+  applyRemovals(ids: number[]): number {
+    let count = 0;
+    for (const id of ids) {
+      const element = this.elementIndexById.get(id);
+      if (element !== undefined && !this.dynamics.findOriginal(element) && !this.hidden[element]) {
+        this.setStaticHidden(element, true);
+        count++;
+      }
+      for (const instance of this.dynamics.instances) {
+        if (instance.revitId === id && !instance.hidden) {
+          instance.hidden = true;
+          count++;
+        }
+      }
+    }
+    return count;
+  }
+
+  /** Scene-local metres to Revit internal metres. */
+  toRevit(local: Vec3): Vec3 {
+    return V.add(local, this.scene.originOffset);
+  }
+
+  /** Bumps the scene revision when a moved / cloned element changed (shadow and light caches re-render). */
+  private trackDynamics(): void {
+    const list = this.dynamics.instances;
+    if (list.length === 0 && this.dynamicsSignature === '') { return; }
+    const signature = list.map(i => `${i.id}:${i.offset.x},${i.offset.y},${i.offset.z},${i.angle},${i.hidden ? 1 : 0}`).join('|');
+    if (signature === this.dynamicsSignature) { return; }
+    this.dynamicsSignature = signature;
+    this.sceneRevision++;
+  }
+
+  toggleGizmoSnap(): void {
+    this.gizmoSnap = !this.gizmoSnap;
+    this.sound.play(SoundId.UiClick);
+    this.toast(this.gizmoSnap ? `Snap ON: ${this.describeSnap()}` : 'Snap OFF: smooth moves (hold Ctrl to snap for a moment)');
+  }
+
+  stepSnapMove(direction: number): void {
+    this.snapMoveMm = stepPreset(SNAP_MOVE_STEPS_MM, this.snapMoveMm, direction);
+    this.sound.play(SoundId.UiClick);
+    this.toast(`Snap: ${this.describeSnap()}`);
+  }
+
+  stepSnapAngle(direction: number): void {
+    this.snapAngleDeg = stepPreset(SNAP_ANGLE_STEPS_DEG, this.snapAngleDeg, direction);
+    this.sound.play(SoundId.UiClick);
+    this.toast(`Snap: ${this.describeSnap()}`);
+  }
+
+  private describeSnap(): string {
+    const move = this.snapMoveMm >= 1000 ? `${+(this.snapMoveMm / 1000).toFixed(2)} m` : `${Math.round(this.snapMoveMm)} mm`;
+    return `${move} · ${Math.round(this.snapAngleDeg)}°`;
+  }
+
+  /**
+   * Sends an edit to the model source; the callback runs when the answer arrives (accepted edits are journalled first).
+   * @returns False if the source can't take edits (the edit then stays in the walkthrough only).
+   */
+  submitEdit(request: EditRequest, onResult: (result: EditResult) => void): boolean {
+    if (!this.source.canEdit) { return false; }
+    const ticket = this.source.submit(request);
+    if (ticket < 0) { return false; }
+    this.pendingRequests.set(ticket, request);
+    this.editCallbacks.set(ticket, onResult);
+    return true;
+  }
+
+  /** Delivers the source's answers (recording accepted edits). */
+  private pumpSource(): void {
+    this.source.pump();
+    for (let result = this.source.takeResult(); result; result = this.source.takeResult()) {
+      const request = this.pendingRequests.get(result.ticket);
+      this.pendingRequests.delete(result.ticket);
+      if (request && result.success) { this.recordEdit(request, result); }
+      const callback = this.editCallbacks.get(result.ticket);
+      this.editCallbacks.delete(result.ticket);
+      try {
+        callback?.(result);
+      } catch (e) {
+        console.error('Edit callback failed', e);
+      }
+    }
+  }
+
+  // #endregion
+
+  // #region Journal (port of GameSession.Document.cs)
+
+  /** Records an accepted edit by stable identity (UniqueId, or clone key for walkthrough clones). */
+  private recordEdit(request: EditRequest, result: EditResult): void {
+    const target = this.describeTarget(request.elementId, request.targetCloneKey ?? 0);
+    this.journal.add({
+      seq: 0,
+      op: request.op === EditOp.Transform ? JournalOps.TRANSFORM : request.op === EditOp.Copy ? JournalOps.CLONE : JournalOps.HIDE,
+      mode: request.op === EditOp.Delete ? JournalOps.MODE_DELETE : request.op === EditOp.PhaseDemolish ? JournalOps.MODE_DEMOLISH : null,
+      elementId: target.elementId,
+      uniqueId: target.uniqueId,
+      targetCloneKey: target.cloneKey,
+      newCloneKey: request.newCloneKey ?? 0,
+      pivot: request.pivot ?? vec3(),
+      offset: request.translation ?? vec3(),
+      angle: request.angle ?? 0,
+      label: request.label,
+      utc: new Date().toISOString(),
+      user: this.settings.userName,
+      appliedToRevit: this.source.isRevit,
+      revitElementId: request.op === EditOp.Copy && this.source.isRevit ? result.newElementId ?? 0 : 0
+    });
+  }
+
+  private describeTarget(requestId: number, requestCloneKey: number): { cloneKey: number; uniqueId: string; elementId: number } {
+    if (requestCloneKey !== 0) { return { cloneKey: requestCloneKey, uniqueId: '', elementId: 0 }; }
+    if (requestId > 0) {
+      const clone = this.dynamics.instances.find(i => i.isClone && i.revitId === requestId);
+      if (clone) { return { cloneKey: clone.cloneKey, uniqueId: '', elementId: 0 }; }
+    }
+    const element = this.elementIndexById.get(requestId);
+    return { cloneKey: 0, uniqueId: element !== undefined ? this.scene.elements[element].uniqueId ?? '' : '', elementId: requestId };
+  }
+
+  private resolveTarget(cloneKey: number, uniqueId: string, elementId: number): { element: number; clone: DynamicInstance | null } | null {
+    if (cloneKey !== 0) {
+      const clone = this.dynamics.instances.find(i => i.isClone && i.cloneKey === cloneKey);
+      return clone ? { element: clone.element, clone } : null;
+    }
+    const element = (uniqueId ? this.elementIndexByUniqueId.get(uniqueId) : undefined) ?? (elementId > 0 ? this.elementIndexById.get(elementId) : undefined);
+    return element !== undefined ? { element, clone: null } : null;
+  }
+
+  /** Applies every journal entry in order (on load and after an undo); returns how many could not be applied. */
+  private replayJournal(): number {
+    let failures = 0;
+    for (const entry of this.journal.entries) {
+      let applied = false;
+      try {
+        applied = this.applyEntry(entry);
+      } catch (e) {
+        console.warn(`Journal entry ${entry.seq} (${entry.op}) failed`, e);
+      }
+      if (!applied) { failures++; }
+    }
+    this.nextCloneKey = Math.max(this.nextCloneKey, this.journal.maxCloneKey());
+    if (failures > 0) { console.info(`Journal replay: ${failures} of ${this.journal.count} entries skipped.`); }
+    return failures;
+  }
+
+  private applyEntry(entry: JournalEntry): boolean {
+    const target = this.resolveTarget(entry.targetCloneKey, entry.uniqueId, entry.elementId);
+    if (!target) { return false; }
+    const { element, clone } = target;
+    switch (entry.op) {
+      case JournalOps.HIDE: {
+        if (clone) {
+          clone.hidden = true;
+          return true;
+        }
+        const moved = this.dynamics.findOriginal(element);
+        if (moved) { moved.hidden = true; } else { this.setStaticHidden(element, true); }
+        this.applyRemovals(this.collectHosted(this.scene.elements[element].elementId));
+        return true;
+      }
+      case JournalOps.TRANSFORM: {
+        const instance = clone ?? this.makeDynamic(element);
+        this.dynamics.setTransform(instance, V.add(instance.offset, entry.offset), instance.angle + entry.angle);
+        return true;
+      }
+      case JournalOps.CLONE: {
+        const copy = this.createClone(element, clone ?? this.dynamics.findOriginal(element), entry.newCloneKey);
+        this.dynamics.setTransform(copy, V.add(copy.offset, entry.offset), copy.angle + entry.angle);
+        copy.committed = true;
+        copy.revitId = entry.revitElementId;
+        return true;
+      }
+      default:
+        console.warn(`Journal entry ${entry.seq}: unknown op '${entry.op}'.`);
+        return false;
+    }
+  }
+
+  /** Everything hosted by an element, recursively (doors in a wall…), excluding the element itself. */
+  private collectHosted(hostId: number): number[] {
+    if (!this.hostedBy.has(hostId)) { return []; }
+    const result: number[] = [];
+    const queue = [hostId];
+    while (queue.length > 0 && result.length < 10_000) {
+      for (const id of this.hostedBy.get(queue.shift()!) ?? []) {
+        result.push(id);
+        queue.push(id);
+      }
+    }
+    return result;
+  }
+
+  /** Back to the unedited snapshot (all elements shown, no moved or cloned instances). */
+  private resetEdits(): void {
+    for (let i = this.dynamics.instances.length - 1; i >= 0; i--) { this.dynamics.remove(this.dynamics.instances[i]); }
+    for (let e = 0; e < this.hidden.length; e++) { if (this.hidden[e]) { this.setStaticHidden(e, false); } }
+    this.nextCloneKey = 0;
+  }
+
+  /** Ctrl+Z: removes the last entry and rebuilds the walkthrough from the rest. */
+  undo(): void {
+    if (this.guns[this.activeGun].capturesInput) { return; }
+    const last = this.journal.removeLast();
+    if (!last) {
+      this.toast('Nothing to undo');
+      return;
+    }
+    this.resetEdits();
+    this.replayJournal();
+    this.sound.play(SoundId.Remove);
+    this.toast(last.label ? `Undone: ${last.label} (Ctrl+Y redoes)` : 'Undone (Ctrl+Y redoes)');
+  }
+
+  /** Ctrl+Y / Ctrl+Shift+Z: puts the last undone edit back (on top of the current state, as a full replay would). */
+  redo(): void {
+    if (this.guns[this.activeGun].capturesInput) { return; }
+    const entry = this.journal.redo();
+    if (!entry) {
+      this.toast('Nothing to redo');
+      return;
+    }
+    let applied = false;
+    try {
+      applied = this.applyEntry(entry);
+    } catch (e) {
+      console.warn(`Redo of entry ${entry.seq} (${entry.op}) failed`, e);
+    }
+    this.nextCloneKey = Math.max(this.nextCloneKey, this.journal.maxCloneKey());
+    if (!applied) {
+      this.sound.play(SoundId.Error);
+      this.toast('Redone in the file, but its element is not in this walkthrough', 4);
+      return;
+    }
+    this.sound.play(SoundId.Commit);
+    const more = this.journal.redoCount > 0 ? ` (${this.journal.redoCount} more)` : '';
+    this.toast((entry.label ? `Redone: ${entry.label}` : 'Redone') + more);
+  }
+
+  // #endregion
+
+  // #region Save
+
+  /** Everything Save writes, as one comparable value. */
+  private get saveKey(): string {
+    return `${this.journal.revision}|${this.comments.revision}|${this.bookmarks.revision}|${this.sun.revision}|${this.visibilityRevision}|${this.dirtyRevision}`;
+  }
+
+  /** True when edits, comments, bookmarks, the sun, visibility or materials changed since the last save. */
+  get isDirty(): boolean {
+    return this.comments !== undefined && this.saveKey !== this.savedKey;
+  }
+
+  private markSaved(): void {
+    this.savedKey = this.saveKey;
+    this.updateTitle();
+  }
+
+  private updateTitle(): void {
+    const title = `${this.documentName}${this.isDirty ? ' *' : ''} · BimGo`;
+    if (title === this.lastTitle) { return; }
+    this.lastTitle = title;
+    this.window.setTitle(title);
+  }
+
+  /** Hidden categories, links and elements, by stable keys (port of ToVisibilitySettings). */
+  private toVisibilitySettings(): VisibilitySettings {
+    const settings: VisibilitySettings = { hiddenCategories: [], hiddenLinks: [], hiddenElements: [] };
+    for (const def of CATEGORIES) {
+      if (this.scene.categoryLoaded[def.index] && !this.categoryVisible[def.index]) { settings.hiddenCategories.push(def.key); }
+    }
+    for (const link of this.scene.links) {
+      if (!this.linkVisible[link.index] && link.instanceUniqueId) { settings.hiddenLinks.push(link.instanceUniqueId); }
+    }
+    if (this.userHiddenCount > 0) {
+      this.scene.elements.forEach((record, e) => {
+        if (!this.userHidden[e]) { return; }
+        const link = record.link > 0 ? this.scene.links.find(l => l.index === record.link)?.instanceUniqueId ?? null : null;
+        settings.hiddenElements.push({ link, uniqueId: record.uniqueId || null, id: record.elementId });
+      });
+    }
+    return settings;
+  }
+
+  /**
+   * Ctrl+S / SAVE: writes back to the opened file where the browser allows it (Chrome / Edge), else downloads a copy.
+   * Save As asks where (Chrome / Edge) or downloads. The location is chosen first, while the key press or click still
+   * counts as a user gesture; the file on disk only changes once the whole file is written.
+   * @returns True if saved.
+   */
+  async save(saveAs: boolean): Promise<boolean> {
+    if (this.saving) { return false; }
+    this.window.setCaptured(false);
+    this.window.input.releaseAll();
+
+    let handle: FileSystemFileHandle | null = null;
+    let name = this.documentName;
+    const picker = (window as unknown as SavePickerWindow).showSaveFilePicker;
+    try {
+      if (!saveAs && this.fileHandle && await canWrite(this.fileHandle)) {
+        handle = this.fileHandle;
+      } else if (picker) {
+        handle = await picker.call(window, {
+          id: 'bimgo-save',
+          suggestedName: name,
+          types: [{ description: 'BimGo model', accept: { 'application/octet-stream': ['.bimgo'] } }]
+        });
+        name = handle.name;
+      }
+    } catch (e) {
+      if (e instanceof DOMException && e.name === 'AbortError') { return false; }
+      console.warn('Save location unavailable, downloading instead', e);
+      handle = null;
+    }
+
+    const saving = {
+      title: `Saving ${name}`,
+      progress: { stage: 'Writing the .bimgo file', detail: '', fraction: 0, canCancel: true, cancelRequested: false } as ProgressState,
+      abort: new AbortController()
+    };
+    this.saving = saving;
+    try {
+      const blob = await writeBimGo(this.document, {
+        comments: this.comments.toDocument(),
+        journal: this.journal,
+        bookmarks: this.bookmarks.toDocument(),
+        sun: { ...this.sun.settings, time: { ...this.sun.settings.time } },
+        visibility: this.toVisibilitySettings(),
+        materials: this.textures.current,
+        savedBy: this.settings.userName
+      }, { generator: 'BimGo Web', version: __BIMGO_VERSION__ }, FileKinds.SAVE, f => { saving.progress.fraction = f; }, saving.abort.signal);
+
+      if (handle) {
+        saving.progress.stage = 'Writing to disk';
+        const writable = await handle.createWritable();
+        try {
+          await writable.write(blob);
+          await writable.close();
+        } catch (e) {
+          await writable.abort().catch(() => undefined);
+          throw e;
+        }
+        this.fileHandle = handle;
+      } else {
+        downloadBlob(blob, name);
+      }
+    } catch (e) {
+      const cancelled = saving.abort.signal.aborted || (e instanceof DOMException && e.name === 'AbortError');
+      if (!cancelled) { console.error(e); }
+      this.sound.play(cancelled ? SoundId.UiClick : SoundId.Error);
+      this.toast(cancelled ? 'Save cancelled: the file on disk was not changed.' : `The model could not be saved: ${e instanceof Error ? e.message : String(e)}`, 5);
+      return false;
+    } finally {
+      this.saving = null;
+      this.window.input.releaseAll();
+    }
+
+    this.documentName = name;
+    this.source.displayName = name;
+    this.markSaved();
+    this.sound.play(SoundId.Commit);
+    this.toast(handle ? `Saved ${name}` : `Saved ${name} to your Downloads folder`, handle ? 2.6 : 4);
+    return true;
+  }
+
+  /** CLOSE MODEL: asks first when there are unsaved changes. */
+  requestClose(): void {
+    if (this.isDirty) {
+      const summary = `${this.journal.count} edit(s), ${this.comments.comments.length} comment(s), ${this.bookmarks.bookmarks.length} bookmark(s)`;
+      if (!confirm(`${this.documentName} has unsaved changes (${summary}).\n\nClose without saving? (Cancel, then SAVE, to keep them.)`)) { return; }
+    }
+    this.ended = true;
+  }
+
+  // #endregion
+
+
   /** Releases GPU resources, sound and the mouse. */
   dispose(): void {
+    globalThis.removeEventListener('beforeunload', this.unloadGuard);
+    this.saving?.abort.abort();
     this.window.setCaptured(false);
     this.settings.save();
     for (const { texture } of this.thumbnailTextures.values()) { if (texture) { gl.deleteTexture(texture); } }
@@ -1518,4 +2079,28 @@ function toggleFullscreen(): void {
       .then(() => keyboard?.lock?.(['Digit1', 'Digit2', 'Digit3', 'Digit4', 'Digit5', 'Digit6', 'Digit7', 'Digit8', 'Digit9']))
       .catch(() => undefined);
   }
+}
+
+/** The preset one step up (+1) or down (−1) from the one nearest the current value. */
+function stepPreset(presets: number[], current: number, direction: number): number {
+  let nearest = 0;
+  presets.forEach((p, i) => { if (Math.abs(p - current) < Math.abs(presets[nearest] - current)) { nearest = i; } });
+  return presets[clamp(nearest + Math.sign(direction), 0, presets.length - 1)];
+}
+
+interface SavePickerWindow {
+  showSaveFilePicker?: (options: unknown) => Promise<FileSystemFileHandle>;
+}
+
+interface PermissionHandle {
+  queryPermission?: (d: { mode: string }) => Promise<PermissionState>;
+  requestPermission?: (d: { mode: string }) => Promise<PermissionState>;
+}
+
+/** True when the page may write to the handle (asks once if needed; needs a user gesture). */
+async function canWrite(handle: FileSystemFileHandle): Promise<boolean> {
+  const h = handle as unknown as PermissionHandle;
+  if (!h.queryPermission || !h.requestPermission) { return false; }
+  if (await h.queryPermission({ mode: 'readwrite' }) === 'granted') { return true; }
+  return await h.requestPermission({ mode: 'readwrite' }) === 'granted';
 }
