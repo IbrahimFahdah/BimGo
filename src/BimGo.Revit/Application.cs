@@ -38,6 +38,9 @@ namespace BimGo
             Live.LiveDispatcher.StatusButton = panelWalkthrough.Ext_AddPushButton<Commands.Cmds_BimGo.Cmd_Status>(buttonName: "Live\noff", availability: AVNA.Project);
             Live.LiveDispatcher.Initialise(uiCtlApp);
 
+            // Materials round, stage 0: read-only material / texture diagnostic (temporary)
+            panelWalkthrough.Ext_AddPushButton<Commands.Cmds_BimGo.Cmd_MaterialScan>(buttonName: "Material\nscan", availability: AVNA.Project);
+
             // Return succeeded
             return Result.Succeeded;
         }

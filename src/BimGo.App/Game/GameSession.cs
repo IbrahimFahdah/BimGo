@@ -93,6 +93,11 @@ namespace BimGo.Game
         private bool _whitecard;
         private int _msaa;
         private bool _ambientOcclusion;
+
+        // Realistic colour mode (render colours and textures; falls back to material colours when the snapshot has
+        // no materials, but the choice is kept) and sky reflections on glass
+        private bool _realistic;
+        private bool _reflections;
         private float _fov;
         private float _sensitivity;
         private bool _invertY;
@@ -169,6 +174,8 @@ namespace BimGo.Game
 
             LaunchSettings settings = scene.Settings;
             _whitecard = settings.Colour == ColourMode.Whitecard;
+            _realistic = settings.Colour == ColourMode.Realistic;
+            _reflections = settings.Reflections;
             _msaa = settings.Msaa;
             _ambientOcclusion = settings.AmbientOcclusion;
             _fov = settings.FieldOfView;
@@ -212,6 +219,11 @@ namespace BimGo.Game
             DrawLoadingFrame("Uploading geometry…");
             _renderer = new SceneRenderer();
             _renderer.Initialise(Scene, _batches);
+            if (_renderer.MaterialWarning != null) { Toast(_renderer.MaterialWarning, 6f); }
+            else if (_realistic && !_renderer.HasMaterials)
+            {
+                Toast("Realistic needs textures: this snapshot shows material colours. Tick “Extract materials and textures” at Go.", 6f);
+            }
             _overlay.Initialise();
             _target.Ensure(_window.Width, _window.Height, _msaa);
 
@@ -861,7 +873,8 @@ namespace BimGo.Game
         private void SaveSettings()
         {
             LaunchSettings settings = LaunchSettings.LoadOrDefault();
-            settings.Colour = _whitecard ? ColourMode.Whitecard : ColourMode.Material;
+            settings.Colour = _whitecard ? ColourMode.Whitecard : _realistic ? ColourMode.Realistic : ColourMode.Material;
+            settings.Reflections = _reflections;
             settings.Msaa = _msaa;
             settings.AmbientOcclusion = _ambientOcclusion;
             settings.ArtificialLights = _lightMode;

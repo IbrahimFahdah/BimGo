@@ -12,18 +12,24 @@ namespace BimGo.Rendering
         /// <summary>
         /// Scene vertex shader. aEmissive (location 3) is the per-vertex glow (RGB colour, A = strength / 4); models
         /// without glowing surfaces leave the attribute disabled, so it reads (0, 0, 0, 1) = no glow.
+        /// aMaterial (4, the Realistic-mode material index; 65535 = none) and aUv (5, surface coordinates in metres)
+        /// are only enabled for snapshots with materials; the fragment shader only reads them when uRealistic = 1.
         /// </summary>
         public const string SCENE_VS = @"#version 330 core
 layout(location = 0) in vec3 aPos;
 layout(location = 1) in vec3 aNormal;
 layout(location = 2) in vec4 aColor;
 layout(location = 3) in vec4 aEmissive;
+layout(location = 4) in float aMaterial;
+layout(location = 5) in vec2 aUv;
 uniform mat4 uViewProj;
 uniform mat4 uModel;
 out vec3 vWorld;
 out vec3 vNormal;
 out vec4 vColor;
 out vec3 vEmissive;
+flat out int vMaterial;
+out vec2 vUv;
 void main()
 {
     vec4 world = uModel * vec4(aPos, 1.0);
@@ -31,8 +37,63 @@ void main()
     vNormal = mat3(uModel) * aNormal;
     vColor = aColor;
     vEmissive = aEmissive.rgb * (aEmissive.a * 4.0);
+    vMaterial = int(aMaterial + 0.5);
+    vUv = aUv;
     gl_Position = uViewProj * world;
 }";
+
+        /// <summary>
+        /// Realistic colour mode (inserted after LIGHTS_GLSL in the scene fragment shader). The material table holds
+        /// four texels per material (MaterialTextures): (colour, fade) (tint, reflectivity) (scale U, scale V, offset
+        /// U, offset V) (cos angle, sin angle, bucket or -1, layer). Images live in one array per size bucket; the
+        /// gradients are taken from the metric coordinates before any branching (textureGrad), so mip selection
+        /// stays correct inside the per-material branches. Keep the four buckets in step with MaterialTextures.BUCKETS.
+        /// </summary>
+        public const string MATERIALS_GLSL = @"
+uniform int uRealistic;
+uniform sampler2D uMaterialTable;
+uniform sampler2DArray uTex0;
+uniform sampler2DArray uTex1;
+uniform sampler2DArray uTex2;
+uniform sampler2DArray uTex3;
+uniform int uReflections;
+uniform vec3 uSkyZenith;
+uniform vec3 uSkyHorizon;
+
+vec3 materialTexture(int bucket, vec3 uvl, vec2 gx, vec2 gy)
+{
+    if (bucket == 0) return textureGrad(uTex0, uvl, gx, gy).rgb;
+    if (bucket == 1) return textureGrad(uTex1, uvl, gx, gy).rgb;
+    if (bucket == 2) return textureGrad(uTex2, uvl, gx, gy).rgb;
+    return textureGrad(uTex3, uvl, gx, gy).rgb;
+}
+
+// Realistic base colour (rgb) and head-on reflectivity (a) of a material at a metric surface coordinate
+vec4 realisticColour(int id, vec2 uv, vec2 dx, vec2 dy)
+{
+    vec4 t0 = texelFetch(uMaterialTable, ivec2(0, id), 0);
+    vec4 t1 = texelFetch(uMaterialTable, ivec2(1, id), 0);
+    vec4 t3 = texelFetch(uMaterialTable, ivec2(3, id), 0);
+    vec3 colour = t0.rgb;
+    if (t3.z >= 0.0)
+    {
+        vec4 t2 = texelFetch(uMaterialTable, ivec2(2, id), 0);
+        mat2 turn = mat2(t3.x, t3.y, -t3.y, t3.x);
+        // Image rows run top-down, V runs up the surface: flip V so images stand upright
+        vec2 inv = vec2(1.0, -1.0) / t2.xy;
+        vec2 st = (turn * (uv - t2.zw)) * inv;
+        vec3 image = materialTexture(int(t3.z + 0.5), vec3(st, t3.w), (turn * dx) * inv, (turn * dy) * inv);
+        colour = mix(colour, clamp(image * t1.rgb, 0.0, 1.0), t0.a);
+    }
+    return vec4(colour, t1.a);
+}
+
+vec3 skyColour(vec3 dir)
+{
+    float h = dir.z;
+    return h >= 0.0 ? mix(uSkyHorizon, uSkyZenith, pow(clamp(h, 0.0, 1.0), 0.55)) : uSkyHorizon * 0.55;
+}
+";
 
         /// <summary>
         /// Sun lighting and cascaded shadow lookup, shared by the scene and ground fragment shaders (inserted after
@@ -238,11 +299,13 @@ vec3 shoulder(vec3 c)
 }
 ";
 
-        public const string SCENE_FS = "#version 330 core\n" + SUN_GLSL + AO_GLSL + LIGHTS_GLSL + @"
+        public const string SCENE_FS = "#version 330 core\n" + SUN_GLSL + AO_GLSL + LIGHTS_GLSL + MATERIALS_GLSL + @"
 in vec3 vWorld;
 in vec3 vNormal;
 in vec4 vColor;
 in vec3 vEmissive;
+flat in int vMaterial;
+in vec2 vUv;
 uniform vec3 uEye;
 uniform vec3 uLightDir;
 uniform vec3 uFogColor;
@@ -254,9 +317,19 @@ uniform vec4 uOverride;
 out vec4 oColor;
 void main()
 {
+    // Texture gradients first: derivatives are only defined outside the per-material branches
+    vec2 uvDx = dFdx(vUv);
+    vec2 uvDy = dFdy(vUv);
     if (vWorld.z < uClipZ.x || vWorld.z > uClipZ.y) discard;
 
     vec4 base = vColor;
+    float reflectivity = 0.0;
+    if (uRealistic == 1 && uWhitecard == 0 && vMaterial >= 0 && vMaterial < 65535)
+    {
+        vec4 r = realisticColour(vMaterial, vUv, uvDx, uvDy);
+        base.rgb = r.rgb;
+        reflectivity = r.a;
+    }
     if (uWhitecard == 1)
     {
         float l = dot(base.rgb, vec3(0.299, 0.587, 0.114));
@@ -290,11 +363,23 @@ void main()
     if (uLightCount > 0) { lit += base.rgb * artificialLight(vWorld, n, ao); }
     lit += vEmissive * uEmissive;
 
+    // Sky reflection on glass (Realistic mode): Schlick's Fresnel, stronger at grazing angles
+    float alpha = base.a;
+    if (reflectivity > 0.0 && uReflections == 1)
+    {
+        vec3 view = normalize(vWorld - uEye);
+        float cosine = clamp(dot(-view, n), 0.0, 1.0);
+        float fresnel = reflectivity + (1.0 - reflectivity) * pow(1.0 - cosine, 5.0);
+        fresnel *= 0.85;
+        lit = mix(lit, skyColour(reflect(view, n)), fresnel);
+        alpha = alpha + (1.0 - alpha) * fresnel;
+    }
+
     float d = length(vWorld - uEye);
     float fog = clamp(1.0 - exp(-d * uFogDensity), 0.0, 0.65);
     lit = shoulder(mix(lit, uFogColor, fog));
 
-    vec4 result = vec4(lit, base.a);
+    vec4 result = vec4(lit, alpha);
     if (uOverride.a > 0.0)
     {
         result.rgb = mix(result.rgb, uOverride.rgb, uOverride.a);

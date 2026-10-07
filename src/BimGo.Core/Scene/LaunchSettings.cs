@@ -54,8 +54,14 @@ namespace BimGo.Scene
         /// <summary>Greyscale study-model look.</summary>
         Whitecard = 0,
 
-        /// <summary>Material colours cached from Revit.</summary>
-        Material = 1
+        /// <summary>Material colours cached from Revit (the shading colour, as Revit's Shaded view).</summary>
+        Material = 1,
+
+        /// <summary>
+        /// Render colours and textures from the appearance assets (as Revit's Realistic view). Needs a snapshot taken
+        /// with <see cref="LaunchSettings.ExtractTextures"/>; without one the walkthrough shows material colours.
+        /// </summary>
+        Realistic = 2
     }
 
     /// <summary>
@@ -93,6 +99,19 @@ namespace BimGo.Scene
 
         /// <summary>Colour mode at launch.</summary>
         public ColourMode Colour { get; set; } = ColourMode.Whitecard;
+
+        /// <summary>
+        /// Extract materials and textures at Go / Export (off by default: the model stays light). Embeds each
+        /// material's colour texture (size-capped by <see cref="TextureMaxSize"/>) and per-vertex surface coordinates,
+        /// for the Realistic colour mode.
+        /// </summary>
+        public bool ExtractTextures { get; set; }
+
+        /// <summary>Texture size cap at extraction (longest side, px): one of <see cref="MaterialData.TEXTURE_SIZES"/>.</summary>
+        public int TextureMaxSize { get; set; } = 512;
+
+        /// <summary>Sky reflections on glass and mirrors in the Realistic colour mode (on by default).</summary>
+        public bool Reflections { get; set; } = true;
 
         /// <summary>MSAA samples (0, 2 or 4).</summary>
         public int Msaa { get; set; } = 0;
@@ -348,6 +367,8 @@ namespace BimGo.Scene
             if (!Enum.IsDefined(CoordinateReadout)) { CoordinateReadout = CoordinateReadout.Off; }
             if (!Enum.IsDefined(ShadowQuality)) { ShadowQuality = ShadowQuality.Medium; }
             if (!Enum.IsDefined(ArtificialLights)) { ArtificialLights = ArtificialLightMode.Lights; }
+            if (!Enum.IsDefined(Colour)) { Colour = ColourMode.Material; }
+            TextureMaxSize = MaterialData.NearestTextureSize(TextureMaxSize);
             ArtificialLightIntensity = float.IsFinite(ArtificialLightIntensity) ? Math.Clamp(ArtificialLightIntensity, 0f, 2f) : 1f;
             BloomIntensity = float.IsFinite(BloomIntensity) ? Math.Clamp(BloomIntensity, 0f, 2f) : 1f;
             EmissiveKeywords = (EmissiveKeywords ?? DefaultEmissiveKeywords())

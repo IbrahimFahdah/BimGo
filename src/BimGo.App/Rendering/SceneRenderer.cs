@@ -35,6 +35,12 @@ namespace BimGo.Rendering
 
         /// <summary>Use the renderer's sun lighting (when it is on); false for the plan minimap.</summary>
         public bool Sun;
+
+        /// <summary>Realistic colours: render colours and textures (when the snapshot has materials).</summary>
+        public bool Realistic;
+
+        /// <summary>Sky reflections on glass (Realistic mode only).</summary>
+        public bool Reflections;
     }
 
     /// <summary>
@@ -79,6 +85,20 @@ namespace BimGo.Rendering
 
         // Glowing surfaces: a per-vertex RGBA8 stream (attribute 3), only when the model has any
         private uint _emissiveVbo;
+
+        // Realistic mode: per-vertex material index (attribute 4) and surface coordinates (attribute 5), the material
+        // table and texture arrays; only when the snapshot was extracted with materials
+        private uint _materialVbo, _uvVbo;
+        private readonly MaterialTextures _materials = new();
+
+        /// <summary>True if the snapshot has materials and they loaded (the Realistic mode can be shown).</summary>
+        public bool HasMaterials => _materialVbo != 0 && _materials.Ready;
+
+        /// <summary>Why some or all textures couldn't be shown (once, after <see cref="Initialise"/>), or null.</summary>
+        public string MaterialWarning { get; private set; }
+
+        /// <summary>The material textures (counts and memory for the HUD and log).</summary>
+        public MaterialTextures Materials => _materials;
 
         // Artificial-light shadow maps (cached per light)
         private readonly LightShadows _lightShadows = new();
@@ -237,8 +257,22 @@ namespace BimGo.Rendering
         private struct SceneUniforms
         {
             public int ViewProj, Model, Eye, LightDir, FogColor, FogDensity, Whitecard, Plan, ClipZ, Override;
+            public int Realistic, Reflections, SkyZenith, SkyHorizon;
 
-            public static SceneUniforms From(ShaderProgram p) => new()
+            public static SceneUniforms From(ShaderProgram p)
+            {
+                // The material samplers read fixed texture units (set once, even without materials: every sampler
+                // of the program needs a unit of its own type)
+                p.Use();
+                Gl.Uniform1(p.Uniform("uMaterialTable"), MaterialTextures.TABLE_UNIT);
+                for (int b = 0; b < MaterialTextures.BUCKETS.Length; b++)
+                {
+                    Gl.Uniform1(p.Uniform($"uTex{b}"), MaterialTextures.BUCKET_UNIT + b);
+                }
+                return Locations(p);
+            }
+
+            private static SceneUniforms Locations(ShaderProgram p) => new()
             {
                 ViewProj = p.Uniform("uViewProj"),
                 Model = p.Uniform("uModel"),
@@ -249,7 +283,11 @@ namespace BimGo.Rendering
                 Whitecard = p.Uniform("uWhitecard"),
                 Plan = p.Uniform("uPlan"),
                 ClipZ = p.Uniform("uClipZ"),
-                Override = p.Uniform("uOverride")
+                Override = p.Uniform("uOverride"),
+                Realistic = p.Uniform("uRealistic"),
+                Reflections = p.Uniform("uReflections"),
+                SkyZenith = p.Uniform("uSkyZenith"),
+                SkyHorizon = p.Uniform("uSkyHorizon")
             };
         }
 
@@ -336,6 +374,7 @@ namespace BimGo.Rendering
 
             // Glowing surfaces: a second vertex stream on both VAOs (left disabled when there are none: reads as no glow)
             UploadEmissive(scene);
+            UploadMaterials(scene);
             _dynamicRanges = new ElementRange[scene.Elements.Length];
             _hasDynamicRange = new bool[scene.Elements.Length];
 
@@ -385,6 +424,45 @@ namespace BimGo.Rendering
             Gl.BindVertexArray(0);
             Gl.BindBuffer(Gl.ARRAY_BUFFER, 0);
             Utilities.Log_Utils.Write($"Glowing surfaces: {glowing:N0} vertices in {runs.Length:N0} runs.");
+        }
+
+        /// <summary>
+        /// Realistic mode: the per-vertex material index (ushort → float, attribute 4) and surface coordinates (float2,
+        /// attribute 5) on both VAOs, then the material table and texture arrays. Skipped when the snapshot has none.
+        /// </summary>
+        private void UploadMaterials(SceneData scene)
+        {
+            MaterialData materials = scene.Materials;
+            if (materials == null || materials.IsEmpty || materials.VertexMaterial.Length != scene.Vertices.Length) { return; }
+
+            _materialVbo = Gl.GenBuffer();
+            Gl.BindBuffer(Gl.ARRAY_BUFFER, _materialVbo);
+            fixed (ushort* data = materials.VertexMaterial)
+            {
+                Gl.BufferData(Gl.ARRAY_BUFFER, (nint)materials.VertexMaterial.Length * sizeof(ushort), data, Gl.STATIC_DRAW);
+            }
+            Vector2[] uv = materials.VertexUv.Length == scene.Vertices.Length ? materials.VertexUv : new Vector2[scene.Vertices.Length];
+            _uvVbo = Gl.GenBuffer();
+            Gl.BindBuffer(Gl.ARRAY_BUFFER, _uvVbo);
+            fixed (Vector2* data = uv)
+            {
+                Gl.BufferData(Gl.ARRAY_BUFFER, (nint)uv.Length * sizeof(Vector2), data, Gl.STATIC_DRAW);
+            }
+
+            foreach (uint vao in new[] { _vao, _dynamicVao })
+            {
+                Gl.BindVertexArray(vao);
+                Gl.BindBuffer(Gl.ARRAY_BUFFER, _materialVbo);
+                Gl.EnableVertexAttribArray(4);
+                Gl.VertexAttribPointer(4, 1, Gl.UNSIGNED_SHORT, false, sizeof(ushort), 0);
+                Gl.BindBuffer(Gl.ARRAY_BUFFER, _uvVbo);
+                Gl.EnableVertexAttribArray(5);
+                Gl.VertexAttribPointer(5, 2, Gl.FLOAT, false, sizeof(Vector2), 0);
+            }
+            Gl.BindVertexArray(0);
+            Gl.BindBuffer(Gl.ARRAY_BUFFER, 0);
+
+            MaterialWarning = _materials.Initialise(materials);
         }
 
         /// <summary>
@@ -1009,7 +1087,20 @@ namespace BimGo.Rendering
             Gl.Uniform1(u.Plan, p.Plan ? 1 : 0);
             Gl.Uniform2(u.ClipZ, p.ClipZ.X, p.ClipZ.Y);
             Gl.Uniform4(u.Override, overrideColour.X, overrideColour.Y, overrideColour.Z, overrideColour.W);
+
+            bool realistic = p.Realistic && !p.Whitecard && HasMaterials;
+            Gl.Uniform1(u.Realistic, realistic ? 1 : 0);
+            if (!realistic) { return; }
+            _materials.Bind();
+            Gl.Uniform1(u.Reflections, p.Reflections ? 1 : 0);
+            SunLighting l = Lighting;
+            Vector3 zenith = l.Enabled ? l.Zenith : SKY_ZENITH, horizon = l.Enabled ? l.Horizon : FOG_COLOUR;
+            Gl.Uniform3(u.SkyZenith, zenith.X, zenith.Y, zenith.Z);
+            Gl.Uniform3(u.SkyHorizon, horizon.X, horizon.Y, horizon.Z);
         }
+
+        /// <summary>The classic sky's zenith (matches SKY_FS with the sun off).</summary>
+        private static readonly Vector3 SKY_ZENITH = new(0.34f, 0.50f, 0.70f);
 
         #endregion
 
@@ -1028,6 +1119,9 @@ namespace BimGo.Rendering
             _shadows.Dispose();
             _effects.Dispose();
             _lightShadows.Dispose();
+            _materials.Dispose();
+            Gl.DeleteBuffer(_materialVbo);
+            Gl.DeleteBuffer(_uvVbo);
             Gl.DeleteBuffer(_emissiveVbo);
             Gl.DeleteBuffer(_vbo);
             Gl.DeleteBuffer(_ibo);

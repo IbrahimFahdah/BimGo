@@ -126,7 +126,9 @@
                     <TextBlock Grid.Row="2" Style="{StaticResource FieldLabel}" Text="Colour"/>
                     <StackPanel Grid.Row="2" Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
                         <RadioButton x:Name="RadioWhitecard" GroupName="Colour" Content="Whitecard" Margin="0,0,16,0"/>
-                        <RadioButton x:Name="RadioMaterial" GroupName="Colour" Content="Material colours"/>
+                        <RadioButton x:Name="RadioMaterial" GroupName="Colour" Content="Material colours" Margin="0,0,16,0"/>
+                        <RadioButton x:Name="RadioRealistic" GroupName="Colour" Content="Realistic (textures)" Click="RadioRealistic_Click"
+                                     ToolTip="Render colours and textures, as Revit's Realistic view. Needs materials and textures extracted (below)."/>
                     </StackPanel>
 
                     <TextBlock Grid.Row="3" Style="{StaticResource FieldLabel}" Text="Max step height (stairs)"/>
@@ -142,6 +144,22 @@
                                  ToolTip="Comma-separated, case-insensitive parts of subcategory names (e.g. clearance, zone, cone)"/>
                     </StackPanel>
                 </Grid>
+
+                <!-- Materials and textures (opt-in: keeps light models light) -->
+                <TextBlock Style="{StaticResource SectionHeader}" Text="MATERIALS &amp; TEXTURES (REALISTIC COLOUR MODE)"/>
+                <Border Style="{StaticResource Card}" Margin="0,0,0,18">
+                    <StackPanel>
+                        <CheckBox x:Name="CheckTextures" FontWeight="SemiBold" Content="Extract materials and textures" Click="CheckTextures_Click"/>
+                        <TextBlock Margin="22,4,0,8" FontSize="12" Foreground="{StaticResource Muted}" TextWrapping="Wrap"
+                                   Text="Embeds each material's render colour and colour texture with its real-world size, for the Realistic colour mode. Takes longer and makes snapshots and .bimgo files bigger; leave it off for a light model."/>
+                        <StackPanel Orientation="Horizontal" Margin="22,0,0,0">
+                            <TextBlock VerticalAlignment="Center" Margin="0,0,10,0" Text="Max texture size"/>
+                            <ComboBox x:Name="ComboTextureSize" Width="110" Height="28" VerticalContentAlignment="Center"/>
+                            <TextBlock VerticalAlignment="Center" Margin="10,0,0,0" FontSize="12" Foreground="{StaticResource Muted}" Text="longest side, px · larger is sharper but uses more GPU memory"/>
+                        </StackPanel>
+                        <TextBlock x:Name="TextTextureSources" Margin="22,8,0,0" FontSize="12" Foreground="{StaticResource Muted}" TextWrapping="Wrap" Text="—"/>
+                    </StackPanel>
+                </Border>
 
                 <!-- Phases -->
                 <TextBlock Style="{StaticResource SectionHeader}" Text="PHASES (DEMOLITION HAPPENS BETWEEN THESE)"/>

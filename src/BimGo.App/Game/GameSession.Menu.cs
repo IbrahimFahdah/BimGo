@@ -33,7 +33,7 @@ namespace BimGo.Game
         private BookmarkRecord _editBookmark;
         private bool _editBookmarkIsNew;
 
-        private static readonly string[] COLOUR_OPTIONS = { "Whitecard", "Material" };
+        private static readonly string[] COLOUR_OPTIONS = { "Whitecard", "Material", "Realistic" };
         private static readonly string[] MSAA_OPTIONS = { "Off", "2x", "4x" };
 
         #endregion
@@ -502,7 +502,7 @@ namespace BimGo.Game
         {
             _ui.Text(f.Small, x, top + S(2), "WORLD & DISPLAY", UiTheme.TEXT_MUTED, S(1.8f));
             float cardTop = top + S(26);
-            float cardH = S(480);
+            float cardH = S(508);
             _ui.Panel(x, cardTop, width, cardH, UiTheme.CARD, UiTheme.CARD_BORDER);
 
             float ix = x + S(14), iw = width - S(28);
@@ -516,8 +516,17 @@ namespace BimGo.Game
 
             // Colour mode
             _ui.Text(f.Body, ix, y, "Colour mode", UiTheme.TEXT);
-            int colour = Segmented(f, input, ix, y + S(22), iw, COLOUR_OPTIONS, _whitecard ? 0 : 1);
-            _whitecard = colour == 0;
+            int current = _whitecard ? 0 : _realistic ? 2 : 1;
+            int colour = Segmented(f, input, ix, y + S(22), iw, COLOUR_OPTIONS, current);
+            if (colour != current)
+            {
+                _whitecard = colour == 0;
+                _realistic = colour == 2;
+                if (_realistic && !_renderer.HasMaterials)
+                {
+                    Toast("No textures in this snapshot: tick “Extract materials and textures” at Go (or Export) to see them.", 5f);
+                }
+            }
             y += S(64);
 
             // Anti-aliasing
@@ -549,6 +558,18 @@ namespace BimGo.Game
             _showFps = Checkbox(f, input, ix, y, iw, "Show FPS", _showFps);
             y += S(28);
             _ambientOcclusion = Checkbox(f, input, ix, y, iw, "Ambient occlusion", _ambientOcclusion);
+            y += S(28);
+            _reflections = Checkbox(f, input, ix, y, iw, "Sky reflections on glass (Realistic)", _reflections);
+        }
+
+        /// <summary>
+        /// The colour mode as the status panel shows it.
+        /// </summary>
+        private string ColourModeLabel()
+        {
+            if (_whitecard) { return "Whitecard"; }
+            if (!_realistic) { return "Material colour"; }
+            return _renderer != null && _renderer.HasMaterials ? "Realistic" : "Realistic (no textures)";
         }
 
         #endregion

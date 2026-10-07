@@ -93,6 +93,8 @@ namespace BimGo.Game
                 Planes = Camera.Planes,
                 Eye = Camera.Position,
                 Whitecard = _whitecard,
+                Realistic = _realistic,
+                Reflections = _reflections,
                 Plan = false,
                 ClipZ = new Vector2(-1e7f, 1e7f),
                 FogDensity = 0.0022f,
@@ -223,6 +225,7 @@ namespace BimGo.Game
                 Planes = _mapPlanes,
                 Eye = eye,
                 Whitecard = _whitecard,
+                Realistic = _realistic,
                 Plan = true,
                 ClipZ = new Vector2(elevation - 0.3f, elevation + 1.2f),
                 FogDensity = 0f
@@ -439,7 +442,7 @@ namespace BimGo.Game
             rowY += row;
 
             _ui.Text(f.Body, labelX, rowY, "VIEW", UiTheme.TEXT_MUTED);
-            _ui.Text(f.Body, valueX, rowY, _whitecard ? "Whitecard" : "Material colour", UiTheme.TEXT);
+            _ui.Text(f.Body, valueX, rowY, ColourModeLabel(), UiTheme.TEXT);
         }
 
         /// <summary>

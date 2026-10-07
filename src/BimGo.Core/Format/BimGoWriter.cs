@@ -80,6 +80,10 @@ namespace BimGo.Format
                     {
                         WriteJson(zip, BimGoFormat.ENTRY_LIGHTING, BuildLighting(scene.Lighting), BimGoFormat.JSON_COMPACT);
                     }
+                    if (scene.Materials != null && !scene.Materials.IsEmpty && scene.Materials.VertexMaterial.Length == scene.Vertices.Length)
+                    {
+                        WriteMaterials(zip, scene.Materials, geometryCompression);
+                    }
                 }
 
                 // Past this point the write completes: the replace is quick and must not be half done
@@ -273,6 +277,43 @@ namespace BimGo.Format
             long done = 0;
             WriteChunked(stream, MemoryMarshal.AsBytes(scene.Vertices.AsSpan()), progress, ref done, total);
             WriteChunked(stream, MemoryMarshal.AsBytes(scene.Indices.AsSpan()), progress, ref done, total);
+        }
+
+        /// <summary>
+        /// materials.json (the table), material.bin (index + surface coordinate per vertex) and the referenced images
+        /// under textures/ (stored as-is: they are already JPEG / PNG).
+        /// </summary>
+        private static void WriteMaterials(ZipArchive zip, MaterialData materials, CompressionLevel compression)
+        {
+            var dto = new MaterialsDto { TextureMaxSize = materials.TextureMaxSize, Materials = materials.Materials.ToList() };
+            WriteJson(zip, BimGoFormat.ENTRY_MATERIALS, dto, BimGoFormat.JSON_COMPACT);
+
+            bool hasUv = materials.VertexUv.Length == materials.VertexMaterial.Length;
+            ZipArchiveEntry entry = zip.CreateEntry(BimGoFormat.ENTRY_MATERIAL_STREAMS, compression);
+            using (Stream stream = entry.Open())
+            {
+                using (var header = new BinaryWriter(stream, System.Text.Encoding.UTF8, leaveOpen: true))
+                {
+                    header.Write(BimGoFormat.MATERIAL_MAGIC);
+                    header.Write(BimGoFormat.MATERIAL_VERSION);
+                    header.Write(materials.VertexMaterial.Length);
+                    header.Write(hasUv ? 1 : 0); // flags: bit 0 = surface coordinates follow
+                }
+                stream.Write(MemoryMarshal.AsBytes(materials.VertexMaterial.AsSpan()));
+                if (hasUv) { stream.Write(MemoryMarshal.AsBytes(materials.VertexUv.AsSpan())); }
+            }
+
+            var written = new HashSet<string>(StringComparer.Ordinal);
+            foreach (SceneMaterial material in materials.Materials)
+            {
+                string name = material?.Texture;
+                if (name == null || !written.Add(name)) { continue; }
+                if (!name.StartsWith(BimGoFormat.TEXTURE_FOLDER, StringComparison.Ordinal)) { continue; }
+                if (!materials.Textures.TryGetValue(name, out byte[] bytes) || bytes == null || bytes.Length == 0) { continue; }
+                ZipArchiveEntry image = zip.CreateEntry(name, CompressionLevel.NoCompression);
+                using Stream stream = image.Open();
+                stream.Write(bytes);
+            }
         }
 
         /// <summary>

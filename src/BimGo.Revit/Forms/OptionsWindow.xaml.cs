@@ -177,6 +177,8 @@ namespace BimGo.Forms
             RadioSkip.IsChecked = _settings.OverLimit == OverLimitMode.Skip;
             RadioWhitecard.IsChecked = _settings.Colour == ColourMode.Whitecard;
             RadioMaterial.IsChecked = _settings.Colour == ColourMode.Material;
+            RadioRealistic.IsChecked = _settings.Colour == ColourMode.Realistic;
+            LoadTextures();
             TextStep.Text = _settings.MaxStepHeightMm.ToString("0", CultureInfo.InvariantCulture);
 
             ComboMsaa.SelectedIndex = _settings.Msaa >= 4 ? 2 : _settings.Msaa >= 2 ? 1 : 0;
@@ -250,6 +252,56 @@ namespace BimGo.Forms
         }
 
         /// <summary>
+        /// Materials and textures: the tick, the size cap and where textures will be found on this machine.
+        /// </summary>
+        private void LoadTextures()
+        {
+            CheckTextures.IsChecked = _settings.ExtractTextures;
+            ComboTextureSize.Items.Clear();
+            foreach (int size in MaterialData.TEXTURE_SIZES) { ComboTextureSize.Items.Add($"{size} px"); }
+            ComboTextureSize.SelectedIndex = Math.Max(0, Array.IndexOf(MaterialData.TEXTURE_SIZES, MaterialData.NearestTextureSize(_settings.TextureMaxSize)));
+
+            try
+            {
+                Extraction.TextureLocator locator = Extraction.TextureLocator.Discover(Globals.REVIT_VERSION_STR);
+                string library = locator.HasLibrary ? "Autodesk Material Library found" : "Autodesk Material Library not installed (library textures will be missing)";
+                string extra = locator.ExtraPaths.Count == 0
+                    ? "no additional render appearance paths set in Revit Options"
+                    : $"{locator.ExtraPaths.Count} additional render appearance path{(locator.ExtraPaths.Count == 1 ? "" : "s")}: {string.Join("; ", locator.ExtraPaths)}";
+                TextTextureSources.Text = $"{library}; {extra}.";
+            }
+            catch (Exception ex)
+            {
+                TextTextureSources.Text = "Texture folders could not be checked (see the log).";
+                Utilities.Log_Utils.Write($"Texture folder check failed: {ex.Message}");
+            }
+            UpdateTextureControls();
+        }
+
+        private void UpdateTextureControls()
+        {
+            ComboTextureSize.IsEnabled = CheckTextures.IsChecked == true;
+        }
+
+        /// <summary>
+        /// Realistic colours need textures: ticking it ticks the extraction.
+        /// </summary>
+        private void RadioRealistic_Click(object sender, Win.RoutedEventArgs e)
+        {
+            if (RadioRealistic.IsChecked == true) { CheckTextures.IsChecked = true; }
+            UpdateTextureControls();
+        }
+
+        /// <summary>
+        /// Without textures the Realistic mode has nothing to show: unticking falls back to material colours.
+        /// </summary>
+        private void CheckTextures_Click(object sender, Win.RoutedEventArgs e)
+        {
+            if (CheckTextures.IsChecked != true && RadioRealistic.IsChecked == true) { RadioMaterial.IsChecked = true; }
+            UpdateTextureControls();
+        }
+
+        /// <summary>
         /// Validates and writes the settings back, then closes.
         /// </summary>
         private void ButtonLaunch_Click(object sender, Win.RoutedEventArgs e)
@@ -287,7 +339,11 @@ namespace BimGo.Forms
                 .ToList();
             _settings.TriangleThreshold = threshold;
             _settings.OverLimit = RadioSkip.IsChecked == true ? OverLimitMode.Skip : OverLimitMode.Proxy;
-            _settings.Colour = RadioMaterial.IsChecked == true ? ColourMode.Material : ColourMode.Whitecard;
+            _settings.Colour = RadioRealistic.IsChecked == true ? ColourMode.Realistic
+                : RadioMaterial.IsChecked == true ? ColourMode.Material
+                : ColourMode.Whitecard;
+            _settings.ExtractTextures = CheckTextures.IsChecked == true;
+            _settings.TextureMaxSize = MaterialData.TEXTURE_SIZES[Math.Clamp(ComboTextureSize.SelectedIndex, 0, MaterialData.TEXTURE_SIZES.Length - 1)];
             _settings.MaxStepHeightMm = step;
             _settings.Msaa = ComboMsaa.SelectedIndex switch { 2 => 4, 1 => 2, _ => 0 };
             _settings.FieldOfView = (float)SliderFov.Value;

@@ -90,6 +90,8 @@ namespace BimGo.Extraction
                 ComputeReferences = false,
                 IncludeNonVisibleObjects = false
             };
+            _extractMaterials = settings.ExtractTextures;
+            _textureCap = MaterialData.NearestTextureSize(settings.TextureMaxSize);
             _emissiveKeywords = (settings.EmissiveKeywords ?? LaunchSettings.DefaultEmissiveKeywords())
                 .Select(k => k.Trim().ToLowerInvariant())
                 .Where(k => k.Length > 0)
@@ -152,6 +154,14 @@ namespace BimGo.Extraction
 
             // The existing / new phases first: the walkthrough shows the model as it stands in the new phase
             _phases = PhaseResolver.Resolve(_doc, uiDoc.ActiveView, _settings);
+
+            // Materials and textures (opt-in): find where texture images live on this machine, as Revit does
+            if (_extractMaterials)
+            {
+                _locator = TextureLocator.Discover(_doc.Application.VersionNumber);
+                Utilities.Log_Utils.Write($"Textures: Autodesk library {(_locator.HasLibrary ? string.Join("; ", _locator.LibraryRoots) : "not found")}; " +
+                    $"additional render appearance paths: {(_locator.ExtraPaths.Count == 0 ? "none" : string.Join("; ", _locator.ExtraPaths))}; cap {_textureCap} px.");
+            }
 
             // Active-view-only: the view decides what comes in (null = extract by category)
             DB.View view = _settings.ActiveViewOnly ? ViewScope.Resolve(uiDoc, _doc) : null;
@@ -312,6 +322,7 @@ namespace BimGo.Extraction
                 Site = BuildSite(uiDoc),
                 Parameters = _parameters?.Build() ?? ParameterTable.Empty,
                 Lighting = BuildLighting(),
+                Materials = BuildMaterials(),
                 CategoryLoaded = loaded,
                 CategoryElementCounts = counts,
                 Settings = _settings,
@@ -412,6 +423,9 @@ namespace BimGo.Extraction
 
             /// <summary>Material colours and glow by material id (ids are per document).</summary>
             public Dictionary<long, MaterialLook> MaterialLooks { get; } = new();
+
+            /// <summary>Realistic-mode material table indices by material id (textures extracted only).</summary>
+            public Dictionary<long, ushort> MaterialIndex { get; } = new();
 
             /// <summary>Category colours by category id.</summary>
             public Dictionary<long, uint> CategoryColours { get; } = new();
@@ -597,6 +611,7 @@ namespace BimGo.Extraction
             _tmpEmissive.Clear();
             _tmpOpaque.Clear();
             _tmpTransparent.Clear();
+            ResetMaterialStreams();
             _tmpTriangles = 0;
             _overLimit = false;
             _thresholdActive = def.ThresholdApplies;
@@ -612,6 +627,7 @@ namespace BimGo.Extraction
                 _tmpEmissive.Clear();
                 _tmpOpaque.Clear();
                 _tmpTransparent.Clear();
+                ResetMaterialStreams();
 
                 if (_settings.OverLimit == OverLimitMode.Skip)
                 {
@@ -633,6 +649,7 @@ namespace BimGo.Extraction
             // Commit
             int vertexBase = _vertices.Count;
             CommitEmissive(vertexBase);
+            CommitMaterialStreams();
             Aabb bounds = Aabb.Empty;
             foreach (SceneVertex vertex in _tmpVertices)
             {
@@ -697,7 +714,7 @@ namespace BimGo.Extraction
                         if (CountTriangles(mesh.NumTriangles))
                         {
                             MaterialLook look = MaterialLookOf(mesh.MaterialElementId, fallback);
-                            AddMesh(mesh, transform, null, look.Colour, EmissiveOf(look));
+                            AddMesh(mesh, transform, null, look.Colour, EmissiveOf(look), UvMapping.BOX, look.Material);
                         }
                         break;
 
@@ -729,7 +746,8 @@ namespace BimGo.Extraction
 
                 MaterialLook look = MaterialLookOf(face.MaterialElementId, fallback);
                 XYZ planarNormal = face is PlanarFace planar ? planar.FaceNormal : null;
-                AddMesh(mesh, transform, planarNormal, look.Colour, EmissiveOf(look));
+                UvMapping mapping = look.Material == MaterialData.NONE ? UvMapping.BOX : MappingOf(face);
+                AddMesh(mesh, transform, planarNormal, look.Colour, EmissiveOf(look), mapping, look.Material);
             }
         }
 
@@ -757,7 +775,9 @@ namespace BimGo.Extraction
         /// <param name="planarNormal">The face normal for planar faces (local), or null.</param>
         /// <param name="colour">The RGBA8 colour.</param>
         /// <param name="emissive">Packed glow (<see cref="LightingData.PackEmissive"/>), or 0. Glowing surfaces are always opaque.</param>
-        private void AddMesh(Mesh mesh, Transform transform, XYZ planarNormal, uint colour, uint emissive)
+        /// <param name="mapping">How the vertices get surface coordinates (Realistic mode).</param>
+        /// <param name="material">The Realistic-mode material index, or <see cref="MaterialData.NONE"/>.</param>
+        private void AddMesh(Mesh mesh, Transform transform, XYZ planarNormal, uint colour, uint emissive, UvMapping mapping, ushort material)
         {
             IList<XYZ> points = mesh.Vertices;
             int vertexCount = points.Count;
@@ -854,6 +874,9 @@ namespace BimGo.Extraction
                 _tmpVertices[baseIndex + i] = vertex;
             }
 
+            // Realistic mode: material index and surface coordinates (from the mesh's own points, so textures move with families)
+            AppendSurfaceStreams(points, baseIndex, mapping, material);
+
         }
 
         /// <summary>
@@ -930,7 +953,7 @@ namespace BimGo.Extraction
         /// </summary>
         private MaterialLook MaterialLookOf(ElementId materialId, uint fallback)
         {
-            if (materialId == null || materialId == ElementId.InvalidElementId) { return new MaterialLook(fallback, 0u, false); }
+            if (materialId == null || materialId == ElementId.InvalidElementId) { return new MaterialLook(fallback, 0u, false, MaterialData.NONE); }
 
             long key = materialId.Value;
             if (_src.MaterialLooks.TryGetValue(key, out MaterialLook cached)) { return cached; }
@@ -938,6 +961,7 @@ namespace BimGo.Extraction
             uint colour = fallback;
             uint selfIllumination = 0u;
             bool keyword = false;
+            ushort index = MaterialData.NONE;
             if (_src.Doc.GetElement(materialId) is Material material)
             {
                 DB.Color c = material.Color;
@@ -948,9 +972,10 @@ namespace BimGo.Extraction
                 }
                 selfIllumination = ReadSelfIllumination(material);
                 keyword = MatchesEmissiveKeyword(material.Name);
+                index = MaterialIndexOf(material);
             }
 
-            var look = new MaterialLook(colour, selfIllumination, keyword);
+            var look = new MaterialLook(colour, selfIllumination, keyword, index);
             _src.MaterialLooks[key] = look;
             return look;
         }

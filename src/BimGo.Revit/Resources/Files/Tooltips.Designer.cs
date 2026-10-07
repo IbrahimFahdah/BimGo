@@ -86,5 +86,14 @@ namespace BimGo.Resources.Files {
                 return ResourceManager.GetString("BimGo_Status", resourceCulture);
             }
         }
+
+        /// <summary>
+        ///   Looks up a localized string similar to Write a read-only report of this model's materials and textures (diagnostic)..
+        /// </summary>
+        internal static string BimGo_MaterialScan {
+            get {
+                return ResourceManager.GetString("BimGo_MaterialScan", resourceCulture);
+            }
+        }
     }
 }
