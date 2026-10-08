@@ -190,7 +190,7 @@ namespace BimGo.Tests
             Touch(folder, "a.jpg");
             var progress = new OperationProgress();
             progress.Cancel();
-            Assert.ThrowsException<OperationCanceledException>(() => TextureFolderIndex.Build(folder.Path, progress));
+            Assert.ThrowsExactly<OperationCanceledException>(() => TextureFolderIndex.Build(folder.Path, progress));
         }
 
         [TestMethod]

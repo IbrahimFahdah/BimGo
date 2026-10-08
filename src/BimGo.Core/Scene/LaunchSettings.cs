@@ -127,8 +127,26 @@ namespace BimGo.Scene
         /// <summary>Texture size cap at extraction (longest side, px): one of <see cref="MaterialData.TEXTURE_SIZES"/>.</summary>
         public int TextureMaxSize { get; set; } = 512;
 
-        /// <summary>Sky reflections on glass and mirrors in the Realistic colour mode (on by default).</summary>
+        /// <summary>Reflections in the Realistic colour mode: glass, mirrors and shiny surfaces (on by default).</summary>
         public bool Reflections { get; set; } = true;
+
+        /// <summary>
+        /// Lowest reflection tier that reflects (%): 50 = shiny things only (the default), 25 = also satin and semi-gloss
+        /// surfaces. Glass and water always reflect while <see cref="Reflections"/> is on.
+        /// </summary>
+        public int ReflectionThreshold { get; set; } = 50;
+
+        /// <summary>Reflection strength multiplier (0.5–2, 1 = default).</summary>
+        public float ReflectionStrength { get; set; } = 1f;
+
+        /// <summary>
+        /// Reflections read reflection probes (captures of the rooms around reflective surfaces) where there are any;
+        /// false = the sky only (cheaper). On by default.
+        /// </summary>
+        public bool ReflectionProbes { get; set; } = true;
+
+        /// <summary>Probe face size in px, per machine: 128 (default) or 256 ("Probes HQ": sharper, fewer probes fit).</summary>
+        public int ProbeResolution { get; set; } = 128;
 
         /// <summary>
         /// Revit's tint (appearance and bitmap "Tint") in the Realistic colour mode: <see cref="TintMode.Multiply"/>
@@ -295,6 +313,22 @@ namespace BimGo.Scene
         /// <summary>Shadow-map quality on this machine (the sun panel and the Options dialog change it).</summary>
         public ShadowQuality ShadowQuality { get; set; } = ShadowQuality.Medium;
 
+        /// <summary>
+        /// The quality profile last chosen on this machine (pause menu or Options window), or Custom after a manual
+        /// change. Kept in step with the values it governs (<see cref="QualityProfiles.Detect"/> on load).
+        /// </summary>
+        public QualityProfile QualityProfile { get; set; } = QualityProfile.Custom;
+
+        /// <summary>
+        /// Also write a live session's comments, bookmarks, sun and visibility beside the Revit model when its folder is
+        /// writable (and take newer copies from there at Go), so colleagues on a shared drive see them. Off: they live
+        /// only in BimGo's per-model folder (<see cref="Format.ModelFolders"/>).
+        /// </summary>
+        public bool SidecarsBesideModel { get; set; }
+
+        /// <summary>The Options window's last tab (0 Load … 6 Player).</summary>
+        public int LastOptionsTab { get; set; }
+
         /// <summary>The walkthrough's coordinate readout (L cycles it; remembered between sessions).</summary>
         public CoordinateReadout CoordinateReadout { get; set; } = CoordinateReadout.Off;
 
@@ -401,6 +435,7 @@ namespace BimGo.Scene
         {
             try
             {
+                QualityProfile = QualityProfiles.Detect(this); // whoever saved, the profile matches the values
                 Directory.CreateDirectory(Path.GetDirectoryName(SettingsPath));
                 string temp = SettingsPath + ".tmp";
                 File.WriteAllText(temp, JsonSerializer.Serialize(this, JSON_OPTIONS));
@@ -454,6 +489,9 @@ namespace BimGo.Scene
                 .ToList();
             ArtificialLightIntensity = float.IsFinite(ArtificialLightIntensity) ? Math.Clamp(ArtificialLightIntensity, 0f, 2f) : 1f;
             BloomIntensity = float.IsFinite(BloomIntensity) ? Math.Clamp(BloomIntensity, 0f, 2f) : 1f;
+            ReflectionThreshold = ReflectionThreshold <= 37 ? 25 : 50;
+            ReflectionStrength = float.IsFinite(ReflectionStrength) ? Math.Clamp(ReflectionStrength, 0.5f, 2f) : 1f;
+            ProbeResolution = ProbeResolution >= 192 ? 256 : 128;
             EmissiveKeywords = (EmissiveKeywords ?? DefaultEmissiveKeywords())
                 .Where(k => !string.IsNullOrWhiteSpace(k))
                 .Select(k => k.Trim())
@@ -467,6 +505,11 @@ namespace BimGo.Scene
             MaxStepHeightMm = Math.Clamp(MaxStepHeightMm, 50f, 450f);
             SnapMoveMm = NearestStep(SNAP_MOVE_STEPS_MM, SnapMoveMm);
             SnapAngleDeg = NearestStep(SNAP_ANGLE_STEPS_DEG, SnapAngleDeg);
+
+            LastOptionsTab = Math.Clamp(LastOptionsTab, 0, 6);
+
+            // Last: the profile is whatever the (clamped) values match, so a hand-edited or older file reads true
+            QualityProfile = QualityProfiles.Detect(this);
         }
 
         #endregion

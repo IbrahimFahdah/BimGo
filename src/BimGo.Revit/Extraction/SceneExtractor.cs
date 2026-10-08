@@ -985,7 +985,8 @@ namespace BimGo.Extraction
                 DB.Color c = material.Color;
                 if (c != null && c.IsValid)
                 {
-                    int alpha = Math.Clamp(255 - (int)(material.Transparency * 2.55), 64, 255);
+                    // A material named "mirror" is a mirror even when modelled with a glass appearance: drawn opaque
+                    int alpha = ReflectivityReader.IsMirrorByName(material) ? 255 : Math.Clamp(255 - (int)(material.Transparency * 2.55), 64, 255);
                     colour = Pack(c.Red, c.Green, c.Blue, (byte)alpha);
                 }
                 selfIllumination = ReadSelfIllumination(material);
@@ -1488,36 +1489,11 @@ namespace BimGo.Extraction
         }
 
         /// <summary>
-        /// The comments sidecar path: beside the model, else in %LocalAppData%\BimGo\Comments for unsaved/cloud models.
-        /// (A legacy &lt;model&gt;.rvtgo.json next to it is migrated when the session loads comments.)
+        /// The comments path in the model's BimGo folder (<c>%LocalAppData%\BimGo\Models\&lt;title&gt;_&lt;hash&gt;\comments.json</c>),
+        /// with the bookmarks, sun and visibility files beside it. Prepares the folder: older sidecars beside the
+        /// model or in the old Comments folder are copied in once, and with sharing on newer shared copies are taken.
         /// </summary>
-        public string ResolveCommentsPath()
-        {
-            string fileName = MakeSafeFileName(_doc.Title) + BimGoFormat.SIDECAR_SUFFIX;
-            try
-            {
-                string modelPath = _doc.PathName;
-                if (!_doc.IsModelInCloud && !string.IsNullOrEmpty(modelPath) && Path.IsPathRooted(modelPath))
-                {
-                    string folder = Path.GetDirectoryName(modelPath);
-                    if (Directory.Exists(folder))
-                    {
-                        return Path.Combine(folder, Path.GetFileNameWithoutExtension(modelPath) + BimGoFormat.SIDECAR_SUFFIX);
-                    }
-                }
-            }
-            catch
-            {
-                // Fall back below
-            }
-            return Path.Combine(Utilities.Log_Utils.Folder, "Comments", fileName);
-        }
-
-        private static string MakeSafeFileName(string name)
-        {
-            foreach (char c in Path.GetInvalidFileNameChars()) { name = name.Replace(c, '_'); }
-            return name;
-        }
+        public string ResolveCommentsPath() => ModelFolderResolver.PrepareCommentsPath(_doc, _settings);
 
         #endregion
 

@@ -362,7 +362,7 @@ namespace BimGo.Game
             if (!applied)
             {
                 Sound.Play(SoundId.Error);
-                Toast("Redone in the file, but its element is not in this walkthrough", 4f);
+                Toast("Redone in the file, but its element is not in this walkthrough", 4f, important: true);
                 return;
             }
             Sound.Play(SoundId.Commit);
@@ -420,7 +420,7 @@ namespace BimGo.Game
             {
                 bool cancelled = progress.CancelRequested;
                 Sound.Play(cancelled ? SoundId.UiClick : SoundId.Error);
-                Toast(cancelled ? "Save cancelled: the file on disk was not changed." : $"The model could not be saved: {error}", 5f);
+                Toast(cancelled ? "Save cancelled: the file on disk was not changed." : $"The model could not be saved: {error}", 5f, important: !cancelled);
                 return false;
             }
 

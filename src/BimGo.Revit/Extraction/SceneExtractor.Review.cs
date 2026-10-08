@@ -46,6 +46,9 @@ namespace BimGo.Extraction
         /// <summary>The host model key the overrides are saved under.</summary>
         public string HostKey { get; init; } = string.Empty;
 
+        /// <summary>The model's BimGo folder (its texture choices live there).</summary>
+        public string ModelFolder { get; init; } = string.Empty;
+
         /// <summary>The host model's title.</summary>
         public string ModelTitle { get; init; } = string.Empty;
 
@@ -85,6 +88,7 @@ namespace BimGo.Extraction
             {
                 Rows = review.Rows,
                 HostKey = review.HostKey,
+                ModelFolder = review.ModelFolder,
                 ModelTitle = review.ModelTitle,
                 LocatorNotes = review.LocatorNotes,
                 HasLibrary = review.HasLibrary,
@@ -182,6 +186,7 @@ namespace BimGo.Extraction
             {
                 Rows = rows,
                 HostKey = LinkResolver.HostKey(_doc),
+                ModelFolder = ModelFolderResolver.FolderOf(_doc),
                 ModelTitle = _doc.Title ?? string.Empty,
                 LocatorNotes = _locator.Notes.ToList(),
                 HasLibrary = _locator.HasLibrary,

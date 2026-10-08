@@ -247,6 +247,32 @@ namespace BimGo.Scene
         public float Reflectivity { get; set; }
 
         /// <summary>
+        /// Reflection probes round: reflection strength of an <b>opaque</b> surface as Revit's appearance sets it
+        /// (0–1, the intent; the app rounds it to 25 % tiers and applies the user's threshold). 0 = reflects nothing.
+        /// Glass keeps <see cref="Reflectivity"/>. Not written when 0, so older files read as "no shine".
+        /// </summary>
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+        public float Shine { get; set; }
+
+        /// <summary>How blurred the reflection is: 0 = mirror sharp, 1 = matt. Null = not read (treated as 1).</summary>
+        public float? Roughness { get; set; }
+
+        /// <summary>A metal: its reflection takes the material's colour.</summary>
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+        public bool Metallic { get; set; }
+
+        /// <summary>Water (Revit Water schema, or a see-through material named "water"): animated ripples.</summary>
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+        public bool Water { get; set; }
+
+        /// <summary>Ripple strength for <see cref="Water"/> (Revit <c>water_bump_amount</c>, 0.1 typical).</summary>
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+        public float WaterBump { get; set; }
+
+        /// <summary>Which Revit property the reflection values came from (diagnostics), or null.</summary>
+        public string ReflectSource { get; set; }
+
+        /// <summary>
         /// Creates a defensive copy with values clamped into range (guards against hand-edited or damaged files).
         /// </summary>
         public SceneMaterial Clean()
@@ -275,7 +301,13 @@ namespace BimGo.Scene
                 Angle = Finite(Angle) % 360f,
                 Fade = float.IsFinite(Fade) ? Math.Clamp(Fade, 0f, 1f) : 1f,
                 Tint = Clamp(Tint, 0f, 4f, Vector3.One),
-                Reflectivity = float.IsFinite(Reflectivity) ? Math.Clamp(Reflectivity, 0f, 1f) : 0f
+                Reflectivity = float.IsFinite(Reflectivity) ? Math.Clamp(Reflectivity, 0f, 1f) : 0f,
+                Shine = float.IsFinite(Shine) ? Math.Clamp(Shine, 0f, 1f) : 0f,
+                Roughness = Roughness is float rough && float.IsFinite(rough) ? Math.Clamp(rough, 0f, 1f) : null,
+                Metallic = Metallic,
+                Water = Water,
+                WaterBump = float.IsFinite(WaterBump) ? Math.Clamp(WaterBump, 0f, 1f) : 0f,
+                ReflectSource = string.IsNullOrWhiteSpace(ReflectSource) ? null : ReflectSource
             };
 
             static float Finite(float v) => float.IsFinite(v) ? v : 0f;
