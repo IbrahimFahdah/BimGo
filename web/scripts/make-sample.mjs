@@ -1,11 +1,12 @@
 // Builds public/samples/BimGo Sample Pavilion.bimgo: a small two-storey pavilion made from boxes, so visitors without
-// a Revit export can try every tool. Everything here is generated (no Revit or third-party content), so it can ship
+// a Revit export can try every tool. It also carries Realistic materials (polished concrete, metals, glass, a mirror and
+// a pool, so reflections and probes show), comments as issues and a small family library for the Place gun. Everything here is generated (no Revit or third-party content), so it can ship
 // with the site. Run: node scripts/make-sample.mjs
 import { Buffer } from 'node:buffer';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { deflateRawSync } from 'node:zlib';
+import { deflateRawSync, deflateSync } from 'node:zlib';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const OUT = resolve(here, '../public/samples/BimGo Sample Pavilion.bimgo');
@@ -19,11 +20,32 @@ const C = {
   wall: [226, 222, 214], slab: [190, 188, 182], roof: [120, 124, 130], timber: [150, 104, 62], frame: [70, 74, 80],
   glass: [150, 200, 225, 90], stair: [205, 200, 192], rail: [60, 64, 70], column: [210, 210, 206], sofa: [70, 96, 140],
   table: [176, 132, 88], chair: [200, 80, 60], desk: [235, 235, 230], plant: [70, 140, 70], pot: [170, 110, 80],
-  light: [255, 244, 220], counter: [90, 90, 96], shelf: [180, 150, 110]
+  light: [255, 244, 220], counter: [90, 90, 96], shelf: [180, 150, 110],
+  water: [70, 130, 160], coping: [214, 208, 196], mirror: [220, 224, 228], lounge: [120, 140, 110]
 };
+
+// ---- Realistic materials (materials.json), picked per box by its colour; anything else is matt paint
+const MATERIALS = [
+  { name: 'Paint - Matt', schema: 'GenericSchema', colour: [0.86, 0.85, 0.82], roughness: 1 },
+  { name: 'Concrete - Polished', schema: 'ConcreteSchema', colour: [0.74, 0.73, 0.71], shine: 0.6, roughness: 0.15 },
+  { name: 'Aluminium - Brushed', schema: 'MetalSchema', colour: [0.42, 0.44, 0.47], shine: 0.55, roughness: 0.35, metallic: true },
+  { name: 'Steel - Polished', schema: 'MetalSchema', colour: [0.6, 0.62, 0.65], shine: 0.85, roughness: 0.05, metallic: true },
+  { name: 'Glass - Clear', schema: 'GlazingSchema', colour: [0.59, 0.78, 0.88], reflectivity: 0.15 },
+  { name: 'Stone - Gloss Black', schema: 'PrismOpaqueSchema', colour: [0.35, 0.35, 0.38], shine: 0.55, roughness: 0.1 },
+  { name: 'Timber - Satin', schema: 'WoodSchema', colour: [0.69, 0.52, 0.35], shine: 0.3, roughness: 0.4 },
+  { name: 'Laminate - Gloss White', schema: 'PlasticVinylSchema', colour: [0.92, 0.92, 0.9], shine: 0.35, roughness: 0.25 },
+  { name: 'Water - Pool', schema: 'WaterSchema', colour: [0.27, 0.51, 0.63], shine: 0.6, roughness: 0.05, water: true, waterBump: 0.1 },
+  { name: 'Mirror', schema: 'MirrorSchema', colour: [0.86, 0.88, 0.89], shine: 0.9, roughness: 0, metallic: true },
+  { name: 'Stone - Honed', schema: 'StoneSchema', colour: [0.8, 0.78, 0.75], shine: 0.3, roughness: 0.35 }
+];
+const MATERIAL_OF = new Map([
+  [C.slab, 1], [C.frame, 2], [C.rail, 3], [C.glass, 4], [C.counter, 5], [C.table, 6], [C.shelf, 6], [C.desk, 7],
+  [C.water, 8], [C.mirror, 9], [C.stair, 10], [C.coping, 10]
+]);
 
 // ---- Geometry: per element, opaque and transparent triangles
 const vertices = []; // [x, y, z, nx, ny, nz, r, g, b, a]
+const vertexMaterial = []; // material index per vertex
 const elements = [];
 const emissive = [];
 const lights = [];
@@ -41,7 +63,10 @@ function box(target, min, max, colour) {
   const first = vertices.length;
   for (const [n, quad] of faces) {
     const base = vertices.length;
-    for (const p of quad) { vertices.push([...p, ...n, colour[0], colour[1], colour[2], colour[3] ?? 255]); }
+    for (const p of quad) {
+      vertices.push([...p, ...n, colour[0], colour[1], colour[2], colour[3] ?? 255]);
+      vertexMaterial.push(MATERIAL_OF.get(colour) ?? 0);
+    }
     target.push(base, base + 1, base + 2, base, base + 2, base + 3);
   }
   return [first, vertices.length - first];
@@ -56,7 +81,8 @@ function element(o) {
     moveBlockReason: o.movable ? undefined : o.reason ?? (o.hostId ? 'Hosted by a wall' : 'System family'),
     params: o.params ?? {}
   };
-  record.uniqueId = `bimgo-sample-${record.id}`;
+  record.uniqueId = o.library ? '' : `bimgo-sample-${record.id}`;
+  record.library = !!o.library;
   for (const [min, max, colour] of o.boxes) {
     const transparent = (colour[3] ?? 255) < 255;
     const run = box(transparent ? record.transparentIdx : record.opaqueIdx, min, max, colour);
@@ -173,6 +199,48 @@ for (const [x, y, lvl] of [[2.5, 3, 1], [5.5, 6, 1], [10.5, 3.5, 1], [12.5, 7, 1
   lights.push({ element: elements.indexOf(record), position: [x, y, top - 0.1], lumens: 2500, kelvin: 3000, downward: 0.85, estimated: false });
 }
 
+// A mirror on the studio's west wall (level 2) and a pool in front of the building (outside every room)
+element({ name: 'Mirror', category: 'casework', familyType: 'Mirror: 1200 x 1800', level: 'Level 2', reason: 'Wall mounted',
+  boxes: [[[T, 5.4, L2 + 0.6], [T + 0.02, 6.6, L2 + 2.4], C.mirror]] });
+element({ name: 'Pool', category: 'floors', familyType: 'Floor: Pool', params: { Comments: 'Reflecting pool' }, boxes: [
+  [[3, -8, -0.3], [11, -4, -0.06], C.water],
+  [[2.6, -8.4, -0.3], [11.4, -8, 0.05], C.coping], [[2.6, -4, -0.3], [11.4, -3.6, 0.05], C.coping],
+  [[2.6, -8, -0.3], [3, -4, 0.05], C.coping], [[11, -8, -0.3], [11.4, -4, 0.05], C.coping]
+] });
+
+// ---- Family library: hidden templates (2 km down, after every model element) for the Place gun
+const LIB_Z = -2000;
+const templateVertexStart = vertices.length;
+const libraryEntries = [];
+function template(entry, boxes) {
+  const record = element({ id: 0, name: entry.family, category: entry.category, familyType: `${entry.family}: ${entry.type}`, movable: true,
+    phase: 'new', library: true, boxes: boxes.map(([min, max, colour]) => [[min[0], min[1], LIB_Z + min[2]], [max[0], max[1], LIB_Z + max[2]], colour]) });
+  libraryEntries.push({ ...entry, placement: 'levelBased', placeable: true, element: elements.indexOf(record), preview: `library/${libraryEntries.length}.png`, boxes });
+}
+template({ typeId: 900001, typeUniqueId: 'bimgo-sample-type-desk', family: 'Desk', type: '1600 x 800', category: 'furniture', placed: 3 }, [
+  [[0, 0, 0.72], [1.6, 0.8, 0.75], C.desk], [[0, 0, 0], [0.05, 0.8, 0.72], C.frame], [[1.55, 0, 0], [1.6, 0.8, 0.72], C.frame]
+]);
+template({ typeId: 900002, typeUniqueId: 'bimgo-sample-type-chair', family: 'Chair', type: 'Task', category: 'furniture', placed: 3 }, [
+  [[0, 0, 0.45], [0.5, 0.5, 0.5], C.chair], [[0, 0, 0.5], [0.5, 0.05, 1.0], C.chair], [[0.22, 0.22, 0], [0.28, 0.28, 0.45], C.frame]
+]);
+template({ typeId: 900003, typeUniqueId: 'bimgo-sample-type-lounge', family: 'Lounge chair', type: 'Single', category: 'furniture', placed: 0 }, [
+  [[0, 0, 0], [0.8, 0.8, 0.42], C.lounge], [[0, 0.65, 0], [0.8, 0.8, 0.85], C.lounge], [[0, 0, 0], [0.12, 0.8, 0.6], C.lounge], [[0.68, 0, 0], [0.8, 0.8, 0.6], C.lounge]
+]);
+template({ typeId: 900004, typeUniqueId: 'bimgo-sample-type-table', family: 'Cafe table', type: 'Round 800', category: 'furniture', placed: 2 }, [
+  [[0, 0, 0.72], [0.8, 0.8, 0.76], C.table], [[0.36, 0.36, 0], [0.44, 0.44, 0.72], C.frame], [[0.2, 0.2, 0], [0.6, 0.6, 0.02], C.frame]
+]);
+template({ typeId: 900005, typeUniqueId: 'bimgo-sample-type-shelf', family: 'Bookshelf', type: '1800', category: 'furniture', placed: 1 }, [
+  [[0, 0, 0], [1.2, 0.4, 0.04], C.shelf], [[0, 0, 0.6], [1.2, 0.4, 0.64], C.shelf], [[0, 0, 1.2], [1.2, 0.4, 1.24], C.shelf], [[0, 0, 1.76], [1.2, 0.4, 1.8], C.shelf],
+  [[0, 0, 0], [0.04, 0.4, 1.8], C.shelf], [[1.16, 0, 0], [1.2, 0.4, 1.8], C.shelf]
+]);
+template({ typeId: 900006, typeUniqueId: 'bimgo-sample-type-planter', family: 'Planter', type: 'Fiddle leaf fig', category: 'planting', placed: 3 }, [
+  [[0.1, 0.1, 0], [0.6, 0.6, 0.45], C.pot], [[0, 0, 0.45], [0.7, 0.7, 1.6], C.plant]
+]);
+// Listed, not placeable (as Revit sends ceiling- and wall-hosted types)
+libraryEntries.push({ typeId: 900007, typeUniqueId: 'bimgo-sample-type-pendant', family: 'Pendant light', type: 'LED 600', category: 'lightfixtures',
+  placement: 'hosted', placeable: false, reason: 'Ceiling-hosted: not placeable yet', element: -1, placed: 7, preview: `library/${libraryEntries.length}.png`,
+  boxes: [[[0, 0, 0.9], [0.6, 0.6, 0.96], C.light], [[0.29, 0.29, 0.96], [0.31, 0.31, 1.6], C.frame]] });
+
 // ---- Index buffer: each element's opaque run, then its transparent run
 const indices = [];
 for (const e of elements) {
@@ -201,10 +269,10 @@ const manifest = {
   format: 'bimgo', formatVersion: 1, generator: 'BimGo Web sample generator', generatorVersion: '1.0', kind: 'revit-export',
   title: 'BimGo Sample Pavilion', createdUtc: created, units: 'metres',
   provenance: { modelTitle: 'BimGo Sample Pavilion', revitVersion: '', extractedBy: 'scripts/make-sample.mjs', extractedUtc: created },
-  counts: { elements: elements.length, triangles: indices.length / 3, rooms: 3, comments: 2, bookmarks: 3 }
+  counts: { elements: elements.length, triangles: indices.length / 3, rooms: 3, comments: 3, bookmarks: 3 }
 };
 const model = {
-  originOffset: [0, 0, 0], boundsMin: [-0.4, -0.4, -SLAB], boundsMax: [W + 0.4, D + 0.4, ROOF + 0.3],
+  originOffset: [0, 0, 0], boundsMin: [-0.4, -8.8, -SLAB], boundsMax: [W + 0.4, D + 0.4, ROOF + 0.3],
   phaseId: 2, phaseName: 'New Construction', existingPhaseId: 1, existingPhaseName: 'Existing',
   site: { hasLocation: true, latitude: -27.4698, longitude: 153.0251, timeZone: 10, placeName: 'Brisbane', sunStart: '2026-06-21T14:30', trueNorthAngle: 0 },
   spawn: { eye: [7, -13, 1.62], yaw: Math.PI / 2, pitch: 0.06, source: 'sample' },
@@ -221,7 +289,7 @@ const elementsJson = {
     id: e.id, uniqueId: e.uniqueId, name: e.name, category: e.category, familyType: e.familyType, level: e.level,
     ...(e.hostId ? { hostId: e.hostId } : {}), movable: e.movable, ...(e.moveBlockReason ? { moveBlockReason: e.moveBlockReason } : {}),
     ...(e.phase ? { phase: e.phase } : {}), pivot: r3(e.pivot), boundsMin: r3(e.min), boundsMax: r3(e.max),
-    opaque: e.opaque, transparent: e.transparent
+    opaque: e.opaque, transparent: e.transparent, ...(e.library ? { library: true } : {})
   }))
 };
 
@@ -236,8 +304,13 @@ const parameters = {
 const comments = {
   model: 'BimGo Sample Pavilion', units: 'metres, Revit internal coordinates',
   comments: [
-    { id: 'sample-c1', author: 'BimGo', created, text: 'Welcome! Esc opens the menu, F1 shows the keys. Try the tools 1–8 at the bottom.', x: 7, y: 1.2, z: 1.6, elementId: 0, level: 'Level 1' },
-    { id: 'sample-c2', author: 'BimGo', created, text: 'Tool 7 (Gizmo) moves furniture: click a chair, WASD to move, right-click to commit.', x: 10, y: 5.5, z: 1.2, elementId: 0, level: 'Level 1' }
+    { id: 'sample-c1', author: 'BimGo', created, text: 'Welcome! Esc opens the menu, F1 shows the keys. Try the tools 1–9 at the bottom.', x: 7, y: 1.2, z: 1.6, elementId: 0, level: 'Level 1',
+      view: { x: 7, y: -3, z: 0, yaw: Math.PI / 2, pitch: 0.05, flying: false } },
+    { id: 'sample-c2', author: 'BimGo', created, text: 'Tool 7 (Gizmo) moves furniture: click a chair, WASD to move, right-click to commit.', x: 10, y: 5.5, z: 1.2, elementId: 0, level: 'Level 1',
+      status: 'inProgress', priority: 'high', assignedTo: 'Sam', updated: created, updatedBy: 'BimGo',
+      replies: [{ id: 'sample-r1', author: 'Sam', created, text: 'F drops a moved chair onto the floor or a table below it.' }] },
+    { id: 'sample-c3', author: 'BimGo', created, text: 'Realistic colour mode (Esc → Display) shows the polished floor, the mirror upstairs and the pool reflecting.', x: 7, y: -3.4, z: 0.8, elementId: 0, level: 'Level 1',
+      status: 'closed' }
   ]
 };
 const bookmarks = {
@@ -280,12 +353,72 @@ function zip(entries) {
   return Buffer.concat([...parts, ...central, end]);
 }
 
+// Materials: the table, then material.bin (BMAT header, ushort index per vertex; no surface coordinates)
+const materials = { version: 1, textureMaxSize: 512, materials: MATERIALS.map(m => ({ textureState: 'none', ...m })) };
+const materialBin = new Uint8Array(16 + vertices.length * 2);
+const mv = new DataView(materialBin.buffer);
+mv.setUint32(0, 0x54414d42, true); // "BMAT"
+mv.setInt32(4, 1, true);
+mv.setInt32(8, vertices.length, true);
+mv.setInt32(12, 0, true);
+vertexMaterial.forEach((m, i) => mv.setUint16(16 + i * 2, m, true));
+
+// Library previews: a small oblique drawing of each type's boxes (PNG, transparent background)
+function preview(boxes) {
+  const size = 128, px = new Uint8Array(size * size * 4);
+  const corners = boxes.flatMap(([a, b]) => [a, b]);
+  const project = ([x, y, z]) => [x + y * 0.45, z + y * 0.35];
+  const pts = corners.flatMap(([x0, y0, z0]) => [project([x0, y0, z0])]);
+  for (const [a, b] of boxes) { pts.push(project(b), project([a[0], b[1], a[2]]), project([b[0], a[1], b[2]])); }
+  const minX = Math.min(...pts.map(p => p[0])), maxX = Math.max(...pts.map(p => p[0])), minY = Math.min(...pts.map(p => p[1])), maxY = Math.max(...pts.map(p => p[1]));
+  const scale = 0.8 * size / Math.max(maxX - minX, maxY - minY, 0.01);
+  const ox = (size - (maxX - minX) * scale) / 2, oy = (size - (maxY - minY) * scale) / 2;
+  const fill = (poly, rgb) => {
+    const sp = poly.map(p => [ox + (p[0] - minX) * scale, size - (oy + (p[1] - minY) * scale)]);
+    for (let y = 0; y < size; y++) {
+      for (let x = 0; x < size; x++) {
+        let inside = false;
+        for (let i = 0, j = sp.length - 1; i < sp.length; j = i++) {
+          const [ax, ay] = sp[i], [bx, by] = sp[j];
+          if ((ay > y + 0.5) !== (by > y + 0.5) && x + 0.5 < (bx - ax) * (y + 0.5 - ay) / (by - ay) + ax) { inside = !inside; }
+        }
+        if (inside) { px.set([rgb[0], rgb[1], rgb[2], 255], (y * size + x) * 4); }
+      }
+    }
+  };
+  const shade = (c, f) => c.slice(0, 3).map(v => Math.min(255, Math.round(v * f)));
+  // Back to front: furthest (largest y), then lowest
+  for (const [a, b, c] of [...boxes].sort((p, q) => q[0][1] - p[0][1] || p[0][2] - q[0][2])) {
+    const [x0, y0, z0] = a, [x1, y1, z1] = b;
+    fill([[x0, y0, z0], [x1, y0, z0], [x1, y0, z1], [x0, y0, z1]].map(project), shade(c, 0.85));        // front
+    fill([[x1, y0, z0], [x1, y1, z0], [x1, y1, z1], [x1, y0, z1]].map(project), shade(c, 0.65));        // side
+    fill([[x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1]].map(project), shade(c, 1.05));        // top
+  }
+  const raw = Buffer.alloc(size * (size * 4 + 1));
+  for (let y = 0; y < size; y++) { raw[y * (size * 4 + 1)] = 0; Buffer.from(px.buffer, y * size * 4, size * 4).copy(raw, y * (size * 4 + 1) + 1); }
+  const chunk = (type, data) => {
+    const b = Buffer.alloc(12 + data.length);
+    b.writeUInt32BE(data.length, 0); b.write(type, 4, 'latin1'); data.copy(b, 8);
+    b.writeUInt32BE(crc32(Buffer.concat([Buffer.from(type, 'latin1'), data])), 8 + data.length);
+    return b;
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(size, 0); ihdr.writeUInt32BE(size, 4); ihdr[8] = 8; ihdr[9] = 6;
+  return Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk('IHDR', ihdr), chunk('IDAT', deflateSync(raw, { level: 9 })), chunk('IEND', Buffer.alloc(0))]);
+}
+const library = {
+  version: 1, vertexStart: templateVertexStart,
+  entries: libraryEntries.map(({ boxes: _boxes, ...entry }) => entry)
+};
+const previews = libraryEntries.map(e => [e.preview, preview(e.boxes)]);
+
 const json = (v, indent) => JSON.stringify(v, null, indent ? 2 : 0);
 mkdirSync(dirname(OUT), { recursive: true });
 writeFileSync(OUT, zip([
   ['manifest.json', json(manifest, true)], ['model.json', json(model, true)], ['elements.json', json(elementsJson)],
   ['parameters.json', json(parameters)], ['geometry.bin', geometry], ['comments.json', json(comments, true)],
   ['journal.json', json({ entries: [] }, true)], ['bookmarks.json', json(bookmarks, true)], ['sun.json', json(sun, true)],
-  ['lighting.json', json(lighting)]
+  ['lighting.json', json(lighting)], ['materials.json', json(materials)], ['material.bin', materialBin], ['library.json', json(library)],
+  ...previews
 ]));
-console.log(`Wrote ${OUT}: ${elements.length} elements, ${indices.length / 3} triangles, ${lights.length} lights.`);
+console.log(`Wrote ${OUT}: ${elements.length} elements (${libraryEntries.length} library types), ${indices.length / 3} triangles, ${lights.length} lights, ${MATERIALS.length} materials.`);
