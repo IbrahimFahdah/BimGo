@@ -55,6 +55,7 @@ export class SceneBatches {
       for (let e = 0; e < elements.length; e++) {
         const record = elements[e];
         if ((transparent ? record.transparentCount : record.opaqueCount) === 0) { continue; }
+        if (record.isLibraryTemplate) { continue; } // never drawn statically (see below)
         const g = SceneBatches.groupOf(record);
         if (g < 0 || g >= groupCount) { continue; }
         buckets[g].push(e);
@@ -125,6 +126,22 @@ export class SceneBatches {
         this.batches.push(batch);
       }
     }
+
+    // Family library templates: their indices go after every batch, in no chunk, so they are never drawn as part of
+    // the scene (shadows, minimap and probe captures included) but clones of them can be (the dynamic draw copies an
+    // element's range from here)
+    elements.forEach((record, e) => {
+      if (!record.isLibraryTemplate) { return; }
+      const r = e * 4;
+      this.ranges[r] = write;
+      this.ranges[r + 1] = record.opaqueCount;
+      indices.set(source.subarray(record.opaqueStart, record.opaqueStart + record.opaqueCount), write);
+      write += record.opaqueCount;
+      this.ranges[r + 2] = write;
+      this.ranges[r + 3] = record.transparentCount;
+      indices.set(source.subarray(record.transparentStart, record.transparentStart + record.transparentCount), write);
+      write += record.transparentCount;
+    });
 
     this.indices = indices;
     this.chunkBounds = Float32Array.from(bounds);

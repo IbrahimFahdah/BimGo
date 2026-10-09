@@ -32,8 +32,16 @@ export class ViewerSettings {
   bloomIntensity = 1;
   /** Realistic: Revit's tint (multiply) on. */
   revitTint = true;
-  /** Realistic: sky reflections on glass. */
+  /** Realistic: reflections on glass, mirrors, shiny surfaces and water. */
   reflections = true;
+  /** Lowest reflection tier that reflects (%): 50 = shiny things only ("Some"), 25 = also satin surfaces ("All"). */
+  reflectionThreshold = 50;
+  /** Reflection strength multiplier (0.5–2). */
+  reflectionStrength = 1;
+  /** Reflections read reflection probes (captures of the rooms around reflective surfaces); false = the sky only. */
+  reflectionProbes = true;
+  /** Probe face size in px: 128 (default) or 256 ("Probes HQ"). */
+  probeResolution = 128;
   /** Realistic: CC0 proxies for missing images. */
   proxyMissing = true;
   /** Realistic: proxies take the material's colour. */
@@ -61,9 +69,12 @@ export class ViewerSettings {
     if (typeof raw.lightMode === 'number' && raw.lightMode >= 0 && raw.lightMode <= 2) { s.lightMode = raw.lightMode; }
     if (typeof raw.lightIntensity === 'number') { s.lightIntensity = clamp(raw.lightIntensity, 0, 2); }
     if (typeof raw.bloomIntensity === 'number') { s.bloomIntensity = clamp(raw.bloomIntensity, 0, 2); }
-    for (const key of ['revitTint', 'reflections', 'proxyMissing', 'proxyMaterialColour'] as const) {
+    for (const key of ['revitTint', 'reflections', 'reflectionProbes', 'proxyMissing', 'proxyMaterialColour'] as const) {
       if (typeof raw[key] === 'boolean') { s[key] = raw[key] as boolean; }
     }
+    if (typeof raw.reflectionThreshold === 'number') { s.reflectionThreshold = raw.reflectionThreshold <= 37 ? 25 : 50; }
+    if (typeof raw.reflectionStrength === 'number' && Number.isFinite(raw.reflectionStrength)) { s.reflectionStrength = clamp(raw.reflectionStrength, 0.5, 2); }
+    if (typeof raw.probeResolution === 'number') { s.probeResolution = raw.probeResolution >= 192 ? 256 : 128; }
     return s;
   }
 
@@ -83,6 +94,10 @@ export class ViewerSettings {
       bloomIntensity: this.bloomIntensity,
       revitTint: this.revitTint,
       reflections: this.reflections,
+      reflectionThreshold: this.reflectionThreshold,
+      reflectionStrength: this.reflectionStrength,
+      reflectionProbes: this.reflectionProbes,
+      probeResolution: this.probeResolution,
       proxyMissing: this.proxyMissing,
       proxyMaterialColour: this.proxyMaterialColour
     });

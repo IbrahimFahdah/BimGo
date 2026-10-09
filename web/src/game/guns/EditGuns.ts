@@ -96,7 +96,7 @@ export class HammerGun extends Gun {
     if (hit.link > 0) {
       this.unprime(target);
       this.host.sound.play(SoundId.Error);
-      this.host.toast(`${hit.moveBlockReason ?? 'In a linked model'}: edit it in its own model.`, 3.5);
+      this.host.toast(`${hit.moveBlockReason ?? 'In a linked model'}: edit it in its own model.`, 3.5, true);
       return;
     }
 
@@ -105,7 +105,7 @@ export class HammerGun extends Gun {
     if (blocked) {
       this.unprime(target);
       this.host.sound.play(SoundId.Error);
-      this.host.toast(`${blocked}, so it can't be demolished. Press T to delete it instead.`, 3.5);
+      this.host.toast(`${blocked}, so it can't be demolished. Press T to delete it instead.`, 3.5, true);
       return;
     }
 
@@ -178,7 +178,7 @@ export class HammerGun extends Gun {
     // Refused: restore
     if (instance) { instance.hidden = false; } else { host.setStaticHidden(target.element, false); }
     host.sound.play(SoundId.Error);
-    host.toast(`${host.editTargetName} refused (${result.message}). ${record.name} restored.`, 4);
+    host.toast(`${host.editTargetName} refused (${result.message}). ${record.name} restored.`, 4, true);
   }
 
   override collectHighlights(highlights: Highlight[]): void {
@@ -528,7 +528,7 @@ export class GizmoGun extends Gun {
     const record = host.scene.elements[aim.hit.element];
     if (!record.movable) {
       host.sound.play(SoundId.Error);
-      host.toast(`Can't move ${record.name}: ${record.moveBlockReason}`);
+      host.toast(`Can't move ${record.name}: ${record.moveBlockReason}`, 2.6, true);
       return;
     }
     const instance = aim.hit.dynamicId > 0 ? host.dynamics.find(aim.hit.dynamicId) : host.makeDynamic(aim.hit.element);
@@ -578,7 +578,7 @@ export class GizmoGun extends Gun {
       host.dynamics.setTransform(instance, V.sub(instance.offset, delta), instance.angle - angle);
       host.restoreIfUnmoved(instance);
       host.sound.play(SoundId.Error);
-      host.toast(`${host.editTargetName} refused the move (${result.message}). Restored.`, 4);
+      host.toast(`${host.editTargetName} refused the move (${result.message}). Restored.`, 4, true);
     });
     if (!sent) { host.toast(`${record.name} moved in the walkthrough only (not connected to Revit)`); }
   }
@@ -647,7 +647,7 @@ export class CloneGun extends Gun {
     const record = host.scene.elements[aim.hit.element];
     if (!record.movable) {
       host.sound.play(SoundId.Error);
-      host.toast(`Can't clone ${record.name}: ${record.moveBlockReason}`);
+      host.toast(`Can't clone ${record.name}: ${record.moveBlockReason}`, 2.6, true);
       return;
     }
     // Clone from whatever was hit: the static element, a moved original or another clone
@@ -701,7 +701,7 @@ export class CloneGun extends Gun {
       }
       host.dynamics.remove(clone);
       host.sound.play(SoundId.Error);
-      host.toast(`${host.editTargetName} refused the copy (${result.message}). Clone removed.`, 4);
+      host.toast(`${host.editTargetName} refused the copy (${result.message}). Clone removed.`, 4, true);
     });
     if (!sent) { host.toast(`Clone of ${record.name} kept in the walkthrough only (not connected to Revit)`); }
   }

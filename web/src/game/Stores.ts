@@ -1,5 +1,6 @@
 import {
-  type BookmarkDocument, type BookmarkRecord, type CommentDocument, type CommentRecord, currentUser, type SunTime
+  type BookmarkDocument, type BookmarkRecord, cleanComment, type CommentDocument, CommentPriority, type CommentRecord, type CommentReply,
+  CommentStatus, currentUser, type SunTime
 } from '../core/format/DocumentModels';
 import { newId } from '../core/format/Json';
 import { type Vec3, vec3 } from '../core/math/Vector';
@@ -55,6 +56,14 @@ export class CommentStore {
       level: level ?? '',
       edited: null,
       editedBy: null,
+      status: CommentStatus.OPEN,
+      assignedTo: null,
+      priority: CommentPriority.NORMAL,
+      updated: null,
+      updatedBy: null,
+      replies: null,
+      view: null,
+      thumbnail: null,
       local: vec3(),
       header: ''
     };
@@ -62,6 +71,75 @@ export class CommentStore {
     this.comments.push(record);
     this.save();
     return record;
+  }
+
+  /**
+   * Sets a comment's status, priority and / or assignee (undefined leaves a field alone; an empty assignee clears
+   * it), recording who and when.
+   * @returns False if the comment is not in this store or nothing changed.
+   */
+  setIssue(record: CommentRecord, change: { status?: string; priority?: string; assignedTo?: string }): boolean {
+    if (!this.comments.includes(record)) { return false; }
+    let changed = false;
+    if (change.status !== undefined && CommentStatus.normalise(change.status) !== record.status) {
+      record.status = CommentStatus.normalise(change.status);
+      changed = true;
+    }
+    if (change.priority !== undefined && CommentPriority.normalise(change.priority) !== record.priority) {
+      record.priority = CommentPriority.normalise(change.priority);
+      changed = true;
+    }
+    if (change.assignedTo !== undefined) {
+      const assignee = change.assignedTo.trim() || null;
+      if (assignee !== record.assignedTo) {
+        record.assignedTo = assignee;
+        changed = true;
+      }
+    }
+    if (!changed) { return false; }
+    record.updated = new Date().toISOString();
+    record.updatedBy = currentUser;
+    this.save();
+    return true;
+  }
+
+  /** Adds a reply to a comment's thread; null for an unknown comment or empty text. */
+  addReply(record: CommentRecord, text: string): CommentReply | null {
+    if (!this.comments.includes(record) || !text.trim()) { return null; }
+    const reply: CommentReply = { id: newId(), author: currentUser, created: new Date().toISOString(), text: text.trim() };
+    (record.replies ??= []).push(reply);
+    this.save();
+    return reply;
+  }
+
+  removeReply(record: CommentRecord, reply: CommentReply): void {
+    const i = record.replies?.indexOf(reply) ?? -1;
+    if (i < 0) { return; }
+    record.replies!.splice(i, 1);
+    if (record.replies!.length === 0) { record.replies = null; }
+    this.save();
+  }
+
+  /** Sets the viewpoint a comment is seen from (scene-local feet; stored in Revit internal metres). */
+  setView(record: CommentRecord, localFeet: Vec3, yaw: number, pitch: number, flying: boolean): void {
+    record.view = {
+      x: round4(localFeet.x + this.origin.x), y: round4(localFeet.y + this.origin.y), z: round4(localFeet.z + this.origin.z),
+      yaw, pitch, flying
+    };
+    if (this.comments.includes(record)) { this.save(); }
+  }
+
+  /** The scene-local feet of a comment's saved view, or null when it has none. */
+  viewFeet(record: CommentRecord): Vec3 | null {
+    const v = record.view;
+    return v ? vec3(v.x - this.origin.x, v.y - this.origin.y, v.z - this.origin.z) : null;
+  }
+
+  /** Stores a comment's thumbnail (base64 JPEG). */
+  setThumbnail(record: CommentRecord, data: string): void {
+    if (!data) { return; }
+    record.thumbnail = data;
+    if (this.comments.includes(record)) { this.save(); }
   }
 
   update(record: CommentRecord, text: string): boolean {
@@ -96,17 +174,22 @@ export class CommentStore {
 
   /** The comments as CSV (UTF-8 with BOM, like the desktop export). */
   exportCsv(): Blob {
-    const lines = ['Id,Author,Created,Edited,Edited by,Level,Element id,X (m),Y (m),Z (m),Text'];
+    const lines = ['Id,Author,Created,Edited,Edited by,Status,Priority,Assigned to,Replies,Last reply,Level,Element id,X (m),Y (m),Z (m),Text,Thread'];
     for (const r of this.comments) {
+      const replies = r.replies ?? [];
+      const thread = replies.map(reply => `${reply.author} (${csvDate(reply.created)}): ${reply.text}`).join('\n');
       lines.push([
-        r.id, csv(r.author), csvDate(r.created), r.edited ? csvDate(r.edited) : '', csv(r.editedBy ?? ''), csv(r.level),
-        r.elementId > 0 ? String(r.elementId) : '', fixed3(r.x), fixed3(r.y), fixed3(r.z), csv(r.text)
+        r.id, csv(r.author), csvDate(r.created), r.edited ? csvDate(r.edited) : '', csv(r.editedBy ?? ''),
+        CommentStatus.label(r.status), CommentPriority.label(r.priority), csv(r.assignedTo ?? ''), String(replies.length),
+        replies.length > 0 ? csvDate(replies[replies.length - 1].created) : '', csv(r.level),
+        r.elementId > 0 ? String(r.elementId) : '', fixed3(r.x), fixed3(r.y), fixed3(r.z), csv(r.text), csv(thread)
       ].join(','));
     }
     return new Blob(['﻿' + lines.join('\r\n') + '\r\n'], { type: 'text/csv;charset=utf-8' });
   }
 
   private prepare(record: CommentRecord): void {
+    cleanComment(record);
     record.local = vec3(record.x - this.origin.x, record.y - this.origin.y, record.z - this.origin.z);
     record.header = `COMMENT · ${record.author.toUpperCase()} · ${shortDate(record.created)}${record.edited ? ' · EDITED' : ''}`;
   }

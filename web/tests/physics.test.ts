@@ -1,3 +1,4 @@
+import { EMPTY_LIBRARY } from '../src/core/scene/FamilyLibrary';
 import { existsSync, openAsBlob } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -91,13 +92,13 @@ function floorScene(): SceneData {
     elementId: 1, uniqueId: 'floor', hostId: 0, name: 'Floor', categoryName: 'Floors', familyType: '', levelName: '', categoryIndex: 1,
     opaqueStart: 0, opaqueCount: 6, transparentStart: 0, transparentCount: 0,
     bounds: new Aabb(vec3(-10, -10, 0), vec3(10, 10, 0)), isProxy: false, movable: false, moveBlockReason: null, pivot: vec3(),
-    phase: PhaseRole.Existing, link: 0
+    phase: PhaseRole.Existing, link: 0, isLibraryTemplate: false
   };
   return {
     geometry: new SceneGeometry(bytes, Uint32Array.of(0, 1, 2, 0, 2, 3)),
     elements: [element], levels: [], rooms: [], phaseId: -1, phaseName: null, existingPhaseId: -1, existingPhaseName: null, phaseNote: null,
     spawn: null, bounds: element.bounds, originOffset: vec3(), modelTitle: 'Floor', commentsPath: null,
-    provenance: {} as SceneData['provenance'], site: {} as SceneData['site'], links: [], lighting: EMPTY_LIGHTING, materials: EMPTY_MATERIALS,
+    provenance: {} as SceneData['provenance'], site: {} as SceneData['site'], links: [], lighting: EMPTY_LIGHTING, materials: EMPTY_MATERIALS, library: EMPTY_LIBRARY,
     parameters: ParameterTable.empty, categoryLoaded: [], categoryElementCounts: [], sourceView: null, proxyCount: 0, skippedCount: 0, extractionSeconds: 0
   };
 }

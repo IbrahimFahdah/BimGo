@@ -34,6 +34,11 @@ export const UiTheme = {
   COMMENT: Rgba.hex(0xa78bfa),
   COMMENT_LABEL: Rgba.hex(0xc4b5fd),
 
+  /** Comment status colours: open (the comment colour), in progress (amber), closed (green). */
+  STATUS_OPEN: Rgba.hex(0xa78bfa),
+  STATUS_PROGRESS: Rgba.hex(0xfbbf24),
+  STATUS_CLOSED: Rgba.hex(0x4ade80),
+
   SUN: Rgba.hex(0xfbbf24),
   SUN_LABEL: Rgba.hex(0xfde68a),
 
@@ -56,6 +61,9 @@ export const UiTheme = {
   CLONE: Rgba.hex(0xa3e635),
   CLONE_LABEL: Rgba.hex(0xbef264),
 
+  PLACE: Rgba.hex(0xfbbf24),
+  PLACE_LABEL: Rgba.hex(0xfcd34d),
+
   AXIS_X: Rgba.hex(0xf87171),
   AXIS_Y: Rgba.hex(0x4ade80),
   AXIS_Z: Rgba.hex(0x60a5fa),
@@ -67,3 +75,8 @@ export const UiTheme = {
   CONTROL: Rgba.hex(0x0f1216),
   CONTROL_BORDER: Rgba.hex(0xffffff, 0.2)
 } as const;
+
+/** The colour of a comment status (port of UiTheme.StatusColour). */
+export function statusColour(status: string): number {
+  return status === 'inProgress' ? UiTheme.STATUS_PROGRESS : status === 'closed' ? UiTheme.STATUS_CLOSED : UiTheme.STATUS_OPEN;
+}

@@ -12,7 +12,11 @@ export class MaterialTextures {
   static readonly TABLE_UNIT = 6;
   static readonly BUCKET_UNIT = 7;
   static readonly BUCKETS = [256, 512, 1024, 2048];
-  private static readonly TEXELS = 5;
+  /** Texels per material: t0 colour, fade · t1 image tint, glass reflectivity · t2 scale / offset · t3 angle, bucket, layer ·
+   * t4 appearance tint, flags · t5 shine, roughness, flags (1 metal, 2 water), ripple strength. */
+  private static readonly TEXELS = 6;
+  private static readonly FLAG_METALLIC = 1;
+  private static readonly FLAG_WATER = 2;
   private static readonly PROXY_CAP = 512;
   private static readonly FLAG_INVERT = 1;
   private static readonly FLAG_PROXY = 2;
@@ -27,6 +31,10 @@ export class MaterialTextures {
   materialCount = 0;
   imageCount = 0;
   proxyCount = 0;
+  /** Materials with an opaque reflection strength (shine > 0) in the table. */
+  shinyCount = 0;
+  /** Water materials in the table. */
+  waterCount = 0;
   gpuBytes = 0;
 
   get ready(): boolean { return this.table !== null; }
@@ -119,7 +127,7 @@ export class MaterialTextures {
         return 'Not enough graphics memory for the textures: Realistic mode shows colours only.';
       }
       const buckets = MaterialTextures.BUCKETS.map((s, b) => [s, pending[b].length]).filter(([, n]) => n > 0).map(([s, n]) => `${n}×${s}²`).join(', ');
-      console.info(`Materials: ${this.materialCount} in the table (${this.proxyCount} on proxies), ${this.imageCount} images in ${buckets || 'none'}, ≈ ${Math.round(this.gpuBytes / 1048576)} MB.`);
+      console.info(`Materials: ${this.materialCount} in the table (${this.proxyCount} on proxies, ${this.shinyCount} shiny, ${this.waterCount} water), ${this.imageCount} images in ${buckets || 'none'}, ≈ ${Math.round(this.gpuBytes / 1048576)} MB.`);
       return warning;
     } catch (e) {
       console.warn('Material textures failed:', e);
@@ -146,6 +154,8 @@ export class MaterialTextures {
     const count = materials.length, T = MaterialTextures.TEXELS;
     const data = new Float32Array(count * T * 4);
     this.proxyCount = 0;
+    this.shinyCount = 0;
+    this.waterCount = 0;
     const put = (offset: number, rgb: Vec3, w: number) => { data[offset] = rgb.x; data[offset + 1] = rgb.y; data[offset + 2] = rgb.z; data[offset + 3] = w; };
 
     materials.forEach((m, i) => {
@@ -185,6 +195,14 @@ export class MaterialTextures {
       data[o + 14] = bucket;
       data[o + 15] = layer;
       put(o + 16, m.assetTint ?? vec3(1, 1, 1), proxy ? MaterialTextures.FLAG_PROXY : m.invert ? MaterialTextures.FLAG_INVERT : 0);
+
+      // Reflections: raw strength and blur; tiers and threshold in the shader
+      data[o + 20] = m.shine;
+      data[o + 21] = m.roughness ?? 1;
+      data[o + 22] = (m.metallic ? MaterialTextures.FLAG_METALLIC : 0) + (m.water ? MaterialTextures.FLAG_WATER : 0);
+      data[o + 23] = m.water ? (m.waterBump > 0 ? m.waterBump : 0.1) : 0;
+      if (m.shine > 0) { this.shinyCount++; }
+      if (m.water) { this.waterCount++; }
     });
 
     this.table = gl.createTexture();

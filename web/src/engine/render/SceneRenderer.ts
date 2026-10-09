@@ -17,6 +17,7 @@ import type { MaterialData } from '../../core/scene/MaterialData';
 import type { SceneBatches } from './SceneBatches';
 import { ScreenEffects } from './ScreenEffects';
 import { ShadowMaps, type ShadowPreset } from './ShadowMaps';
+import { ReflectionProbes } from './ReflectionProbes';
 import { NO_SUN, type SunLighting } from './SunLighting';
 
 /** Per-draw settings of the scene pass (port of SceneDrawParams). */
@@ -31,8 +32,18 @@ export interface SceneDrawParams {
   fogDensity: number;
   sun: boolean;
   realistic: boolean;
-  /** Realistic: sky reflections on glass. */
+  /** Realistic: reflections on glass, mirrors, shiny surfaces and water. */
   reflections?: boolean;
+  /** Lowest reflection tier that reflects, 0.25 or 0.5 (glass and water always reflect). */
+  reflectThreshold?: number;
+  /** Reflection strength multiplier (0.5–2). */
+  reflectGain?: number;
+  /** Debug colours instead of the material: 0 off, 1 reflection tiers, 2 reflection probe cells. */
+  reflectDebug?: number;
+  /** Reflect the reflection probes where they exist (else the sky). */
+  probes?: boolean;
+  /** Seconds since the session started (water ripples). */
+  time?: number;
   /** Realistic: 0 = Revit tint off, 1 = multiply. */
   tintMode?: number;
 }
@@ -41,10 +52,16 @@ type Uniforms = Record<string, WebGLUniformLocation | null>;
 
 /**
  * Texture units, as on the desktop: sun shadows 1–2, AO 3, glow 4, light shadows 5, material table 6, image arrays
- * 7–10. Every sampler a program declares gets its unit once at link time and always has a valid texture bound, so
- * WebGL never sees two sampler types on one unit or an incomplete sampler (both INVALID_OPERATION at draw time).
+ * 7–10, reflection probes 11–13. Every sampler a program declares gets its unit once at link time and always has a
+ * valid texture bound, so WebGL never sees two sampler types on one unit or an incomplete sampler (both
+ * INVALID_OPERATION at draw time).
  */
-const UNIT = { shadowMap: 1, transmit: 2, aoMap: 3, lightShadowMap: 5, materialTable: 6, tex0: 7 } as const;
+const UNIT = {
+  shadowMap: 1, transmit: 2, aoMap: 3, lightShadowMap: 5, materialTable: 6, tex0: 7,
+  probeArray: ReflectionProbes.ARRAY_UNIT, probeGrid: ReflectionProbes.GRID_UNIT, probeData: ReflectionProbes.DATA_UNIT
+} as const;
+const PROBE_UNIFORMS = ['uReflectThreshold', 'uReflectGain', 'uReflectDebug', 'uTime', 'uProbesOn', 'uProbeGridOrigin', 'uProbeGridCell',
+  'uProbeGridSize', 'uProbeMaxLod'];
 
 const LIGHT_UNIFORMS = ['uSun', 'uSunDir', 'uSunColor', 'uSkyColor', 'uShadowStrength', 'uShadowsOn', 'uTransmitOn', 'uCamForward',
   'uCascadeCount', 'uCascadeFar', 'uNormalOffset', 'uShadowTexel', 'uPcf', 'uShadowFar', 'uShadowMat'];
@@ -84,6 +101,7 @@ export class SceneRenderer {
   private emissiveVbo: WebGLBuffer | null = null;
   private placeholders: WebGLTexture[] = [];
   private depthPlaceholder: WebGLTexture | null = null;
+  private colour2dPlaceholder: WebGLTexture | null = null;
   private batches!: SceneBatches;
   private multiDraw: WEBGL_multi_draw | null = null;
   private drawCounts = new Int32Array(1);
@@ -128,6 +146,14 @@ export class SceneRenderer {
   /** Proxy suggestions for missing images (the "Proxy textures for missing images" setting). */
   autoProxy = true;
 
+  // Reflection probes (Realistic mode, reflections set to probes)
+  readonly probes = new ReflectionProbes();
+  private readonly probeFaces: [number, number][] = [];
+  private sceneData: SceneData | null = null;
+  private probesActive = false;
+  private probeErrorReported = false;
+  private colourArrayPlaceholder: WebGLTexture | null = null;
+
   /** This frame's sun and sky (set by the session before UpdateShadows). */
   lighting: SunLighting = NO_SUN;
 
@@ -143,6 +169,7 @@ export class SceneRenderer {
   /** Creates programs and uploads the static scene. */
   initialise(scene: SceneData, batches: SceneBatches): void {
     this.batches = batches;
+    this.sceneData = scene;
     this.multiDraw = gl.getExtension('WEBGL_multi_draw');
 
     this.sceneProgram = ShaderProgram.create('scene', SCENE_VS, SCENE_FS);
@@ -154,7 +181,8 @@ export class SceneRenderer {
     this.groundGeometryProgram = ShaderProgram.create('ao ground geometry', GROUND_VS, GEOMETRY_GROUND_FS);
 
     this.scene = locations(this.sceneProgram, ['uViewProj', 'uModel', 'uEye', 'uLightDir', 'uFogColor', 'uFogDensity', 'uWhitecard',
-      'uPlan', 'uClipZ', 'uOverride', 'uRealistic', 'uReflections', 'uTintMode', 'uSkyZenith', 'uSkyHorizon', ...LIGHT_UNIFORMS, ...AO_UNIFORMS, ...ARTIFICIAL_UNIFORMS]);
+      'uPlan', 'uClipZ', 'uOverride', 'uRealistic', 'uReflections', 'uTintMode', 'uSkyZenith', 'uSkyHorizon', ...PROBE_UNIFORMS, ...LIGHT_UNIFORMS,
+      ...AO_UNIFORMS, ...ARTIFICIAL_UNIFORMS]);
     this.sky = locations(this.skyProgram, ['uInvViewProj', 'uEye', 'uSun', 'uSunDir', 'uZenith', 'uHorizon', 'uSunDisc']);
     this.ground = locations(this.groundProgram, ['uViewProj', 'uCenter', 'uHalf', 'uEye', 'uFogColor', ...LIGHT_UNIFORMS, ...AO_UNIFORMS, ...ARTIFICIAL_UNIFORMS]);
     this.depthU = locations(this.shadowDepthProgram, ['uViewProj', 'uModel']);
@@ -228,8 +256,13 @@ export class SceneRenderer {
     for (let i = 0; i < 4; i++) { bind(UNIT.tex0 + i, gl.TEXTURE_2D_ARRAY, colourArray); }
     bind(UNIT.aoMap, gl.TEXTURE_2D, colour2d);
     bind(UNIT.materialTable, gl.TEXTURE_2D, colour2d);
+    bind(UNIT.probeArray, gl.TEXTURE_2D_ARRAY, colourArray);
+    bind(UNIT.probeGrid, gl.TEXTURE_2D_ARRAY, colourArray);
+    bind(UNIT.probeData, gl.TEXTURE_2D, colour2d);
     gl.activeTexture(gl.TEXTURE0);
     this.placeholders = [depthArray, colourArray, colour2d];
+    this.colourArrayPlaceholder = colourArray;
+    this.colour2dPlaceholder = colour2d;
     this.depthPlaceholder = depthArray;
   }
 
@@ -635,6 +668,111 @@ export class SceneRenderer {
     return null;
   }
 
+  /**
+   * Reflection probes for this frame (after the shadow maps, light maps and screen effects, before binding the scene
+   * target): places them and allocates their textures the first time, then captures this frame's few faces. A capture
+   * is the normal scene draw (sky, opaque, moved elements, ground, glass) from the probe, without AO or reflections.
+   * With probes not wanted the textures are freed.
+   * @param wanted Reflections set to probes (or the probe debug colours): keeps the probes allocated.
+   * @param capture They are shown now (Realistic mode): bake this frame's faces.
+   * @returns Null, or (once) why probes can't be shown (the caller switches to sky reflections).
+   */
+  updateReflectionProbes(wanted: boolean, capture: boolean, size: number, eye: Vec3, template: SceneDrawParams, groupVisible: boolean[],
+    groundZ: number): string | null {
+    this.probesActive = false;
+    if (!wanted || !this.hasMaterials || !this.sceneData) {
+      if (this.probes.ready) {
+        this.probes.release();
+        this.bindProbePlaceholders();
+      }
+      return null;
+    }
+    if (!this.probes.ensure(this.sceneData, size)) {
+      const error = this.probes.lastError;
+      if (error === null || this.probeErrorReported) { return null; }
+      this.probeErrorReported = true;
+      this.bindProbePlaceholders();
+      return error;
+    }
+    this.probeErrorReported = false;
+
+    if (!capture) { return null; }
+    this.probes.nextFaces(eye, this.probeFaces);
+    if (this.probeFaces.length > 0) { this.captureProbeFaces(template, groupVisible, groundZ); }
+    this.probes.bind();
+    this.probesActive = this.probes.bakedCount > 0;
+    return null;
+  }
+
+  /** Marks every probe stale (a moment after the sun, lights, colour mode or the model changed). */
+  invalidateProbes(): void {
+    this.probes.invalidate();
+  }
+
+  /** Lets probes try again after a failure (the user switched them on again). */
+  retryProbes(): void {
+    this.probes.clearError();
+    this.probeErrorReported = false;
+  }
+
+  private bindProbePlaceholders(): void {
+    gl.activeTexture(gl.TEXTURE0 + UNIT.probeArray);
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.colourArrayPlaceholder);
+    gl.activeTexture(gl.TEXTURE0 + UNIT.probeGrid);
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.colourArrayPlaceholder);
+    gl.activeTexture(gl.TEXTURE0 + UNIT.probeData);
+    gl.bindTexture(gl.TEXTURE_2D, this.colour2dPlaceholder);
+    gl.activeTexture(gl.TEXTURE0);
+  }
+
+  /** Captures this frame's probe faces with the scene program. */
+  private captureProbeFaces(template: SceneDrawParams, groupVisible: boolean[], groundZ: number): void {
+    this.flushDynamic();
+    const aoWas = this.aoActive;
+    this.aoActive = false;
+    const p: SceneDrawParams = {
+      ...template, reflections: false, probes: false, reflectDebug: 0, plan: false, sun: true, clipZMin: -1e7, clipZMax: 1e7
+    };
+    const clear = this.fogColour;
+    const dynamics = this.dynamics;
+    const hasDynamics = dynamics !== null && dynamics.instances.length > 0;
+
+    for (const [probe, face] of this.probeFaces) {
+      const { matrix, eye, planes } = this.probes.faceMatrix(probe, face);
+      this.probes.beginFace(probe, face, clear, this.colourArrayPlaceholder);
+      this.drawSkyView(Mat4.invert(matrix) ?? Mat4.identity(), eye);
+
+      p.viewProjection = matrix;
+      p.planes = planes;
+      p.eye = eye;
+      gl.enable(gl.DEPTH_TEST);
+      gl.depthFunc(gl.LEQUAL);
+      gl.disable(gl.BLEND);
+      gl.disable(gl.CULL_FACE);
+      gl.depthMask(true);
+
+      this.sceneProgram.use();
+      this.applyUniforms(p, 0, 0, 0, 0, true);
+      this.drawBatches(planes, groupVisible, false, false);
+      if (hasDynamics) { this.drawDynamicInstances(dynamics, planes, false, this.scene.uModel); }
+      this.drawGroundView(matrix, eye, groundZ);
+
+      gl.enable(gl.BLEND);
+      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+      gl.depthMask(false);
+      this.sceneProgram.use();
+      this.applyUniforms(p, 0, 0, 0, 0, false);
+      this.drawBatches(planes, groupVisible, true, false);
+      if (hasDynamics) { this.drawDynamicInstances(dynamics, planes, true, this.scene.uModel); }
+      gl.depthMask(true);
+      gl.disable(gl.BLEND);
+
+      this.probes.endFace(probe, face);
+    }
+    this.aoActive = aoWas;
+    this.probes.endCapture();
+  }
+
   /** Adds this frame's bloom over the frame (after the transparent pass). */
   compositeGlow(): void {
     if (this.glowActive) { this.effects.compositeGlow(this.artificial.bloom); }
@@ -668,12 +806,17 @@ export class SceneRenderer {
 
   /** Draws the gradient sky (no depth). */
   drawSky(camera: FpsCamera): void {
+    this.drawSkyView(camera.inverseViewProjection, camera.position);
+  }
+
+  /** Draws the gradient sky (no depth) for any view (the camera, or a probe face). */
+  private drawSkyView(inverseViewProjection: Matrix4x4, eye: Vec3): void {
     gl.disable(gl.DEPTH_TEST);
     gl.depthMask(false);
     this.skyProgram.use();
     const u = this.sky, l = this.lighting;
-    gl.uniformMatrix4fv(u.uInvViewProj, false, camera.inverseViewProjection);
-    gl.uniform3f(u.uEye, camera.position.x, camera.position.y, camera.position.z);
+    gl.uniformMatrix4fv(u.uInvViewProj, false, inverseViewProjection);
+    gl.uniform3f(u.uEye, eye.x, eye.y, eye.z);
     gl.uniform1i(u.uSun, l.enabled ? 1 : 0);
     gl.uniform3f(u.uSunDir, l.sunDirection.x, l.sunDirection.y, l.sunDirection.z);
     gl.uniform3f(u.uZenith, l.zenith.x, l.zenith.y, l.zenith.z);
@@ -687,12 +830,17 @@ export class SceneRenderer {
 
   /** Draws the infinite-looking ground plane. */
   drawGround(camera: FpsCamera, groundZ: number): void {
+    this.drawGroundView(camera.viewProjection, camera.position, groundZ);
+  }
+
+  /** Draws the ground plane for any view (the camera, or a probe face). */
+  private drawGroundView(viewProjection: Matrix4x4, eye: Vec3, groundZ: number): void {
     this.groundProgram.use();
     const u = this.ground;
-    gl.uniformMatrix4fv(u.uViewProj, false, camera.viewProjection);
-    gl.uniform3f(u.uCenter, camera.position.x, camera.position.y, groundZ);
+    gl.uniformMatrix4fv(u.uViewProj, false, viewProjection);
+    gl.uniform3f(u.uCenter, eye.x, eye.y, groundZ);
     gl.uniform1f(u.uHalf, SceneRenderer.GROUND_HALF);
-    gl.uniform3f(u.uEye, camera.position.x, camera.position.y, camera.position.z);
+    gl.uniform3f(u.uEye, eye.x, eye.y, eye.z);
     const fog = this.fogColour;
     gl.uniform3f(u.uFogColor, fog.x, fog.y, fog.z);
     this.applyLight(u, true, true);
@@ -776,6 +924,19 @@ export class SceneRenderer {
     if (!realistic) { return; }
     this.materials.bind();
     gl.uniform1i(u.uReflections, p.reflections ? 1 : 0);
+    gl.uniform1f(u.uReflectThreshold, p.reflectThreshold && p.reflectThreshold > 0 ? p.reflectThreshold : 0.5);
+    gl.uniform1f(u.uReflectGain, p.reflectGain && p.reflectGain > 0 ? p.reflectGain : 1);
+    gl.uniform1i(u.uReflectDebug, p.reflectDebug ?? 0);
+    gl.uniform1f(u.uTime, p.time ?? 0);
+    const probes = (p.probes === true || p.reflectDebug === 2) && this.probesActive;
+    gl.uniform1i(u.uProbesOn, probes ? 1 : 0);
+    if (probes) {
+      const origin = this.probes.origin, cell = this.probes.cell, size = this.probes.gridSize;
+      gl.uniform3f(u.uProbeGridOrigin, origin.x, origin.y, origin.z);
+      gl.uniform3f(u.uProbeGridCell, cell.x, cell.y, cell.z);
+      gl.uniform3f(u.uProbeGridSize, size.x, size.y, size.z);
+      gl.uniform1f(u.uProbeMaxLod, this.probes.maxLod);
+    }
     gl.uniform1i(u.uTintMode, p.tintMode ?? 1);
     const l = this.lighting;
     const zenith = l.enabled ? l.zenith : SceneRenderer.SKY_ZENITH, horizon = l.enabled ? l.horizon : SceneRenderer.FOG_COLOUR;
@@ -795,6 +956,7 @@ export class SceneRenderer {
     this.shadows.dispose();
     this.effects.dispose();
     this.lightShadows.dispose();
+    this.probes.dispose();
     this.materials.dispose();
     gl.deleteBuffer(this.materialVbo);
     gl.deleteBuffer(this.uvVbo);
@@ -828,6 +990,9 @@ function assignSamplerUnits(program: ShaderProgram): void {
   set('uLightShadowMap', UNIT.lightShadowMap);
   set('uMaterialTable', UNIT.materialTable);
   for (let i = 0; i < 4; i++) { set(`uTex${i}`, UNIT.tex0 + i); }
+  set('uProbeArray', UNIT.probeArray);
+  set('uProbeGrid', UNIT.probeGrid);
+  set('uProbeData', UNIT.probeData);
 }
 
 function setNearest(target: GLenum): void {

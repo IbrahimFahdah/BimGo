@@ -26,7 +26,10 @@ export const BimGoFormat = {
   ENTRY_LIGHTING: 'lighting.json',
   ENTRY_MATERIALS: 'materials.json',
   ENTRY_MATERIAL_STREAMS: 'material.bin',
+  ENTRY_LIBRARY: 'library.json',
   TEXTURE_FOLDER: 'textures/',
+  /** The folder family library previews live under. */
+  LIBRARY_FOLDER: 'library/',
 
   /** "BMAT" little-endian. */
   MATERIAL_MAGIC: 0x54414d42,

@@ -10,6 +10,12 @@ export const Rgba = {
     return (r | (g << 8) | (b << 16) | (a << 24)) >>> 0;
   },
 
+  /** Packs from 0..1 components (clamped). */
+  fromFloat(r: number, g: number, b: number, a = 1): number {
+    const byte = (v: number) => clampByte(Math.floor(v * 255 + 0.5));
+    return (byte(r) | (byte(g) << 8) | (byte(b) << 16) | (byte(a) << 24)) >>> 0;
+  },
+
   /** Replaces the alpha of a packed colour. */
   withAlpha(colour: number, alpha: number): number {
     const a = clampByte(Math.floor(alpha * 255 + 0.5));

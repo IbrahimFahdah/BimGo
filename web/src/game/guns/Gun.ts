@@ -43,7 +43,8 @@ export interface GunHost {
   readonly editPoint: Vec3;
   /** True while a live Revit session is connected. */
   readonly isLiveConnected: boolean;
-  toast(message: string, seconds?: number): void;
+  /** Important toasts (errors) show even while the UI is hidden (U). */
+  toast(message: string, seconds?: number, important?: boolean): void;
   flash(colour: number, seconds: number): void;
   pick(origin: Vec3, direction: Vec3, maxDistance: number): RayHit | null;
   levelNameAt(z: number): string;

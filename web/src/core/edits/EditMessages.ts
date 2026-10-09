@@ -9,7 +9,12 @@ export enum EditOp {
   /** Move and / or rotate about Z. */
   Transform,
   /** Copy, then move / rotate the copy. */
-  Copy
+  Copy,
+  /**
+   * Place a new instance of a family type (the family library) at the pivot, turned by the angle. Additive to
+   * protocol 1: an older add-in can't read it (the viewer times out).
+   */
+  Place
 }
 
 /** An edit sent to the model source (port of EditRequest). Positions in Revit internal coordinates. */
@@ -19,6 +24,11 @@ export interface EditRequest {
   elementId: number;
   targetCloneKey?: number;
   newCloneKey?: number;
+  /** Place: the family type's UniqueId. */
+  typeUniqueId?: string;
+  /** Place: the family type's ElementId value (fallback). */
+  typeId?: number;
+  /** Rotation pivot; for Place, where the new instance's location point goes. */
   pivot?: Vec3;
   translation?: Vec3;
   angle?: number;

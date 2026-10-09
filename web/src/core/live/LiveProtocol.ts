@@ -76,7 +76,7 @@ export interface LaunchInfo {
   token: string;
 }
 
-const OP_NAMES = ['phaseDemolish', 'delete', 'transform', 'copy'];
+const OP_NAMES = ['phaseDemolish', 'delete', 'transform', 'copy', 'place'];
 
 /** EditOp → its JSON name. */
 export function editOpName(op: EditOp): string {
@@ -92,6 +92,8 @@ export function editRequestJson(r: EditRequest): Json {
     elementId: r.elementId,
     targetCloneKey: r.targetCloneKey ?? 0,
     newCloneKey: r.newCloneKey ?? 0,
+    // Place only (an older add-in can't read the op anyway; other ops leave the type out)
+    ...(r.op === EditOp.Place ? { typeUniqueId: r.typeUniqueId ?? null, typeId: r.typeId ?? 0 } : {}),
     pivot: v(r.pivot),
     translation: v(r.translation),
     angle: f(r.angle ?? 0),

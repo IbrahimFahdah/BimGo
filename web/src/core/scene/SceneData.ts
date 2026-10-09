@@ -1,4 +1,5 @@
 import { type Vec2, type Vec3, vec3 } from '../math/Vector';
+import { isLibraryEmpty, type LibraryData } from './FamilyLibrary';
 import type { LightingData } from './LightingData';
 import type { MaterialData } from './MaterialData';
 import type { ModelProvenance, ParameterTable, SiteInfo } from './ModelInfo';
@@ -107,6 +108,11 @@ export interface ElementRecord {
   phase: PhaseRole;
   /** 0 = host model, else 1-based link number. */
   link: number;
+  /**
+   * A family library template: hidden geometry of a family type kept at the tail of the snapshot for the Place gun
+   * to clone. Never drawn, picked or collided as itself; has no ElementId or UniqueId.
+   */
+  isLibraryTemplate: boolean;
 }
 
 export interface RoomInfo {
@@ -118,6 +124,33 @@ export interface RoomInfo {
   bottomZ: number;
   topZ: number;
   link: number;
+}
+
+/** True when a plan point is inside the room (even-odd over all its loops, so islands are holes). */
+export function roomContains(room: RoomInfo, p: Vec2): boolean {
+  if (p.x < room.min.x || p.y < room.min.y || p.x > room.max.x || p.y > room.max.y) { return false; }
+  let inside = false;
+  for (const loop of room.loops) {
+    for (let i = 0, j = loop.length - 1; i < loop.length; j = i++) {
+      const a = loop[i], b = loop[j];
+      if ((a.y > p.y) !== (b.y > p.y) && p.x < (b.x - a.x) * (p.y - a.y) / (b.y - a.y) + a.x) { inside = !inside; }
+    }
+  }
+  return inside;
+}
+
+/** The shortest plan distance from a point to the room's boundary (any loop). */
+export function roomDistanceToBoundary(room: RoomInfo, p: Vec2): number {
+  let best = Number.MAX_VALUE;
+  for (const loop of room.loops) {
+    for (let i = 0, j = loop.length - 1; i < loop.length; j = i++) {
+      const a = loop[j], abx = loop[i].x - a.x, aby = loop[i].y - a.y;
+      const len2 = abx * abx + aby * aby;
+      const t = len2 > 1e-12 ? Math.min(Math.max(((p.x - a.x) * abx + (p.y - a.y) * aby) / len2, 0), 1) : 0;
+      best = Math.min(best, Math.hypot(p.x - (a.x + abx * t), p.y - (a.y + aby * t)));
+    }
+  }
+  return best;
 }
 
 export interface LevelInfo {
@@ -153,6 +186,8 @@ export interface SceneData {
   links: LinkInfo[];
   lighting: LightingData;
   materials: MaterialData;
+  /** The family library: offered types, previews and template geometry (never null). */
+  library: LibraryData;
   parameters: ParameterTable;
   categoryLoaded: boolean[];
   categoryElementCounts: number[];
@@ -165,6 +200,12 @@ export interface SceneData {
 /** The link an element belongs to, or null for the host. */
 export function linkOf(scene: SceneData, record: ElementRecord | null): LinkInfo | null {
   return record && record.link > 0 && record.link <= scene.links.length ? scene.links[record.link - 1] : null;
+}
+
+/** Vertices of the model itself: everything before the library templates (all of them when there is no library). */
+export function modelVertexCount(scene: SceneData): number {
+  const count = scene.geometry.vertexCount;
+  return isLibraryEmpty(scene.library) ? count : Math.min(Math.max(scene.library.vertexStart, 0), count);
 }
 
 /** Triangles in the scene. */

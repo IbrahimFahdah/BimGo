@@ -1,6 +1,7 @@
 import { EditJournal, type JournalEntry } from '../edits/EditJournal';
 import { type Vec2, vec2, vec3 } from '../math/Vector';
 import { CATEGORIES, findCategory, KEY_GENERIC } from '../scene/CategoryCatalog';
+import { EMPTY_LIBRARY, type LibraryData, type LibraryEntry, LibraryPlacement } from '../scene/FamilyLibrary';
 import { EMPTY_LIGHTING, type EmissiveRun, type LightingData, type LightSource } from '../scene/LightingData';
 import type { LinkInfo } from '../scene/LinkInfo';
 import {
@@ -94,6 +95,7 @@ async function readDocument(file: Blob, name: string, progress?: ReadProgress): 
   const visibilityJson = await readJson(zip, BimGoFormat.ENTRY_VISIBILITY, false);
   const lighting = await readJson(zip, BimGoFormat.ENTRY_LIGHTING, false);
   const materials = await readOptionalJson(zip, BimGoFormat.ENTRY_MATERIALS);
+  const libraryJson = await readOptionalJson(zip, BimGoFormat.ENTRY_LIBRARY);
   progress?.step?.(0.1);
   throwIfAborted(signal);
 
@@ -102,6 +104,7 @@ async function readDocument(file: Blob, name: string, progress?: ReadProgress): 
 
   const materialData = await readMaterials(zip, materials, geometry.vertexCount);
   const scene = buildScene(name, manifest, model, elements, parameters, geometry, lighting, materialData);
+  scene.library = await buildLibrary(zip, libraryJson, scene.elements, geometry.vertexCount);
   const entries = arr(obj(journal).entries).map(e => objOrNull(e)).filter((e): e is Json => e !== null).map(readJournalEntry);
 
   console.info(`Read ${name}: ${scene.elements.length} elements, ${geometry.indices.length / 3} triangles, ` +
@@ -153,8 +156,11 @@ function buildScene(name: string, manifest: Json, model: Json, elementsJson: Jso
     const [opaqueStart, opaqueCount] = validRange(dto.opaque, indexCount);
     const [transparentStart, transparentCount] = validRange(dto.transparent, indexCount);
     const movable = bool(dto.movable);
-    counts[category]++;
-    loaded[category] = true;
+    const isLibraryTemplate = dto.library === true;
+    if (!isLibraryTemplate) { // hidden templates aren't part of the model's counts
+      counts[category]++;
+      loaded[category] = true;
+    }
     return {
       elementId: num(dto.id),
       uniqueId: str(dto.uniqueId, ''),
@@ -171,7 +177,8 @@ function buildScene(name: string, manifest: Json, model: Json, elementsJson: Jso
       moveBlockReason: movable ? null : str(dto.moveBlockReason, 'Not movable'),
       pivot: readVector3(dto.pivot),
       phase: parsePhaseRole(dto.phase),
-      link: validLink(dto.link, links.length)
+      link: validLink(dto.link, links.length),
+      isLibraryTemplate
     };
   });
 
@@ -229,7 +236,7 @@ function buildScene(name: string, manifest: Json, model: Json, elementsJson: Jso
   let bounds = new Aabb(readVector3(model.boundsMin), readVector3(model.boundsMax));
   if (!bounds.isValid) {
     bounds = Aabb.empty();
-    for (const record of records) { bounds.include(record.bounds); }
+    for (const record of records) { if (!record.isLibraryTemplate) { bounds.include(record.bounds); } }
     if (!bounds.isValid) { bounds = new Aabb(vec3(-10, -10, 0), vec3(10, 10, 3)); }
   }
 
@@ -254,6 +261,7 @@ function buildScene(name: string, manifest: Json, model: Json, elementsJson: Jso
     links,
     lighting: buildLighting(lightingJson, vertexCount, records.length),
     materials,
+    library: EMPTY_LIBRARY,
     parameters: buildParameters(parametersJson, records.length),
     categoryLoaded: loaded,
     categoryElementCounts: counts,
@@ -262,6 +270,60 @@ function buildScene(name: string, manifest: Json, model: Json, elementsJson: Jso
     skippedCount: int(extraction.skippedCount),
     extractionSeconds: Math.max(0, num(extraction.extractionSeconds))
   };
+}
+
+/**
+ * The optional family library, validated (port of BuildLibrary): entries with a template must point at a template
+ * element (else they are listed but not placeable), unknown categories are dropped, previews are read once from
+ * library/. A damaged library is dropped, never failing the load.
+ */
+async function buildLibrary(zip: ZipReaderType, dto: Json | null, records: ElementRecord[], vertexCount: number): Promise<LibraryData> {
+  const list = arr(dto?.entries);
+  if (list.length === 0) { return EMPTY_LIBRARY; }
+  try {
+    const entries: LibraryEntry[] = [];
+    const previews = new Map<string, Uint8Array>();
+    let anyTemplate = false;
+    for (const raw of list) {
+      const j = objOrNull(raw);
+      if (!j || isBlank(str(j.typeUniqueId, null))) { continue; }
+      const def = findCategory(str(j.category, null));
+      if (!def) { continue; }
+      const entry: LibraryEntry = {
+        typeId: num(j.typeId),
+        typeUniqueId: j.typeUniqueId as string,
+        family: str(j.family, ''),
+        type: str(j.type, ''),
+        category: str(j.category, ''),
+        placement: str(j.placement, LibraryPlacement.OTHER),
+        placeable: bool(j.placeable),
+        reason: str(j.reason, null),
+        element: int(j.element, -1),
+        preview: str(j.preview, null),
+        placed: int(j.placed),
+        categoryIndex: def.index
+      };
+      if (entry.element >= 0 && (entry.element >= records.length || !records[entry.element].isLibraryTemplate)) { entry.element = -1; }
+      if (entry.element < 0 && entry.placeable) {
+        entry.placeable = false;
+        entry.reason ??= 'No geometry was captured for this type';
+      }
+      anyTemplate ||= entry.element >= 0;
+
+      if (entry.preview !== null && !previews.has(entry.preview)) {
+        const bytes = entry.preview.startsWith(BimGoFormat.LIBRARY_FOLDER) ? await readBytes(zip, entry.preview) : null;
+        if (bytes) { previews.set(entry.preview, bytes); }
+      }
+      if (entry.preview !== null && !previews.has(entry.preview)) { entry.preview = null; }
+      entries.push(entry);
+    }
+    if (entries.length === 0) { return EMPTY_LIBRARY; }
+    return { entries, previews, vertexStart: anyTemplate ? Math.min(Math.max(int(dto?.vertexStart), 0), vertexCount) : vertexCount };
+  } catch (e) {
+    if (e instanceof DOMException && e.name === 'AbortError') { throw e; }
+    console.info(`Family library ignored (damaged): ${e instanceof Error ? e.message : String(e)}`);
+    return EMPTY_LIBRARY;
+  }
 }
 
 function validLink(link: unknown, linkCount: number): number {
@@ -397,6 +459,8 @@ function readJournalEntry(j: Json): JournalEntry {
     uniqueId: str(j.uniqueId, ''),
     targetCloneKey: int(j.targetCloneKey),
     newCloneKey: int(j.newCloneKey),
+    typeUniqueId: str(j.typeUniqueId, null),
+    typeId: num(j.typeId),
     pivot: readVector3(j.pivot),
     offset: readVector3(j.offset),
     angle: float(j.angle),

@@ -5,10 +5,13 @@ import type { LightingData } from '../scene/LightingData';
 import type { LinkInfo } from '../scene/LinkInfo';
 import { formatTextureState, type MaterialData, type SceneMaterial } from '../scene/MaterialData';
 import type { SiteInfo, SitePoint } from '../scene/ModelInfo';
-import { SCENE_VERTEX_SIZE, type SceneData } from '../scene/SceneData';
+import { modelVertexCount, SCENE_VERTEX_SIZE, type SceneData } from '../scene/SceneData';
+import { isLibraryEmpty, type LibraryEntry } from '../scene/FamilyLibrary';
 import { BimGoFormat, FileKinds, formatPhaseRole } from './BimGoFormat';
 import type { BimGoDocument } from './BimGoReader';
-import type { BookmarkDocument, BookmarkRecord, CommentDocument, SunSettings, SunTime, VisibilitySettings } from './DocumentModels';
+import {
+  type BookmarkDocument, type BookmarkRecord, type CommentDocument, isVisibilityEmpty, type SunSettings, type SunTime, type VisibilitySettings
+} from './DocumentModels';
 import { obj, type Json } from './Json';
 import { ZipWriter } from './ZipWriter';
 
@@ -71,13 +74,14 @@ export async function writeBimGo(document: BimGoDocument, content: SaveContent, 
     await zip.addText(BimGoFormat.ENTRY_BOOKMARKS, json(bookmarkDocument(content.bookmarks), true), signal);
   }
   const v = content.visibility;
-  if (v && (v.hiddenCategories.length > 0 || v.hiddenLinks.length > 0 || v.hiddenElements.length > 0)) {
-    await zip.addText(BimGoFormat.ENTRY_VISIBILITY, json(v, true), signal);
+  if (v && !isVisibilityEmpty(v)) {
+    await zip.addText(BimGoFormat.ENTRY_VISIBILITY, json(visibility(v), true), signal);
   }
   if (content.sun) { await zip.addText(BimGoFormat.ENTRY_SUN, json(sunSettings(content.sun), true), signal); }
   if (scene.lighting.emissive.length > 0 || scene.lighting.lights.length > 0) {
     await zip.addText(BimGoFormat.ENTRY_LIGHTING, json(buildLighting(scene.lighting), false), signal);
   }
+  if (!isLibraryEmpty(scene.library)) { await writeLibrary(zip, scene, json, signal); }
   const materials = content.materials;
   if (materials.materials.length > 0 && materials.vertexMaterial.length === g.vertexCount) {
     await writeMaterials(zip, materials, json, signal);
@@ -191,7 +195,8 @@ function buildElements(scene: SceneData): Json {
       boundsMin: vec(r.bounds.min),
       boundsMax: vec(r.bounds.max),
       opaque: r.opaqueCount > 0 ? [r.opaqueStart, r.opaqueCount] : null,
-      transparent: r.transparentCount > 0 ? [r.transparentStart, r.transparentCount] : null
+      transparent: r.transparentCount > 0 ? [r.transparentStart, r.transparentCount] : null,
+      library: r.isLibraryTemplate ? true : null
     }))
   };
 }
@@ -209,9 +214,40 @@ function commentDocument(d: CommentDocument): Json {
     version: d.version, model: d.model, units: d.units,
     comments: d.comments.map(c => ({
       id: c.id, author: c.author, created: c.created, text: c.text, x: c.x, y: c.y, z: c.z, elementId: c.elementId, level: c.level,
-      edited: c.edited, editedBy: c.editedBy
+      edited: c.edited, editedBy: c.editedBy, status: c.status, assignedTo: c.assignedTo, priority: c.priority, updated: c.updated,
+      updatedBy: c.updatedBy, replies: c.replies?.map(r => ({ id: r.id, author: r.author, created: r.created, text: r.text })) ?? null,
+      view: c.view ? { x: c.view.x, y: c.view.y, z: c.view.z, yaw: f(c.view.yaw), pitch: f(c.view.pitch), flying: c.view.flying } : null,
+      thumbnail: c.thumbnail
     }))
   };
+}
+
+function visibility(v: VisibilitySettings): Json {
+  return {
+    hiddenCategories: v.hiddenCategories, hiddenLinks: v.hiddenLinks, hiddenElements: v.hiddenElements,
+    groundOffset: v.groundOffset === null ? null : f(v.groundOffset)
+  };
+}
+
+function libraryEntry(e: LibraryEntry): Json {
+  return {
+    typeId: e.typeId, typeUniqueId: e.typeUniqueId, family: e.family, type: e.type, category: e.category, placement: e.placement,
+    placeable: e.placeable, reason: e.reason, element: e.element, preview: e.preview, placed: e.placed
+  };
+}
+
+/** library.json (the offered types and the first template vertex) and the preview images under library/ (as is: PNG). */
+async function writeLibrary(zip: ZipWriter, scene: SceneData, json: (v: unknown, indented: boolean) => string, signal?: AbortSignal): Promise<void> {
+  const library = scene.library;
+  await zip.addText(BimGoFormat.ENTRY_LIBRARY, json({ version: 1, vertexStart: modelVertexCount(scene), entries: library.entries.map(libraryEntry) }, false), signal);
+  const written = new Set<string>();
+  for (const entry of library.entries) {
+    const name = entry.preview;
+    if (name === null || written.has(name) || !name.startsWith(BimGoFormat.LIBRARY_FOLDER)) { continue; }
+    written.add(name);
+    const bytes = library.previews.get(name);
+    if (bytes && bytes.length > 0) { await zip.add(name, bytes, false, signal); }
+  }
 }
 
 function sunTime(t: SunTime): Json {
@@ -239,6 +275,7 @@ function bookmarkDocument(d: BookmarkDocument): Json {
 function journalEntry(e: JournalEntry): Json {
   return {
     seq: e.seq, op: e.op, mode: e.mode, elementId: e.elementId, uniqueId: e.uniqueId, targetCloneKey: e.targetCloneKey, newCloneKey: e.newCloneKey,
+    typeUniqueId: e.op === 'place' ? e.typeUniqueId ?? null : null, typeId: e.op === 'place' && e.typeId ? e.typeId : null,
     pivot: vec(e.pivot), offset: vec(e.offset), angle: f(e.angle), label: e.label, utc: e.utc, user: e.user, appliedToRevit: e.appliedToRevit,
     revitElementId: e.revitElementId
   };
@@ -250,7 +287,10 @@ function material(m: SceneMaterial): Json {
     renderColour: m.renderColour ? vec(m.renderColour) : null, assetTint: m.assetTint ? vec(m.assetTint) : null, texture: m.texture,
     textureState: formatTextureState(m.textureState), textureSource: m.textureSource, textureOrigin: m.textureOrigin, proxy: m.proxy,
     invert: m.invert ? true : null, autodesk: m.autodesk, scaleU: f(m.scaleU), scaleV: f(m.scaleV), offsetU: f(m.offsetU),
-    offsetV: f(m.offsetV), angle: f(m.angle), fade: f(m.fade), tint: vec(m.tint), reflectivity: f(m.reflectivity)
+    offsetV: f(m.offsetV), angle: f(m.angle), fade: f(m.fade), tint: vec(m.tint), reflectivity: f(m.reflectivity),
+    // Reflection fields: left out at their defaults (as the desktop's WhenWritingDefault), so older files stay the same
+    shine: m.shine > 0 ? f(m.shine) : null, roughness: m.roughness === null ? null : f(m.roughness), metallic: m.metallic ? true : null,
+    water: m.water ? true : null, waterBump: m.waterBump > 0 ? f(m.waterBump) : null, reflectSource: m.reflectSource
   };
 }
 
@@ -291,7 +331,7 @@ export const SidecarJson = {
   comments: (d: CommentDocument): Json => plain(commentDocument(d)),
   bookmarks: (d: BookmarkDocument): Json => plain(bookmarkDocument(d)),
   sun: (s: SunSettings): Json => plain(sunSettings(s)),
-  visibility: (v: VisibilitySettings): Json => plain(v)
+  visibility: (v: VisibilitySettings): Json => plain(visibility(v))
 };
 
 function plain(value: unknown): Json {

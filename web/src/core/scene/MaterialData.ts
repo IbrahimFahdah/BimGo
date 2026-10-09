@@ -50,7 +50,20 @@ export interface SceneMaterial {
   angle: number;
   fade: number;
   tint: Vec3;
+  /** Glass: Revit's head-on reflectivity (0–1). */
   reflectivity: number;
+  /** Opaque surfaces: reflection strength from the appearance (0–1; rounded to 25 % tiers in the app). 0 = none. */
+  shine: number;
+  /** 0 = mirror sharp, 1 = matt; null = not read (treated as 1). */
+  roughness: number | null;
+  /** A metal: its reflection takes the material's colour. */
+  metallic: boolean;
+  /** Water (Revit Water schema, or a see-through material named "water"): animated ripples. */
+  water: boolean;
+  /** Ripple strength for water (Revit water_bump_amount, 0.1 typical). */
+  waterBump: number;
+  /** Which Revit property the reflection values came from (diagnostics), or null. */
+  reflectSource: string | null;
 }
 
 /** The material table and per-vertex streams of a Realistic-mode export (port of MaterialData). */
@@ -99,6 +112,7 @@ export function cleanMaterial(raw: Record<string, unknown> | null | undefined): 
   const blank = (v: unknown): boolean => typeof v !== 'string' || !v.trim();
   const fin = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
   const positiveOr = (v: unknown, fallback: number): number => (typeof v === 'number' && Number.isFinite(v) && v > 1e-4 ? Math.min(v, 1e4) : fallback);
+  const unit = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? clamp(v, 0, 1) : 0);
   const grey = vec3(0.8, 0.8, 0.8), one = vec3(1, 1, 1);
 
   return {
@@ -124,7 +138,13 @@ export function cleanMaterial(raw: Record<string, unknown> | null | undefined): 
     angle: fin(m.angle) % 360,
     fade: typeof m.fade === 'number' && Number.isFinite(m.fade) ? clamp(m.fade, 0, 1) : 1,
     tint: m.tint == null ? one : clampVec(readVec(m.tint), 0, 4, one),
-    reflectivity: typeof m.reflectivity === 'number' && Number.isFinite(m.reflectivity) ? clamp(m.reflectivity, 0, 1) : 0
+    reflectivity: unit(m.reflectivity),
+    shine: unit(m.shine),
+    roughness: typeof m.roughness === 'number' && Number.isFinite(m.roughness) ? clamp(m.roughness, 0, 1) : null,
+    metallic: m.metallic === true,
+    water: m.water === true,
+    waterBump: unit(m.waterBump),
+    reflectSource: blank(m.reflectSource) ? null : (m.reflectSource as string)
   };
 }
 

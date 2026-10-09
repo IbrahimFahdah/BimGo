@@ -29,7 +29,7 @@ function content(doc: Awaited<ReturnType<typeof BimGoReader.read>>) {
     }]),
     bookmarks: readBookmarkDocument({ bookmarks: [{ id: 'b1', name: 'Door', x: 100, y: 200, z: 0.3, yaw: 1.5, pitch: -0.2, sun: { month: 3, day: 4, minutes: 600 } }] }),
     sun: { version: 1, enabled: true, time: { month: 6, day: 21, minutes: 780, daylightSaving: false }, sunIntensity: 1.2, skyIntensity: 1, shadowIntensity: 0.8, glassTransmission: 1 },
-    visibility: { hiddenCategories: ['walls'], hiddenLinks: [], hiddenElements: [{ link: null, uniqueId: 'u7', id: 7 }] },
+    visibility: { hiddenCategories: ['walls'], hiddenLinks: [], hiddenElements: [{ link: null, uniqueId: 'u7', id: 7 }], groundOffset: 0.35 },
     materials: doc.scene.materials,
     savedBy: 'Ann'
   };
@@ -68,7 +68,7 @@ describe('BimGoWriter', () => {
     expect(back.journal.entries[0].offset).toEqual({ x: 0.25, y: 0, z: 0 });
     expect(back.bookmarks.bookmarks[0]).toMatchObject({ id: 'b1', name: 'Door', sun: { month: 3, day: 4, minutes: 600, daylightSaving: false } });
     expect(back.sun).toMatchObject({ enabled: true, sunIntensity: Math.fround(1.2), shadowIntensity: Math.fround(0.8) });
-    expect(back.visibility).toEqual({ hiddenCategories: ['walls'], hiddenLinks: [], hiddenElements: [{ link: null, uniqueId: 'u7', id: 7 }] });
+    expect(back.visibility).toEqual({ hiddenCategories: ['walls'], hiddenLinks: [], hiddenElements: [{ link: null, uniqueId: 'u7', id: 7 }], groundOffset: Math.fround(0.35) });
   });
 });
 

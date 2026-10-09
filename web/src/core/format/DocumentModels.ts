@@ -1,4 +1,4 @@
-import { clamp, type Vec3, vec3 } from '../math/Vector';
+import { clamp, f32, type Vec3, vec3 } from '../math/Vector';
 import type { SiteInfo } from '../scene/ModelInfo';
 import { arr, bool, float, int, isBlank, type Json, newId, num, objOrNull, str } from './Json';
 
@@ -24,10 +24,99 @@ export interface CommentRecord {
   level: string;
   edited: string | null;
   editedBy: string | null;
+  /** Issue status: one of CommentStatus (absent in older files = open). */
+  status: string;
+  /** Who it is assigned to (free text), or null. */
+  assignedTo: string | null;
+  /** One of CommentPriority (absent = normal). */
+  priority: string;
+  /** When the status, assignee or priority last changed (null = never), and by whom. */
+  updated: string | null;
+  updatedBy: string | null;
+  /** Follow-up replies, oldest first (null = none). */
+  replies: CommentReply[] | null;
+  /** The viewpoint the comment was made from (GO returns there), or null (older comments). */
+  view: CommentView | null;
+  /** A small picture of that view (base64 JPEG, 192 × 108), or null. */
+  thumbnail: string | null;
   /** Runtime only: scene-local position. */
   local: Vec3;
   /** Runtime only: the list header. */
   header: string;
+}
+
+/** One reply in a comment's thread. */
+export interface CommentReply {
+  id: string;
+  author: string;
+  created: string;
+  text: string;
+}
+
+/** Where a comment was made from: the player's feet (Revit internal metres), the view direction and fly state. */
+export interface CommentView {
+  x: number;
+  y: number;
+  z: number;
+  yaw: number;
+  pitch: number;
+  flying: boolean;
+}
+
+/** Comment issue statuses (stored as these strings; port of CommentStatus). */
+export const CommentStatus = {
+  OPEN: 'open',
+  IN_PROGRESS: 'inProgress',
+  CLOSED: 'closed',
+  ALL: ['open', 'inProgress', 'closed'] as readonly string[],
+  /** A known status (case-insensitive), else open. */
+  normalise(status: unknown): string {
+    const s = typeof status === 'string' ? status.trim().toLowerCase() : '';
+    return CommentStatus.ALL.find(v => v.toLowerCase() === s) ?? CommentStatus.OPEN;
+  },
+  label(status: string): string {
+    switch (CommentStatus.normalise(status)) {
+      case CommentStatus.IN_PROGRESS: return 'In progress';
+      case CommentStatus.CLOSED: return 'Closed';
+      default: return 'Open';
+    }
+  }
+};
+
+/** Comment priorities (stored as these strings; port of CommentPriority). */
+export const CommentPriority = {
+  LOW: 'low',
+  NORMAL: 'normal',
+  HIGH: 'high',
+  ALL: ['low', 'normal', 'high'] as readonly string[],
+  /** A known priority (case-insensitive), else normal. */
+  normalise(priority: unknown): string {
+    const p = typeof priority === 'string' ? priority.trim().toLowerCase() : '';
+    return CommentPriority.ALL.find(v => v === p) ?? CommentPriority.NORMAL;
+  },
+  label(priority: string): string {
+    switch (CommentPriority.normalise(priority)) {
+      case CommentPriority.LOW: return 'Low';
+      case CommentPriority.HIGH: return 'High';
+      default: return 'Normal';
+    }
+  }
+};
+
+/**
+ * Normalises a comment's issue fields (port of CommentRecord.Clean): unknown status or priority → open / normal,
+ * blank assignee → null, blank replies dropped (none left → null), a non-finite view dropped.
+ */
+export function cleanComment(c: CommentRecord): CommentRecord {
+  c.status = CommentStatus.normalise(c.status);
+  c.priority = CommentPriority.normalise(c.priority);
+  c.assignedTo = isBlank(c.assignedTo) ? null : c.assignedTo!.trim();
+  c.replies = c.replies?.filter(r => r && !isBlank(r.text)) ?? null;
+  if (c.replies && c.replies.length === 0) { c.replies = null; }
+  const v = c.view;
+  if (v && ![v.x, v.y, v.z, v.yaw, v.pitch].every(Number.isFinite)) { c.view = null; }
+  if (isBlank(c.thumbnail)) { c.thumbnail = null; }
+  return c;
 }
 
 export interface CommentDocument {
@@ -48,9 +137,25 @@ export function readComment(j: Json): CommentRecord {
     level: str(j.level, ''),
     edited: str(j.edited, null),
     editedBy: str(j.editedBy, null),
+    status: str(j.status, CommentStatus.OPEN),
+    assignedTo: str(j.assignedTo, null),
+    priority: str(j.priority, CommentPriority.NORMAL),
+    updated: str(j.updated, null),
+    updatedBy: str(j.updatedBy, null),
+    replies: Array.isArray(j.replies)
+      ? arr(j.replies).map(r => objOrNull(r)).filter((r): r is Json => r !== null).map(r => ({
+        id: str(r.id, newId()), author: str(r.author, currentUser), created: str(r.created, new Date().toISOString()), text: str(r.text, '')
+      }))
+      : null,
+    view: readCommentView(objOrNull(j.view)),
+    thumbnail: str(j.thumbnail, null),
     local: vec3(),
     header: ''
   };
+}
+
+function readCommentView(j: Json | null): CommentView | null {
+  return j ? { x: num(j.x), y: num(j.y), z: num(j.z), yaw: float(j.yaw), pitch: float(j.pitch), flying: bool(j.flying) } : null;
 }
 
 export function emptyComments(): CommentDocument {
@@ -65,7 +170,7 @@ export function readCommentDocument(j: Json | null): CommentDocument {
   doc.model = str(j.model, '');
   doc.units = str(j.units, doc.units);
   doc.comments = arr(j.comments).map(c => objOrNull(c)).filter((c): c is Json => c !== null).map(readComment)
-    .filter(c => !isBlank(c.text));
+    .filter(c => !isBlank(c.text)).map(cleanComment);
   return doc;
 }
 
@@ -238,6 +343,20 @@ export interface VisibilitySettings {
   hiddenCategories: string[];
   hiddenLinks: string[];
   hiddenElements: HiddenElement[];
+  /**
+   * The ground plane moved in the pause menu: metres above (+) or below (−) its default (100 mm under the lowest
+   * level), so it stays right after a re-extraction. Null = the default.
+   */
+  groundOffset: number | null;
+}
+
+/** Most the ground plane can move from its default (m), as the pause menu slider. */
+export const MAX_GROUND_OFFSET = 10;
+
+/** A ground offset as stored: finite, clamped to ±10 m, null when (almost) zero. */
+export function cleanGroundOffset(value: unknown): number | null {
+  if (typeof value !== 'number' || !Number.isFinite(value) || Math.abs(value) <= 1e-4) { return null; }
+  return f32(clamp(value, -MAX_GROUND_OFFSET, MAX_GROUND_OFFSET));
 }
 
 /** Reads visibility.json with VisibilitySettings.Clean applied. */
@@ -250,12 +369,13 @@ export function readVisibility(j: Json): VisibilitySettings {
       .map(e => objOrNull(e))
       .filter((e): e is Json => e !== null)
       .map(e => ({ link: str(e.link, null), uniqueId: str(e.uniqueId, null), id: num(e.id) }))
-      .filter(e => (e.uniqueId !== null && e.uniqueId.length > 0) || e.id > 0)
+      .filter(e => (e.uniqueId !== null && e.uniqueId.length > 0) || e.id > 0),
+    groundOffset: cleanGroundOffset(j.groundOffset)
   };
 }
 
 export function isVisibilityEmpty(v: VisibilitySettings): boolean {
-  return v.hiddenCategories.length === 0 && v.hiddenLinks.length === 0 && v.hiddenElements.length === 0;
+  return v.hiddenCategories.length === 0 && v.hiddenLinks.length === 0 && v.hiddenElements.length === 0 && v.groundOffset === null;
 }
 
 // #endregion

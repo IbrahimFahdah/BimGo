@@ -98,15 +98,19 @@ export class DynamicSet {
     return !instance.hidden && this.groupVisible[SceneBatches.groupOf(this.elements[instance.element])];
   }
 
-  /** The nearest hit on a moved / cloned element, within maxDistance. */
-  raycast(origin: Vec3, direction: Vec3, maxDistance: number): RayHit | null {
+  /**
+   * The nearest hit on a moved / cloned element, within maxDistance.
+   * @param exclude An instance to ignore (drop to surface: the element being dropped), or null.
+   * @param opaqueOnly True to pass through glass (sun hours).
+   */
+  raycast(origin: Vec3, direction: Vec3, maxDistance: number, exclude: DynamicInstance | null = null, opaqueOnly = false): RayHit | null {
     if (this.instances.length === 0) { return null; }
     const ix = reciprocal(direction.x), iy = reciprocal(direction.y), iz = reciprocal(direction.z);
     let best = maxDistance;
     let hit: RayHit | null = null;
 
     for (const instance of this.instances) {
-      if (!this.isActive(instance)) { continue; }
+      if (!this.isActive(instance) || instance === exclude) { continue; }
       const b = instance.worldBounds;
       if (rayAabb(origin.x, origin.y, origin.z, ix, iy, iz, b.min.x, b.min.y, b.min.z, b.max.x, b.max.y, b.max.z, best) < 0) { continue; }
 
@@ -114,7 +118,7 @@ export class DynamicSet {
       const localOrigin = Mat4.transformPoint(origin, instance.inverseModel);
       const localDirection = transformNormal(direction, instance.inverseModel);
       this.solo[instance.element] = true;
-      const local = this.bvh.raycast(localOrigin, localDirection, best, this.solo);
+      const local = this.bvh.raycast(localOrigin, localDirection, best, this.solo, opaqueOnly);
       this.solo[instance.element] = false;
 
       if (local && local.distance < best) {

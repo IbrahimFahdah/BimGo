@@ -1,13 +1,23 @@
-import type { CommentRecord } from '../../core/format/DocumentModels';
+import { CommentPriority, type CommentRecord, CommentStatus } from '../../core/format/DocumentModels';
 import { Vec3 as V, vec3 } from '../../core/math/Vector';
 import type { Overlay3D } from '../../engine/render/Overlay3D';
 import { Rgba } from '../../engine/ui/Rgba';
 import type { UiBatch } from '../../engine/ui/UiBatch';
-import { UiTheme } from '../../engine/ui/UiTheme';
+import { statusColour, UiTheme } from '../../engine/ui/UiTheme';
 import { SoundId } from '../../platform/audio';
 import { type InputState, Vk } from '../../platform/input';
 import { type AimInfo, Gun } from './Gun';
 import { GunIcons } from './GunIcons';
+
+/** "Open · High · → Sam · 3 replies" (priority, assignee and replies only when set). */
+export function issueLine(record: CommentRecord): string {
+  let line = CommentStatus.label(record.status);
+  if (record.priority !== CommentPriority.NORMAL) { line += ` · ${CommentPriority.label(record.priority)}`; }
+  if (record.assignedTo) { line += ` · → ${record.assignedTo}`; }
+  const replies = record.replies?.length ?? 0;
+  if (replies > 0) { line += ` · ${replies} ${replies === 1 ? 'reply' : 'replies'}`; }
+  return line;
+}
 
 /** Place, read, edit and remove comment pins (port of CommentGun.cs). */
 export class CommentGun extends Gun {
@@ -103,11 +113,13 @@ export class CommentGun extends Gun {
 
   override drawWorld(overlay: Overlay3D): void {
     for (const record of this.session.comments.comments) {
+      // Coloured by status (open: the comment colour, in progress: amber, closed: green and fainter)
       const hovered = record === this.hoveredRecord;
-      const colour = hovered ? UiTheme.COMMENT_LABEL : UiTheme.COMMENT;
-      overlay.line(record.local, V.sub(record.local, vec3(0, 0, 0.3)), 2.5, Rgba.withAlpha(colour, 0.9));
-      overlay.dot(record.local, hovered ? 11 : 9, UiTheme.TEXT);
-      overlay.dot(record.local, hovered ? 9 : 7, colour);
+      const closed = record.status === CommentStatus.CLOSED;
+      const colour = hovered ? UiTheme.COMMENT_LABEL : statusColour(record.status);
+      overlay.line(record.local, V.sub(record.local, vec3(0, 0, 0.3)), 2.5, Rgba.withAlpha(colour, closed && !hovered ? 0.55 : 0.9));
+      overlay.dot(record.local, hovered ? 11 : closed ? 7 : 9, Rgba.withAlpha(UiTheme.TEXT, closed ? 0.6 : 1));
+      overlay.dot(record.local, hovered ? 9 : closed ? 5 : 7, colour);
     }
     if (this.session.isEditingComment) {
       overlay.dot(this.session.editPoint, 11, UiTheme.TEXT);
@@ -124,13 +136,14 @@ export class CommentGun extends Gun {
     const f = ui.atlas;
     const width = this.s(250);
     const textHeight = ui.textWrapped(f.body, 0, 0, width - this.s(24), record.text, 0, 8, false);
-    const height = this.s(32) + textHeight;
+    const height = this.s(52) + textHeight;
     const x = Math.min(screen.x + this.s(20), this.session.screenWidth - width - this.s(10));
     const y = Math.max(this.s(10), screen.y - this.s(36));
 
     ui.panel(x, y, width, height, UiTheme.PANEL_STRONG, UiTheme.COMMENT);
     ui.text(f.small, x + this.s(12), y + this.s(9), record.header, UiTheme.COMMENT_LABEL, this.s(0.8));
     ui.textWrapped(f.body, x + this.s(12), y + this.s(27), width - this.s(24), record.text, UiTheme.TEXT, 8);
+    ui.textWrapped(f.small, x + this.s(12), y + this.s(32) + textHeight, width - this.s(24), issueLine(record), statusColour(record.status), 1);
   }
 
   drawPanel(ui: UiBatch, x: number, y: number, width: number): void {
@@ -143,6 +156,6 @@ export class CommentGun extends Gun {
     const onLevel = all.filter(r => r.level === level).length;
     ui.text(f.body, x, y, `${onLevel} on this level · ${all.length} total`, UiTheme.TEXT);
     y += this.s(22);
-    ui.textWrapped(f.body, x, y, width, 'Hover a marker to read it, E to edit. Kept with this file (Ctrl+S saves once saving is available).', UiTheme.TEXT_MUTED, 2);
+    ui.textWrapped(f.body, x, y, width, 'Hover a marker to read it, E to edit. Esc → COMMENTS for status, replies and the saved view.', UiTheme.TEXT_MUTED, 2);
   }
 }

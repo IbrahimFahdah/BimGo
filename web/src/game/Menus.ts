@@ -1,4 +1,4 @@
-import type { BookmarkRecord, CommentRecord } from '../core/format/DocumentModels';
+import { type BookmarkRecord, CommentPriority, type CommentRecord, type CommentReply, CommentStatus } from '../core/format/DocumentModels';
 import { setCurrentUser } from '../core/format/DocumentModels';
 import { type Vec3, vec3 } from '../core/math/Vector';
 import { CATEGORIES, CategoryGroup, GROUP_NAMES } from '../core/scene/CategoryCatalog';
@@ -6,14 +6,32 @@ import { linkLabel } from '../core/scene/LinkInfo';
 import { Rgba } from '../engine/ui/Rgba';
 import { UiBatch } from '../engine/ui/UiBatch';
 import type { FontAtlas, UiFont } from '../engine/ui/UiFont';
-import { UiTheme } from '../engine/ui/UiTheme';
+import { statusColour, UiTheme } from '../engine/ui/UiTheme';
 import { SoundId } from '../platform/audio';
 import { type InputState, Vk } from '../platform/input';
 import type { GameSession } from './GameSession';
-import { BookmarkStore } from './Stores';
+import { QualityProfile, QualityProfiles } from './QualityProfiles';
+import { BookmarkStore, shortDate } from './Stores';
 import { ColourMode } from './ViewerSettings';
 
 const COLOUR_OPTIONS = ['Whitecard', 'Material', 'Realistic'];
+const STATUS_FILTERS = ['All', 'Open', 'In progress', 'Closed'];
+const STATUS_OPTIONS = ['Open', 'In progress', 'Closed'];
+const PRIORITY_OPTIONS = ['Low', 'Normal', 'High'];
+/** Reflections: off, some (shine tiers 50 % +), or all (25 % +). */
+const REFLECTION_OPTIONS = ['Off', 'Some', 'All'];
+/** Reflection source: the sky, probes, or probes at 256 px. */
+const SOURCE_OPTIONS = ['Sky', 'Probes', 'Probes HQ'];
+/** Debug colours: off, reflection tiers, reflection probe cells. */
+const DEBUG_OPTIONS = ['Off', 'Reflection', 'Probes'];
+/** The pause menu's right-column tabs. */
+const RIGHT_TABS = ['DISPLAY', 'REFLECTIONS', 'DEBUG'];
+/** Height of the right column's card (unscaled): fits the Display tab, the tallest. */
+const RIGHT_CARD_HEIGHT = 440;
+/** Slider id of the reflection strength (unique across the menu's sliders). */
+const SLIDER_REFLECT = 17;
+/** Longest assignee name. */
+const MAX_ASSIGNEE = 60;
 
 /**
  * Immediate-mode widgets shared by the menus (port of the Widgets region of GameSession.Menu.cs). Each call draws and
@@ -109,6 +127,24 @@ export class Widgets {
     return value;
   }
 
+  /** A row of tabs (text with an accent underline on the open one); returns the open tab (changed by a click). */
+  tabs(f: FontAtlas, x: number, y: number, w: number, labels: string[], selected: number): number {
+    const ui = this.ui;
+    const h = this.s(28), tab = w / labels.length;
+    ui.rect(x, y + h - Math.max(1, ui.scale), w, Math.max(1, ui.scale), Rgba.hex(0xffffff, 0.12));
+    labels.forEach((label, i) => {
+      const tx = x + i * tab, on = i === selected;
+      const hover = !on && this.hover(tx, y, tab, h);
+      ui.textCentred(f.small, tx + tab * 0.5, y + this.s(7), label, on ? UiTheme.TEXT : hover ? UiTheme.ACCENT : UiTheme.TEXT_MUTED, this.s(1.4));
+      if (on) { ui.rect(tx + this.s(6), y + h - this.s(2), tab - this.s(12), this.s(2), UiTheme.ACCENT); }
+      if (hover && this.input.leftPressed) {
+        selected = i;
+        this.session.sound.play(SoundId.UiClick);
+      }
+    });
+    return selected;
+  }
+
   /** A check mark inside a box. */
   tick(bx: number, by: number, box: number, colour: number): void {
     this.ui.line(bx + box * 0.22, by + box * 0.52, bx + box * 0.42, by + box * 0.72, this.s(2), colour);
@@ -143,6 +179,14 @@ export class PauseMenu {
   private commentDeleteArmed: CommentRecord | null = null;
   private commentDeleteArmedUntil = 0;
   private commentsNotice: string | null = null;
+  private commentStatusFilter = 0; // 0 all, 1 open, 2 in progress, 3 closed
+  /** The comment shown in full (null = the list). */
+  private commentDetail: CommentRecord | null = null;
+  private replyScroll = 0;
+  private replyDeleteArmed: CommentReply | null = null;
+  private replyDeleteArmedUntil = 0;
+  /** Open right-column tab: 0 display, 1 reflections, 2 debug (per session). */
+  private rightTab = 0;
   private bookmarksOpen = false;
   private bookmarkScroll = 0;
   private bookmarkDeleteArmed: BookmarkRecord | null = null;
@@ -158,6 +202,7 @@ export class PauseMenu {
   /** Closes an open list (Esc); false when none was open. */
   closePanels(): boolean {
     if (this.session.textures?.close()) { return true; }
+    if (this.commentsOpen && this.commentDetail) { this.commentDetail = null; return true; }
     if (this.commentsOpen) { this.commentsOpen = false; this.commentDeleteArmed = null; return true; }
     if (this.bookmarksOpen) { this.bookmarksOpen = false; this.bookmarkDeleteArmed = null; return true; }
     return false;
@@ -231,8 +276,8 @@ export class PauseMenu {
     // ---- Middle: geometry toggles
     if (midW > this.s(300)) { this.buildCategoryCards(f, midX, pad, midW); }
 
-    // ---- Right: world and display
-    this.buildDisplayCard(f, rightX, pad, rightW);
+    // ---- Right: quality profile, then Display · Reflections · Debug
+    this.buildRightColumn(f, rightX, pad, rightW);
 
     const scene = session.scene;
     const journal = session.journal.count;
@@ -339,21 +384,53 @@ export class PauseMenu {
     return changed;
   }
 
-  private buildDisplayCard(f: FontAtlas, x: number, top: number, width: number): void {
+  /**
+   * The right column: the quality profile (always visible), then the Display · Reflections · Debug tabs and the open
+   * tab's card. One fixed card height so the column doesn't jump between tabs.
+   */
+  private buildRightColumn(f: FontAtlas, x: number, top: number, width: number): void {
+    const session = this.session, ui = session.ui, w = this.w;
+
+    // Quality profile: Basic / Medium / Realistic, or "Custom" once anything it sets was changed by hand
+    const profile = QualityProfiles.detect(session.settings);
+    ui.text(f.small, x, top + this.s(2), 'QUALITY PROFILE', UiTheme.TEXT_MUTED, this.s(1.8));
+    if (profile === QualityProfile.Custom) { ui.textRight(f.small, x + width, top + this.s(2), 'CUSTOM', UiTheme.MEASURE_LABEL, this.s(1.2)); }
+    const shown = profile === QualityProfile.Custom ? -1 : profile - 1;
+    const picked = w.segmented(f, x, top + this.s(22), width, QualityProfiles.LABELS, shown);
+    if (picked !== shown && picked >= 0) { session.reflections.applyProfile(QualityProfiles.PICKABLE[picked]); }
+
+    // Tabs
+    const tabsY = top + this.s(68);
+    const tab = w.tabs(f, x, tabsY, width, RIGHT_TABS, this.rightTab);
+    if (tab !== this.rightTab) {
+      this.rightTab = tab;
+      w.activeSlider = -1;
+    }
+
+    const cardTop = tabsY + this.s(32);
+    ui.panel(x, cardTop, width, this.s(RIGHT_CARD_HEIGHT), UiTheme.CARD, UiTheme.CARD_BORDER);
+    const ix = x + this.s(14), iw = width - this.s(28), y = cardTop + this.s(14);
+    switch (this.rightTab) {
+      case 1: this.buildReflectionsTab(f, ix, y, iw); break;
+      case 2: this.buildDebugTab(f, ix, y, iw); break;
+      default: this.buildDisplayTab(f, ix, y, iw); break;
+    }
+  }
+
+  /** Display tab: ground plane, colour, FOV, sensitivity, toggles and the author name. */
+  private buildDisplayTab(f: FontAtlas, ix: number, y: number, iw: number): void {
     const session = this.session, ui = session.ui, w = this.w;
     const settings = session.settings;
-    ui.text(f.small, x, top + this.s(2), 'WORLD & DISPLAY', UiTheme.TEXT_MUTED, this.s(1.8));
-    const cardTop = top + this.s(26);
-    ui.panel(x, cardTop, width, this.s(468), UiTheme.CARD, UiTheme.CARD_BORDER);
 
-    const ix = x + this.s(14), iw = width - this.s(28);
-    let y = cardTop + this.s(14);
-
-    // Ground plane (relative to the default, shown absolute)
+    // Ground plane (relative to the default, shown absolute); saved with the model like hidden elements
     const ground = w.slider(f, 0, ix, y, iw, 'Ground plane', session.text.clear().appendNumber(session.groundZ, 3).append(' m').text,
       session.groundZ, session.groundDefault - 10, session.groundDefault + 10);
-    // Snap only while dragging (the desktop snaps every frame, which nudged the exact default on opening the menu)
-    if (w.activeSlider === 0) { session.groundZ = Math.round(ground / 0.05) * 0.05; }
+    // Only while dragging (the default needn't sit on the 5 cm steps, and must not mark the file changed)
+    const snapped = Math.round(ground / 0.05) * 0.05;
+    if (w.activeSlider === 0 && snapped !== session.groundZ) {
+      session.groundZ = snapped;
+      session.visibilityChanged();
+    }
     y += this.s(58);
 
     // Colour mode
@@ -386,9 +463,6 @@ export class PauseMenu {
     y += this.s(28);
     const ao = w.checkbox(f, ix, y, iw, 'Ambient occlusion', settings.ambientOcclusion);
     if (ao !== settings.ambientOcclusion) { settings.ambientOcclusion = ao; settings.save(); }
-    y += this.s(28);
-    const reflections = w.checkbox(f, ix, y, iw, 'Sky reflections on glass (Realistic)', settings.reflections);
-    if (reflections !== settings.reflections) { settings.reflections = reflections; settings.save(); }
     y += this.s(40);
 
     // Author name for comments and bookmarks (the browser has no user name)
@@ -396,6 +470,66 @@ export class PauseMenu {
     if (w.smallButton(f, ix + iw - this.s(90), y - this.s(4), this.s(90), this.s(26), 'CHANGE')) { session.editor.renameUser(); return; }
     y += this.s(24);
     ui.textWrapped(f.bold, ix, y, iw, settings.userName, UiTheme.TEXT, 1);
+  }
+
+  /** Reflections tab: Off / Some / All, the source (sky or probes), strength, probe status and REFRESH. */
+  private buildReflectionsTab(f: FontAtlas, ix: number, y: number, iw: number): void {
+    const session = this.session, ui = session.ui, w = this.w;
+    const settings = session.settings;
+
+    ui.text(f.body, ix, y, 'Reflections', UiTheme.TEXT);
+    const level = !settings.reflections ? 0 : settings.reflectionThreshold <= 37 ? 2 : 1;
+    const pickedLevel = w.segmented(f, ix, y + this.s(22), iw, REFLECTION_OPTIONS, level);
+    if (pickedLevel !== level) {
+      settings.reflections = pickedLevel > 0;
+      if (pickedLevel > 0) { settings.reflectionThreshold = pickedLevel === 2 ? 25 : 50; }
+      settings.save();
+    }
+    y += this.s(66);
+
+    ui.text(f.body, ix, y, 'Source', UiTheme.TEXT);
+    const source = !settings.reflectionProbes ? 0 : settings.probeResolution >= 192 ? 2 : 1;
+    const pickedSource = w.segmented(f, ix, y + this.s(22), iw, SOURCE_OPTIONS, source);
+    if (pickedSource !== source) {
+      const probesWereOn = settings.reflectionProbes;
+      settings.reflectionProbes = pickedSource > 0;
+      if (pickedSource > 0) { settings.probeResolution = pickedSource === 2 ? 256 : 128; }
+      settings.save();
+      if (settings.reflectionProbes && !probesWereOn) { session.reflections.refresh(false); }
+    }
+    y += this.s(66);
+
+    const strength = Math.round(w.slider(f, SLIDER_REFLECT, ix, y, iw, 'Reflection strength', `${Math.round(settings.reflectionStrength * 100)} %`,
+      settings.reflectionStrength, 0.5, 2) / 0.05) * 0.05;
+    if (Math.abs(strength - settings.reflectionStrength) > 1e-6) { settings.reflectionStrength = strength; settings.save(); }
+    y += this.s(62);
+
+    ui.textWrapped(f.body, ix, y + this.s(5), iw - this.s(110), session.reflections.status(), UiTheme.TEXT_SOFT, 2);
+    if (w.smallButton(f, ix + iw - this.s(100), y, this.s(100), this.s(28), 'REFRESH')) { session.reflections.refresh(true); }
+    y += this.s(54);
+
+    ui.textWrapped(f.body, ix, y, iw,
+      'Realistic colour mode. Some = shiny surfaces (50 %+), All = satin too (25 %+); glass and water always reflect. Probes capture each room with a reflective surface; the sky is cheaper.',
+      UiTheme.TEXT_MUTED, 6);
+  }
+
+  /** Debug tab: colour surfaces by reflection tier or by reflection probe (not saved). */
+  private buildDebugTab(f: FontAtlas, ix: number, y: number, iw: number): void {
+    const session = this.session, ui = session.ui, w = this.w;
+    ui.text(f.body, ix, y, 'Debug colours', UiTheme.TEXT);
+    const debug = w.segmented(f, ix, y + this.s(22), iw, DEBUG_OPTIONS, session.reflections.debug);
+    if (debug !== session.reflections.debug) {
+      session.reflections.debug = debug;
+      if (debug !== 0 && (session.settings.colour !== ColourMode.Realistic || !session.renderer.hasMaterials)) {
+        session.toast('Debug colours need the Realistic colour mode and a file with materials.', 4);
+      }
+    }
+    y += this.s(66);
+
+    const help = session.reflections.debug === 1 ? 'Reflection: red 75 %+, orange 50 %, yellow 25 %, grey none, cyan glass, blue water.'
+      : session.reflections.debug === 2 ? 'Probes: one colour per reflection probe, blended at room edges; grey = sky. Probes bake as you look around.'
+        : 'Colours surfaces by reflection tier or by the probe they read. Needs the Realistic colour mode. Not saved.';
+    ui.textWrapped(f.body, ix, y, iw, help, UiTheme.TEXT_MUTED, 6);
   }
 
   // #endregion
@@ -408,8 +542,14 @@ export class PauseMenu {
     this.commentScroll = 0;
     this.commentDeleteArmed = null;
     this.commentsNotice = null;
+    this.commentDetail = null;
     const level = session.scene.levels.length > 0 ? session.levelIndexAt(session.player.feet.z) : -1;
     this.commentLevelFilter = level >= 0 && this.countCommentsOn(level) > 0 ? level : -1;
+  }
+
+  /** A notice under the comment list (e.g. from the text box: reply added). */
+  setCommentsNotice(notice: string): void {
+    this.commentsNotice = notice;
   }
 
   private buildCommentsPanel(): void {
@@ -417,9 +557,15 @@ export class PauseMenu {
     const width = session.screenWidth, height = session.screenHeight;
     ui.rect(0, 0, width, height, UiTheme.MENU_BACKGROUND);
 
-    const pw = Math.min(this.s(920), width - this.s(80)), ph = height - this.s(96);
+    const pw = Math.min(this.s(1000), width - this.s(80)), ph = height - this.s(96);
     const x = (width - pw) * 0.5, y = this.s(48);
     ui.panel(x, y, pw, ph, UiTheme.CARD, UiTheme.CARD_BORDER);
+
+    if (this.commentDetail && !session.comments.comments.includes(this.commentDetail)) { this.commentDetail = null; }
+    if (this.commentDetail) {
+      this.buildCommentDetail(f, x, y, pw, ph, this.commentDetail);
+      return;
+    }
 
     const ix = x + this.s(24), iw = pw - this.s(48);
     let cy = y + this.s(20);
@@ -428,17 +574,25 @@ export class PauseMenu {
     ui.textRight(f.small, ix + iw, cy, `${count.toLocaleString('en')} ${count === 1 ? 'comment' : 'comments'} · kept in ${session.comments.fileName}`, UiTheme.TEXT_MUTED, this.s(0.6));
     cy += this.s(30);
 
-    // Level filter: ← All levels / Level name →
+    // Filters: ← level → and status
+    let filterX = ix;
     if (session.scene.levels.length > 0) {
-      if (w.smallButton(f, ix, cy, this.s(32), this.s(28), '←')) { this.stepCommentFilter(-1); }
-      ui.panel(ix + this.s(38), cy, this.s(260), this.s(28), UiTheme.CONTROL, UiTheme.CONTROL_BORDER);
-      ui.textCentred(f.body, ix + this.s(38) + this.s(130), cy + this.s(14) - f.body.lineHeight * 0.5, this.commentFilterLabel(), UiTheme.TEXT);
-      if (w.smallButton(f, ix + this.s(304), cy, this.s(32), this.s(28), '→')) { this.stepCommentFilter(+1); }
-      cy += this.s(40);
+      if (w.smallButton(f, ix, cy, this.s(32), this.s(32), '←')) { this.stepCommentFilter(-1); }
+      ui.panel(ix + this.s(38), cy, this.s(240), this.s(32), UiTheme.CONTROL, UiTheme.CONTROL_BORDER);
+      ui.textCentred(f.body, ix + this.s(38) + this.s(120), cy + this.s(16) - f.body.lineHeight * 0.5, this.commentFilterLabel(), UiTheme.TEXT);
+      if (w.smallButton(f, ix + this.s(284), cy, this.s(32), this.s(32), '→')) { this.stepCommentFilter(+1); }
+      filterX = ix + this.s(336);
     }
+    const status = w.segmented(f, filterX, cy, Math.min(this.s(420), ix + iw - filterX), STATUS_FILTERS, this.commentStatusFilter);
+    if (status !== this.commentStatusFilter) {
+      this.commentStatusFilter = status;
+      this.commentScroll = 0;
+    }
+    cy += this.s(46);
 
     const buttonsY = y + ph - this.s(24) - this.s(48);
     this.buildCommentRows(f, ix, cy, iw, buttonsY - this.s(16));
+    if (this.commentDetail) { return; }
 
     if (this.commentsNotice) { ui.textWrapped(f.body, ix, buttonsY - this.s(30), iw, this.commentsNotice, UiTheme.MEASURE_TEXT, 1); }
     if (w.menuButton(f, ix, buttonsY, this.s(200), 'EXPORT CSV…', false, false, count > 0)) {
@@ -449,16 +603,17 @@ export class PauseMenu {
     if (w.menuButton(f, ix + this.s(216), buttonsY, this.s(160), 'CLOSE', false, false)) { this.closePanels(); }
   }
 
+  /** The scrolling rows: status bar, thumbnail, header, text, issue line and GO / OPEN / DELETE. */
   private buildCommentRows(f: FontAtlas, x: number, y: number, width: number, bottom: number): void {
     const session = this.session, ui = session.ui, w = this.w, input = session.input;
-    const rowH = this.s(64);
+    const rowH = this.s(84);
     const visible = Math.max(1, Math.trunc((bottom - y) / rowH));
     const list = session.comments.comments.filter(r => this.matchesCommentFilter(r));
 
     if (list.length === 0) {
       ui.textWrapped(f.body, x, y + this.s(8), width, session.comments.comments.length === 0
         ? 'No comments yet. Use the Comment tool (4): LMB places a marker and opens a text box.'
-        : 'No comments on this level. Use ← → to pick another level or all levels.', UiTheme.TEXT_MUTED, 2);
+        : 'No comments match. Use ← → for another level, or pick All.', UiTheme.TEXT_MUTED, 2);
       return;
     }
 
@@ -467,50 +622,220 @@ export class PauseMenu {
     this.commentScroll = Math.min(Math.max(this.commentScroll, 0), maxScroll);
     if (this.commentDeleteArmed && session.clock > this.commentDeleteArmedUntil) { this.commentDeleteArmed = null; }
 
-    let go: CommentRecord | null = null, edit: CommentRecord | null = null, remove: CommentRecord | null = null;
-    const buttonsW = this.s(66) * 3 + this.s(12);
+    let go: CommentRecord | null = null, open: CommentRecord | null = null, remove: CommentRecord | null = null;
+    const buttonW = this.s(70), gap = this.s(6);
+    const buttonsW = buttonW * 3 + gap * 2;
+    const thumbW = this.s(120), thumbH = this.s(68);
     const last = Math.min(list.length, this.commentScroll + visible);
     for (let i = this.commentScroll; i < last; i++) {
       const record = list[i];
       const ry = y + (i - this.commentScroll) * rowH;
       if (((i - this.commentScroll) & 1) === 0) { ui.rect(x - this.s(8), ry - this.s(4), width + this.s(16), rowH - this.s(4), Rgba.hex(0xffffff, 0.03)); }
 
-      const textW = width - buttonsW - this.s(16);
-      ui.textWrapped(f.small, x, ry + this.s(2), textW, record.level ? `${record.header} · ${record.level}` : record.header, UiTheme.COMMENT_LABEL, 1);
-      ui.textWrapped(f.body, x, ry + this.s(20), textW, record.text, UiTheme.TEXT, 2);
+      // Status bar on the left edge, then the thumbnail
+      ui.rect(x - this.s(8), ry - this.s(4), this.s(3), rowH - this.s(4), statusColour(record.status));
+      this.drawCommentThumbnail(f, record, x, ry, thumbW, thumbH);
 
-      const bx = x + width - buttonsW;
-      if (w.smallButton(f, bx, ry + this.s(8), this.s(66), this.s(30), 'GO')) { go = record; }
-      if (w.smallButton(f, bx + this.s(72), ry + this.s(8), this.s(66), this.s(30), 'EDIT')) { edit = record; }
+      const textX = x + thumbW + this.s(14);
+      const textW = width - buttonsW - thumbW - this.s(30);
+      ui.textWrapped(f.small, textX, ry + this.s(2), textW, record.level ? `${record.header} · ${record.level}` : record.header, UiTheme.COMMENT_LABEL, 1);
+      ui.textWrapped(f.body, textX, ry + this.s(20), textW, record.text, record.status === CommentStatus.CLOSED ? UiTheme.TEXT_MUTED : UiTheme.TEXT, 1);
+      this.issueLine(f, record, textX, ry + this.s(46), textW);
+
+      const bx = x + width - buttonsW, by = ry + this.s(18);
+      if (w.smallButton(f, bx, by, buttonW, this.s(30), 'GO')) { go = record; }
+      if (w.smallButton(f, bx + buttonW + gap, by, buttonW, this.s(30), 'OPEN')) { open = record; }
       const armed = this.commentDeleteArmed === record;
-      if (w.smallButton(f, bx + this.s(144), ry + this.s(8), this.s(66), this.s(30), armed ? 'SURE?' : 'DELETE', true)) { remove = record; }
+      if (w.smallButton(f, bx + (buttonW + gap) * 2, by, buttonW, this.s(30), armed ? 'SURE?' : 'DELETE', true)) { remove = record; }
     }
     if (maxScroll > 0) {
       ui.textRight(f.small, x + width, bottom + this.s(2), `${this.commentScroll + 1}–${last} of ${list.length} · wheel to scroll`, UiTheme.TEXT_FAINT);
     }
 
     // Act after drawing (the list must not change while it is being walked)
-    if (go) {
-      this.closePanels();
-      session.setPaused(false);
-      session.teleportToComment(go);
-      session.selectGun(session.guns.indexOf(session.commentGun));
-      session.toast(go.text.length > 60 ? go.text.slice(0, 57) + '…' : go.text, 3);
-    } else if (edit) {
-      this.closePanels();
-      session.paused = false;
-      session.teleportToComment(edit);
-      session.editComment(edit);
-    } else if (remove) {
-      if (this.commentDeleteArmed === remove) {
-        session.comments.remove(remove);
-        this.commentDeleteArmed = null;
-        this.commentsNotice = 'Comment deleted';
-        session.sound.play(SoundId.Remove);
-      } else {
-        this.commentDeleteArmed = remove;
-        this.commentDeleteArmedUntil = session.clock + 3;
-      }
+    if (go) { this.goToComment(go); }
+    else if (open) {
+      this.commentDetail = open;
+      this.replyScroll = 0;
+      this.replyDeleteArmed = null;
+      this.commentsNotice = null;
+    } else if (remove) { this.deleteComment(remove); }
+  }
+
+  /** "● Open · High priority · → Sam · 3 replies" (status coloured; the rest only when set). */
+  private issueLine(f: FontAtlas, record: CommentRecord, x: number, y: number, width: number): void {
+    const ui = this.session.ui;
+    const colour = statusColour(record.status);
+    ui.circle(x + this.s(5), y + f.small.lineHeight * 0.5, this.s(4), colour, 12);
+    const used = this.s(14) + ui.text(f.small, x + this.s(14), y, CommentStatus.label(record.status), colour, this.s(0.4));
+    let rest = '';
+    if (record.priority !== CommentPriority.NORMAL) { rest += ` · ${CommentPriority.label(record.priority)} priority`; }
+    if (record.assignedTo) { rest += ` · → ${record.assignedTo}`; }
+    const replies = record.replies?.length ?? 0;
+    if (replies > 0) { rest += ` · ${replies} ${replies === 1 ? 'reply' : 'replies'}`; }
+    if (rest) {
+      ui.textWrapped(f.small, x + used, y, width - used, rest, record.priority === CommentPriority.HIGH ? UiTheme.DANGER : UiTheme.TEXT_SOFT, 1);
+    }
+  }
+
+  /** A comment's thumbnail (or a "NO PICTURE" tile for older comments). */
+  private drawCommentThumbnail(f: FontAtlas, record: CommentRecord, x: number, y: number, w: number, h: number): void {
+    const session = this.session, ui = session.ui;
+    const thumbnail = session.thumbnailTexture(record);
+    if (thumbnail) {
+      ui.image(thumbnail, x, y, w, h, session.screenWidth, session.screenHeight);
+      ui.outline(x, y, w, h, Math.max(1, ui.scale), Rgba.hex(0xffffff, 0.15));
+    } else {
+      ui.panel(x, y, w, h, UiTheme.CONTROL, UiTheme.CONTROL_BORDER);
+      ui.textCentred(f.small, x + w * 0.5, y + h * 0.5 - this.s(7), record.thumbnail ? '…' : 'NO PICTURE', UiTheme.TEXT_FAINT, this.s(0.4));
+    }
+  }
+
+  /** One comment in full: picture, text, status / priority / assignee, the reply thread and its actions. */
+  private buildCommentDetail(f: FontAtlas, x: number, y: number, pw: number, ph: number, record: CommentRecord): void {
+    const session = this.session, ui = session.ui, w = this.w, comments = session.comments;
+    const ix = x + this.s(24), iw = pw - this.s(48);
+    let cy = y + this.s(20);
+    ui.text(f.small, ix, cy, 'COMMENT', UiTheme.COMMENT_LABEL, this.s(2));
+    ui.textRight(f.small, ix + iw, cy, record.level ? `${record.header} · ${record.level}` : record.header, UiTheme.TEXT_MUTED, this.s(0.6));
+    cy += this.s(32);
+
+    // Picture (left) and the issue fields (right)
+    const picW = Math.min(this.s(384), iw * 0.42), picH = picW * 9 / 16;
+    this.drawCommentThumbnail(f, record, ix, cy, picW, picH);
+    const rx = ix + picW + this.s(24), rw = iw - picW - this.s(24);
+    const textH = ui.textWrapped(f.body, rx, cy, rw, record.text, UiTheme.TEXT, 5);
+    let fy = cy + Math.max(textH, f.body.lineHeight) + this.s(14);
+
+    ui.text(f.small, rx, fy + this.s(9), 'STATUS', UiTheme.TEXT_MUTED, this.s(0.6));
+    const statusIndex = Math.max(0, CommentStatus.ALL.indexOf(record.status));
+    const newStatus = w.segmented(f, rx + this.s(90), fy, Math.min(this.s(330), rw - this.s(90)), STATUS_OPTIONS, statusIndex);
+    if (newStatus !== statusIndex) {
+      comments.setIssue(record, { status: CommentStatus.ALL[newStatus] });
+      this.commentsNotice = `Status: ${STATUS_OPTIONS[newStatus]}`;
+    }
+    fy += this.s(40);
+
+    ui.text(f.small, rx, fy + this.s(9), 'PRIORITY', UiTheme.TEXT_MUTED, this.s(0.6));
+    const priorityIndex = Math.max(0, CommentPriority.ALL.indexOf(record.priority));
+    const newPriority = w.segmented(f, rx + this.s(90), fy, Math.min(this.s(330), rw - this.s(90)), PRIORITY_OPTIONS, priorityIndex);
+    if (newPriority !== priorityIndex) {
+      comments.setIssue(record, { priority: CommentPriority.ALL[newPriority] });
+      this.commentsNotice = `Priority: ${PRIORITY_OPTIONS[newPriority]}`;
+    }
+    fy += this.s(40);
+
+    ui.text(f.small, rx, fy + this.s(9), 'ASSIGNED', UiTheme.TEXT_MUTED, this.s(0.6));
+    ui.textWrapped(f.body, rx + this.s(90), fy + this.s(6), Math.max(this.s(60), rw - this.s(90) - this.s(130)), record.assignedTo ?? 'Nobody',
+      record.assignedTo ? UiTheme.TEXT : UiTheme.TEXT_FAINT, 1);
+    if (w.smallButton(f, rx + rw - this.s(120), fy, this.s(120), this.s(30), 'ASSIGN…')) { session.editor.assignComment(record); }
+    fy += this.s(40);
+
+    if (record.updated) {
+      ui.textWrapped(f.small, rx, fy, rw, `Updated by ${record.updatedBy ?? '?'} · ${shortDate(record.updated)}`, UiTheme.TEXT_FAINT, 1);
+    }
+
+    // Thread
+    cy += Math.max(picH, fy + this.s(20) - cy) + this.s(16);
+    ui.text(f.small, ix, cy, `REPLIES (${record.replies?.length ?? 0})`, UiTheme.COMMENT_LABEL, this.s(1));
+    cy += this.s(24);
+
+    const buttonsY = y + ph - this.s(24) - this.s(44);
+    this.buildReplies(f, record, ix, cy, iw, buttonsY - this.s(40));
+
+    if (this.commentsNotice) { ui.textWrapped(f.body, ix, buttonsY - this.s(28), iw, this.commentsNotice, UiTheme.MEASURE_TEXT, 1); }
+
+    const bh = this.s(44), bw = this.s(150), bg = this.s(10);
+    let bx = ix;
+    if (w.menuButton(f, bx, buttonsY, this.s(110), 'BACK', false, false, true, bh)) { this.commentDetail = null; return; }
+    bx += this.s(110) + bg;
+    if (w.menuButton(f, bx, buttonsY, this.s(130), 'REPLY…', true, false, true, bh)) { session.editor.replyToComment(record); }
+    bx += this.s(130) + bg;
+    if (w.menuButton(f, bx, buttonsY, bw, 'GO TO VIEW', false, false, true, bh)) { this.goToComment(record); return; }
+    bx += bw + bg;
+    if (w.menuButton(f, bx, buttonsY, bw, 'SET VIEW HERE', false, false, true, bh)) {
+      // Where the player stands now (the picture is taken from the 3D view behind the menu, next frame)
+      const p = session.player;
+      comments.setView(record, p.feet, p.yaw, p.pitch, p.flying);
+      session.commentThumbnailFor = record;
+      this.commentsNotice = 'View and picture set to where you stand';
+      session.sound.play(SoundId.Commit);
+    }
+    bx += bw + bg;
+    if (w.menuButton(f, bx, buttonsY, this.s(130), 'EDIT TEXT', false, false, true, bh)) { session.editor.editCommentText(record); }
+    bx += this.s(130) + bg;
+    const armed = this.commentDeleteArmed === record && session.clock <= this.commentDeleteArmedUntil;
+    if (w.menuButton(f, bx, buttonsY, this.s(120), armed ? 'SURE?' : 'DELETE', false, true, true, bh)) {
+      this.deleteComment(record);
+      if (!comments.comments.includes(record)) { this.commentDetail = null; }
+    }
+  }
+
+  /** The reply thread (oldest first, wheel scrolls), each with its author, date and DELETE. */
+  private buildReplies(f: FontAtlas, record: CommentRecord, x: number, y: number, width: number, bottom: number): void {
+    const session = this.session, ui = session.ui, w = this.w, input = session.input;
+    const replies = record.replies ?? [];
+    if (replies.length === 0) {
+      ui.text(f.body, x, y + this.s(4), 'No replies yet: REPLY… adds one.', UiTheme.TEXT_MUTED);
+      return;
+    }
+
+    const rowH = this.s(58);
+    const visible = Math.max(1, Math.trunc((bottom - y) / rowH));
+    const maxScroll = Math.max(0, replies.length - visible);
+    if (input.wheel !== 0 && w.hover(x, y, width, bottom - y)) { this.replyScroll -= input.wheel; }
+    this.replyScroll = Math.min(Math.max(this.replyScroll, 0), maxScroll);
+    if (this.replyDeleteArmed && session.clock > this.replyDeleteArmedUntil) { this.replyDeleteArmed = null; }
+
+    let remove: CommentReply | null = null;
+    const last = Math.min(replies.length, this.replyScroll + visible);
+    for (let i = this.replyScroll; i < last; i++) {
+      const reply = replies[i];
+      const ry = y + (i - this.replyScroll) * rowH;
+      ui.rect(x, ry, this.s(2), rowH - this.s(10), UiTheme.COMMENT);
+      ui.text(f.small, x + this.s(12), ry, `${reply.author.toUpperCase()} · ${shortDate(reply.created)}`, UiTheme.COMMENT_LABEL, this.s(0.6));
+      ui.textWrapped(f.body, x + this.s(12), ry + this.s(18), width - this.s(110), reply.text, UiTheme.TEXT, 2);
+      const armed = this.replyDeleteArmed === reply;
+      if (w.smallButton(f, x + width - this.s(84), ry + this.s(4), this.s(84), this.s(28), armed ? 'SURE?' : 'DELETE', true)) { remove = reply; }
+    }
+    if (maxScroll > 0) {
+      ui.textRight(f.small, x + width, bottom + this.s(2), `${this.replyScroll + 1}–${last} of ${replies.length} · wheel to scroll`, UiTheme.TEXT_FAINT);
+    }
+
+    if (!remove) { return; }
+    if (this.replyDeleteArmed === remove) {
+      session.comments.removeReply(record, remove);
+      this.replyDeleteArmed = null;
+      this.commentsNotice = 'Reply deleted';
+      session.sound.play(SoundId.Remove);
+    } else {
+      this.replyDeleteArmed = remove;
+      this.replyDeleteArmedUntil = session.clock + 3;
+    }
+  }
+
+  /** Leaves the menu and goes to a comment's view (its text as a note). */
+  private goToComment(record: CommentRecord): void {
+    const session = this.session;
+    this.commentDetail = null;
+    this.closePanels();
+    session.setPaused(false);
+    session.teleportToComment(record);
+    session.selectGun(session.guns.indexOf(session.commentGun));
+    session.toast(record.text.length > 60 ? record.text.slice(0, 57) + '…' : record.text, 3);
+  }
+
+  /** DELETE: the first click arms it for 3 s, the second deletes. */
+  private deleteComment(record: CommentRecord): void {
+    const session = this.session;
+    if (this.commentDeleteArmed === record && session.clock <= this.commentDeleteArmedUntil) {
+      session.comments.remove(record);
+      this.commentDeleteArmed = null;
+      this.commentsNotice = 'Comment deleted';
+      session.sound.play(SoundId.Remove);
+    } else {
+      this.commentDeleteArmed = record;
+      this.commentDeleteArmedUntil = session.clock + 3;
     }
   }
 
@@ -523,6 +848,7 @@ export class PauseMenu {
   }
 
   private matchesCommentFilter(record: CommentRecord): boolean {
+    if (this.commentStatusFilter > 0 && record.status !== CommentStatus.ALL[this.commentStatusFilter - 1]) { return false; }
     const levels = this.session.scene.levels;
     if (this.commentLevelFilter < 0 || this.commentLevelFilter >= levels.length) { return true; }
     return record.level === levels[this.commentLevelFilter].name;
@@ -671,7 +997,7 @@ export class PauseMenu {
   // #endregion
 }
 
-type EditMode = 'comment' | 'bookmark' | 'user';
+type EditMode = 'comment' | 'bookmark' | 'user' | 'reply' | 'assign';
 
 /**
  * The text box for comments, bookmark names and the author name (port of the Comment editor region of
@@ -689,6 +1015,8 @@ export class TextEditor {
   private bookmark: BookmarkRecord | null = null;
   private bookmarkIsNew = false;
   private resumeMenuAfter = false;
+  /** Reply / assign / edit text opened from the comment panel: the menu stays open behind the box. */
+  private overMenu = false;
 
   constructor(private readonly session: GameSession) {}
 
@@ -716,6 +1044,28 @@ export class TextEditor {
     this.level = record.level || null;
   }
 
+  /** A reply to a comment (from the comment panel; the menu stays open behind the box). */
+  replyToComment(record: CommentRecord): void {
+    this.start('reply', 280, '');
+    this.record = record;
+    this.level = record.level || null;
+    this.overMenu = true;
+  }
+
+  /** A comment's assignee (ready to change; empty + Enter clears it). */
+  assignComment(record: CommentRecord): void {
+    this.start('assign', MAX_ASSIGNEE, (record.assignedTo ?? '').slice(0, MAX_ASSIGNEE));
+    this.record = record;
+    this.level = record.level || null;
+    this.overMenu = true;
+  }
+
+  /** EDIT TEXT in the comment detail view (over the menu). */
+  editCommentText(record: CommentRecord): void {
+    this.editComment(record);
+    this.overMenu = true;
+  }
+
   /** The author name (from the pause menu; returns there afterwards). */
   renameUser(): void {
     this.start('user', 40, this.session.settings.userName);
@@ -731,7 +1081,8 @@ export class TextEditor {
     this.record = null;
     this.bookmark = null;
     this.resumeMenuAfter = false;
-    this.session.releaseMouseForTyping();
+    this.overMenu = false;
+    if (!this.session.paused) { this.session.releaseMouseForTyping(); }
   }
 
   update(input: InputState): void {
@@ -761,8 +1112,10 @@ export class TextEditor {
     if (this.mode === 'bookmark') {
       if (this.bookmarkIsNew && session.thumbnailFor === this.bookmark) { session.thumbnailFor = null; }
       session.toast(this.bookmarkIsNew ? 'Bookmark cancelled (nothing was saved)' : 'Name not changed');
+    } else if (this.mode === 'reply' || this.mode === 'assign') {
+      session.menu.setCommentsNotice(this.mode === 'reply' ? 'Reply cancelled' : 'Assignee not changed');
     } else if (this.mode === 'comment') {
-      session.toast(this.record ? 'Edit cancelled' : 'Comment cancelled');
+      if (this.overMenu) { session.menu.setCommentsNotice('Edit cancelled'); } else { session.toast(this.record ? 'Edit cancelled' : 'Comment cancelled'); }
     }
     this.finish();
   }
@@ -772,6 +1125,20 @@ export class TextEditor {
     const text = this.text.trim();
     const { mode, record, bookmark } = this;
     this.finish();
+
+    if (mode === 'reply' && record) {
+      if (!text) { session.menu.setCommentsNotice('Empty reply not saved'); return; }
+      session.comments.addReply(record, text);
+      session.sound.play(SoundId.CommentPlace);
+      session.menu.setCommentsNotice(`Reply added (${record.replies?.length ?? 0} in the thread)`);
+      return;
+    }
+    if (mode === 'assign' && record) {
+      session.comments.setIssue(record, { assignedTo: text });
+      session.sound.play(SoundId.UiClick);
+      session.menu.setCommentsNotice(text ? `Assigned to ${text}` : 'Unassigned');
+      return;
+    }
 
     if (mode === 'user') {
       if (text) {
@@ -798,7 +1165,7 @@ export class TextEditor {
       }
       session.comments.update(record, text);
       session.sound.play(SoundId.CommentPlace);
-      session.toast('Comment updated');
+      if (this.overMenu) { session.menu.setCommentsNotice('Comment text updated'); } else { session.toast('Comment updated'); }
       return;
     }
 
@@ -806,7 +1173,12 @@ export class TextEditor {
       session.toast('Empty comment not saved');
       return;
     }
-    session.comments.add(this.point, text, this.elementId, this.level);
+    // The new comment remembers where it was made from, and a picture of that view (taken next frame: the capture
+    // reads the 3D view before the UI is drawn, so the text box isn't in it)
+    const added = session.comments.add(this.point, text, this.elementId, this.level);
+    const p = session.player;
+    session.comments.setView(added, p.feet, p.yaw, p.pitch, p.flying);
+    session.commentThumbnailFor = added;
     session.sound.play(SoundId.CommentPlace);
     session.toast(`Comment added (kept in ${session.comments.fileName})`);
   }
@@ -818,12 +1190,13 @@ export class TextEditor {
     const h = this.s(96) + textHeight;
     const x = session.screenWidth * 0.5 - w * 0.5, y = session.screenHeight * 0.5 + this.s(48);
 
-    const naming = this.mode !== 'comment';
+    const naming = this.mode === 'bookmark' || this.mode === 'user';
     const frame = naming ? UiTheme.BOOKMARK : UiTheme.COMMENT;
     const label = naming ? UiTheme.BOOKMARK_LABEL : UiTheme.COMMENT_LABEL;
     ui.panel(x, y, w, h, UiTheme.PANEL_STRONG, frame);
     const title = this.mode === 'user' ? 'YOUR NAME (SHOWN ON COMMENTS)'
-      : `${this.mode === 'bookmark' ? 'BOOKMARK NAME' : this.record ? 'EDIT COMMENT' : 'NEW COMMENT'} · ${this.level ?? '—'}`;
+      : `${this.mode === 'bookmark' ? 'BOOKMARK NAME' : this.mode === 'reply' ? 'REPLY' : this.mode === 'assign' ? 'ASSIGN TO (empty = unassigned)'
+        : this.record ? 'EDIT COMMENT' : 'NEW COMMENT'} · ${this.level ?? '—'}`;
     ui.text(f.small, x + this.s(14), y + this.s(12), title, label, this.s(1));
 
     const boxY = y + this.s(32), boxH = textHeight + this.s(16);

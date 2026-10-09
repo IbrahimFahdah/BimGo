@@ -104,7 +104,7 @@ export class TeleportGun extends Gun {
   override onPrimary(): void {
     if (!this.valid) {
       this.session.sound.play(SoundId.Error);
-      if (this.reason) { this.session.toast(this.reason); }
+      if (this.reason) { this.session.toast(this.reason, 2.6, true); }
       return;
     }
     if (this.history.length === TeleportGun.HISTORY) { this.history.shift(); }

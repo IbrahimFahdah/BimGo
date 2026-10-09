@@ -26,6 +26,8 @@ export class Bvh {
   readonly triangles: Float32Array;
   /** The element index of each triangle. */
   readonly triangleElement: Int32Array;
+  /** Per triangle: 1 when it is glass (its element's transparent range); opaque-only rays pass through it. */
+  readonly triangleTransparent: Uint8Array;
   readonly nodeCount: number;
   private readonly nodeBounds: Float32Array;
   private readonly nodeFirst: Int32Array;
@@ -44,8 +46,9 @@ export class Bvh {
     const maxTriangles = Math.trunc(indices.length / 3);
     const corners = new Float32Array(maxTriangles * 9);
     const owner = new Int32Array(maxTriangles);
+    const glass = new Uint8Array(maxTriangles);
     let count = 0;
-    const addRange = (start: number, length: number, element: number) => {
+    const addRange = (start: number, length: number, element: number, transparent: boolean) => {
       for (let i = start; i + 2 < start + length; i += 3) {
         const o = count * 9;
         for (let k = 0; k < 3; k++) {
@@ -54,12 +57,13 @@ export class Bvh {
           corners[o + k * 3 + 1] = floats[v + 1];
           corners[o + k * 3 + 2] = floats[v + 2];
         }
+        glass[count] = transparent ? 1 : 0;
         owner[count++] = element;
       }
     };
     elements.forEach((record, e) => {
-      addRange(record.opaqueStart, record.opaqueCount, e);
-      addRange(record.transparentStart, record.transparentCount, e);
+      addRange(record.opaqueStart, record.opaqueCount, e, false);
+      addRange(record.transparentStart, record.transparentCount, e, true);
     });
 
     // Build
@@ -133,9 +137,11 @@ export class Bvh {
     // Re-order triangles to match leaf ranges
     this.triangles = new Float32Array(count * 9);
     this.triangleElement = new Int32Array(count);
+    this.triangleTransparent = new Uint8Array(count);
     for (let i = 0; i < count; i++) {
       this.triangles.set(corners.subarray(order[i] * 9, order[i] * 9 + 9), i * 9);
       this.triangleElement[i] = owner[order[i]];
+      this.triangleTransparent[i] = glass[order[i]];
     }
   }
 
@@ -177,8 +183,11 @@ export class Bvh {
     return found;
   }
 
-  /** Nearest hit along a ray within maxDistance, skipping masked-out elements; null when nothing is hit. */
-  raycast(origin: Vec3, direction: Vec3, maxDistance: number, mask: boolean[] | null): RayHit | null {
+  /**
+   * Nearest hit along a ray within maxDistance, skipping masked-out elements; null when nothing is hit.
+   * @param opaqueOnly True to pass through glass (sun hours: sun through glazing).
+   */
+  raycast(origin: Vec3, direction: Vec3, maxDistance: number, mask: boolean[] | null, opaqueOnly = false): RayHit | null {
     if (this.triangleElement.length === 0) { return null; }
     const ox = origin.x, oy = origin.y, oz = origin.z, dx = direction.x, dy = direction.y, dz = direction.z;
     const ix = reciprocal(dx), iy = reciprocal(dy), iz = reciprocal(dz);
@@ -201,6 +210,7 @@ export class Bvh {
       if (n > 0) {
         for (let i = first; i < first + n; i++) {
           if (mask && !mask[this.triangleElement[i]]) { continue; }
+          if (opaqueOnly && this.triangleTransparent[i] !== 0) { continue; }
           const t = rayTriangle(ox, oy, oz, dx, dy, dz, tris, i * 9, best);
           if (t > 1e-4) {
             best = t;

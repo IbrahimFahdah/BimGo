@@ -5,9 +5,16 @@ export const JournalOps = {
   HIDE: 'hide',
   TRANSFORM: 'transform',
   CLONE: 'clone',
+  /** A new instance of a family type (the family library), placed at the pivot and turned by the angle. */
+  PLACE: 'place',
   MODE_DEMOLISH: 'demolish',
   MODE_DELETE: 'delete'
 } as const;
+
+/** True for the ops that create a new instance with a clone key (clone, place). */
+export function journalOpCreates(op: string): boolean {
+  return op === JournalOps.CLONE || op === JournalOps.PLACE;
+}
 
 /** One recorded edit (the journal.json shape, camelCase). */
 export interface JournalEntry {
@@ -18,6 +25,10 @@ export interface JournalEntry {
   uniqueId: string;
   targetCloneKey: number;
   newCloneKey: number;
+  /** Place: the family type's UniqueId (null otherwise, and not written). */
+  typeUniqueId?: string | null;
+  /** Place: the family type's ElementId value (0 otherwise, and not written). */
+  typeId?: number;
   pivot: Vec3;
   offset: Vec3;
   angle: number;
