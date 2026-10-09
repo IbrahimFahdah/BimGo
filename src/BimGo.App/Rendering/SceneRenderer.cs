@@ -39,8 +39,23 @@ namespace BimGo.Rendering
         /// <summary>Realistic colours: render colours and textures (when the snapshot has materials).</summary>
         public bool Realistic;
 
-        /// <summary>Sky reflections on glass (Realistic mode only).</summary>
+        /// <summary>Reflections: glass, mirrors and shiny surfaces (Realistic mode only).</summary>
         public bool Reflections;
+
+        /// <summary>Lowest reflection tier that reflects, 0.25 or 0.5 (glass and water always reflect).</summary>
+        public float ReflectThreshold;
+
+        /// <summary>Reflection strength multiplier (0.5–2).</summary>
+        public float ReflectGain;
+
+        /// <summary>Debug colours instead of the material: 0 off, 1 reflection tiers, 2 reflection probe cells.</summary>
+        public int ReflectDebug;
+
+        /// <summary>Reflect the reflection probes where they exist (else the sky).</summary>
+        public bool Probes;
+
+        /// <summary>Seconds since the session started (water ripples).</summary>
+        public float Time;
 
         /// <summary>How Revit's tint is drawn (Realistic mode only).</summary>
         public TintMode Tint;
@@ -110,6 +125,15 @@ namespace BimGo.Rendering
         private readonly List<int> _lightsToRender = new(LightShadows.LIGHTS_PER_FRAME);
 
         private uint _vao, _vbo, _ibo, _emptyVao;
+
+        // Reflection probes (Realistic mode, reflections set to probes)
+        private readonly ReflectionProbes _probes = new();
+        private readonly List<(int Probe, int Face)> _probeFaces = new(ReflectionProbes.FACES_PER_FRAME);
+        private SceneData _scene;
+        private bool _probesActive, _probeErrorReported;
+
+        /// <summary>The reflection probes (counts, memory, last error).</summary>
+        public ReflectionProbes Probes => _probes;
 
         /// <summary>This frame's artificial lights and glow strength (set by the session before drawing).</summary>
         public ArtificialLighting Artificial { get; } = new();
@@ -261,6 +285,8 @@ namespace BimGo.Rendering
         {
             public int ViewProj, Model, Eye, LightDir, FogColor, FogDensity, Whitecard, Plan, ClipZ, Override;
             public int Realistic, Reflections, SkyZenith, SkyHorizon, TintMode;
+            public int ReflectThreshold, ReflectGain, ReflectDebug, Time;
+            public int ProbesOn, ProbeGridOrigin, ProbeGridCell, ProbeGridSize, ProbeMaxLod;
 
             public static SceneUniforms From(ShaderProgram p)
             {
@@ -272,6 +298,9 @@ namespace BimGo.Rendering
                 {
                     Gl.Uniform1(p.Uniform($"uTex{b}"), MaterialTextures.BUCKET_UNIT + b);
                 }
+                Gl.Uniform1(p.Uniform("uProbeArray"), ReflectionProbes.ARRAY_UNIT);
+                Gl.Uniform1(p.Uniform("uProbeGrid"), ReflectionProbes.GRID_UNIT);
+                Gl.Uniform1(p.Uniform("uProbeData"), ReflectionProbes.DATA_UNIT);
                 return Locations(p);
             }
 
@@ -291,7 +320,16 @@ namespace BimGo.Rendering
                 Reflections = p.Uniform("uReflections"),
                 SkyZenith = p.Uniform("uSkyZenith"),
                 SkyHorizon = p.Uniform("uSkyHorizon"),
-                TintMode = p.Uniform("uTintMode")
+                TintMode = p.Uniform("uTintMode"),
+                ReflectThreshold = p.Uniform("uReflectThreshold"),
+                ReflectGain = p.Uniform("uReflectGain"),
+                ReflectDebug = p.Uniform("uReflectDebug"),
+                Time = p.Uniform("uTime"),
+                ProbesOn = p.Uniform("uProbesOn"),
+                ProbeGridOrigin = p.Uniform("uProbeGridOrigin"),
+                ProbeGridCell = p.Uniform("uProbeGridCell"),
+                ProbeGridSize = p.Uniform("uProbeGridSize"),
+                ProbeMaxLod = p.Uniform("uProbeMaxLod")
             };
         }
 
@@ -305,6 +343,7 @@ namespace BimGo.Rendering
         public void Initialise(SceneData scene, SceneBatches batches)
         {
             _batches = batches;
+            _scene = scene;
 
             _sceneProgram = ShaderProgram.Create("scene", Shaders.SCENE_VS, Shaders.SCENE_FS);
             _skyProgram = ShaderProgram.Create("sky", Shaders.FULLSCREEN_VS, Shaders.SKY_FS);
@@ -945,6 +984,122 @@ namespace BimGo.Rendering
         }
 
         /// <summary>
+        /// Reflection probes for this frame (call after the shadow maps, light maps and screen effects, before binding
+        /// the scene target): places them and allocates their textures the first time, then captures this frame's few
+        /// faces (nearest unbaked probe first, then stale ones). A capture is the normal scene draw (sky, opaque, moved
+        /// elements, ground, glass) from the probe, without AO, reflections or fog-of-war differences. With probes not
+        /// wanted the textures are freed.
+        /// </summary>
+        /// <param name="wanted">Reflections set to probes (or the probe debug colours): keeps the probes allocated.</param>
+        /// <param name="capture">They are shown now (Realistic mode): bake this frame's faces.</param>
+        /// <param name="size">Face size (128 or 256 px).</param>
+        /// <param name="eye">The player's eye (bake order, provisional refresh).</param>
+        /// <param name="template">This frame's scene parameters (colour mode, tint, time); view fields are replaced.</param>
+        /// <param name="groupVisible">Per visibility group (category × model).</param>
+        /// <param name="dynamics">Moved and cloned elements.</param>
+        /// <param name="groundZ">Ground plane elevation.</param>
+        /// <returns>Null, or (once) why probes can't be shown (the caller switches to sky reflections).</returns>
+        public string UpdateReflectionProbes(bool wanted, bool capture, int size, Vector3 eye, in SceneDrawParams template, bool[] groupVisible,
+            DynamicSet dynamics, float groundZ)
+        {
+            _probesActive = false;
+            if (!wanted || !HasMaterials || _scene == null)
+            {
+                if (_probes.Ready) { _probes.Release(); }
+                return null;
+            }
+
+            if (!_probes.Ensure(_scene, size))
+            {
+                string error = _probes.LastError;
+                if (error == null || _probeErrorReported) { return null; }
+                _probeErrorReported = true;
+                return error;
+            }
+            _probeErrorReported = false;
+
+            if (!capture) { return null; }
+            _probes.NextFaces(eye, _probeFaces);
+            if (_probeFaces.Count > 0) { CaptureProbeFaces(template, groupVisible, dynamics, groundZ); }
+            _probes.Bind();
+            _probesActive = _probes.BakedCount > 0;
+            return null;
+        }
+
+        /// <summary>
+        /// Marks every probe stale (the session calls this a moment after the sun, lights, colour mode or the model
+        /// changed); they re-bake progressively and keep their old capture until then.
+        /// </summary>
+        public void InvalidateProbes() => _probes.Invalidate();
+
+        /// <summary>
+        /// Lets probes try again after a failure (the user switched them on again).
+        /// </summary>
+        public void RetryProbes()
+        {
+            _probes.ClearError();
+            _probeErrorReported = false;
+        }
+
+        /// <summary>
+        /// Captures this frame's probe faces with the scene program.
+        /// </summary>
+        private void CaptureProbeFaces(in SceneDrawParams template, bool[] groupVisible, DynamicSet dynamics, float groundZ)
+        {
+            FlushDynamic();
+            bool aoWas = _aoActive;
+            _aoActive = false;
+
+            SceneDrawParams p = template;
+            p.Reflections = false;
+            p.Probes = false;
+            p.ReflectDebug = 0;
+            p.Plan = false;
+            p.Sun = true;
+            p.ClipZ = new Vector2(-1e7f, 1e7f);
+            Vector3 clear = FogColour;
+            bool hasDynamics = dynamics != null && dynamics.Instances.Count > 0;
+
+            foreach ((int probe, int face) in _probeFaces)
+            {
+                Matrix4x4 matrix = _probes.FaceMatrix(probe, face, out Vector3 eye, out Vector4[] planes);
+                _probes.BeginFace(probe, face, clear);
+                Matrix4x4.Invert(matrix, out Matrix4x4 inverse);
+                DrawSky(inverse, eye);
+
+                p.ViewProjection = matrix;
+                p.Planes = planes;
+                p.Eye = eye;
+                Gl.Enable(Gl.DEPTH_TEST);
+                Gl.DepthFunc(Gl.LEQUAL);
+                Gl.Disable(Gl.BLEND);
+                Gl.Disable(Gl.CULL_FACE);
+                Gl.DepthMask(true);
+
+                _sceneProgram.Use();
+                ApplyUniforms(_sceneUniforms, p, Vector4.Zero, transmit: true);
+                DrawBatches(planes, groupVisible, transparent: false, countStats: false);
+                if (hasDynamics) { DrawDynamicInstances(dynamics, planes, transparent: false, _sceneUniforms.Model); }
+                DrawGround(matrix, eye, groundZ);
+
+                Gl.Enable(Gl.BLEND);
+                Gl.BlendFunc(Gl.SRC_ALPHA, Gl.ONE_MINUS_SRC_ALPHA);
+                Gl.DepthMask(false);
+                _sceneProgram.Use();
+                ApplyUniforms(_sceneUniforms, p, Vector4.Zero, transmit: false);
+                DrawBatches(planes, groupVisible, transparent: true, countStats: false);
+                if (hasDynamics) { DrawDynamicInstances(dynamics, planes, transparent: true, _sceneUniforms.Model); }
+                Gl.DepthMask(true);
+                Gl.Disable(Gl.BLEND);
+
+                _probes.EndFace(probe, face);
+            }
+
+            _aoActive = aoWas;
+            _probes.EndCapture();
+        }
+
+        /// <summary>
         /// Adds this frame's bloom over the scene target (call after the transparent pass, target bound).
         /// </summary>
         public void CompositeGlow()
@@ -994,13 +1149,18 @@ namespace BimGo.Rendering
         /// <summary>
         /// Draws the gradient sky (no depth).
         /// </summary>
-        public void DrawSky(FpsCamera camera)
+        public void DrawSky(FpsCamera camera) => DrawSky(camera.InverseViewProjection, camera.Position);
+
+        /// <summary>
+        /// Draws the gradient sky (no depth) for any view (the camera, or a probe face).
+        /// </summary>
+        private void DrawSky(in Matrix4x4 inverseViewProjection, Vector3 eye)
         {
             Gl.Disable(Gl.DEPTH_TEST);
             Gl.DepthMask(false);
             _skyProgram.Use();
-            Gl.UniformMatrix4(_skyInvViewProj, camera.InverseViewProjection);
-            Gl.Uniform3(_skyEye, camera.Position.X, camera.Position.Y, camera.Position.Z);
+            Gl.UniformMatrix4(_skyInvViewProj, inverseViewProjection);
+            Gl.Uniform3(_skyEye, eye.X, eye.Y, eye.Z);
             SunLighting l = Lighting;
             Gl.Uniform1(_skySun, l.Enabled ? 1 : 0);
             Gl.Uniform3(_skySunDir, l.SunDirection.X, l.SunDirection.Y, l.SunDirection.Z);
@@ -1016,13 +1176,18 @@ namespace BimGo.Rendering
         /// <summary>
         /// Draws the infinite-looking ground plane.
         /// </summary>
-        public void DrawGround(FpsCamera camera, float groundZ)
+        public void DrawGround(FpsCamera camera, float groundZ) => DrawGround(camera.ViewProjection, camera.Position, groundZ);
+
+        /// <summary>
+        /// Draws the ground plane for any view (the camera, or a probe face).
+        /// </summary>
+        private void DrawGround(in Matrix4x4 viewProjection, Vector3 eye, float groundZ)
         {
             _groundProgram.Use();
-            Gl.UniformMatrix4(_groundViewProj, camera.ViewProjection);
-            Gl.Uniform3(_groundCenter, camera.Position.X, camera.Position.Y, groundZ);
+            Gl.UniformMatrix4(_groundViewProj, viewProjection);
+            Gl.Uniform3(_groundCenter, eye.X, eye.Y, groundZ);
             Gl.Uniform1(_groundHalf, GROUND_HALF);
-            Gl.Uniform3(_groundEye, camera.Position.X, camera.Position.Y, camera.Position.Z);
+            Gl.Uniform3(_groundEye, eye.X, eye.Y, eye.Z);
             Vector3 fog = FogColour;
             Gl.Uniform3(_groundFog, fog.X, fog.Y, fog.Z);
             ApplyLight(_groundLight, sun: true, transmit: true);
@@ -1122,6 +1287,20 @@ namespace BimGo.Rendering
             if (!realistic) { return; }
             _materials.Bind();
             Gl.Uniform1(u.Reflections, p.Reflections ? 1 : 0);
+            Gl.Uniform1(u.ReflectThreshold, p.ReflectThreshold > 0f ? p.ReflectThreshold : 0.5f);
+            Gl.Uniform1(u.ReflectGain, p.ReflectGain > 0f ? p.ReflectGain : 1f);
+            Gl.Uniform1(u.ReflectDebug, p.ReflectDebug);
+            Gl.Uniform1(u.Time, p.Time);
+            bool probes = (p.Probes || p.ReflectDebug == 2) && _probesActive;
+            Gl.Uniform1(u.ProbesOn, probes ? 1 : 0);
+            if (probes)
+            {
+                Vector3 origin = _probes.GridOrigin, cell = _probes.GridCell, size = _probes.GridSize;
+                Gl.Uniform3(u.ProbeGridOrigin, origin.X, origin.Y, origin.Z);
+                Gl.Uniform3(u.ProbeGridCell, cell.X, cell.Y, cell.Z);
+                Gl.Uniform3(u.ProbeGridSize, size.X, size.Y, size.Z);
+                Gl.Uniform1(u.ProbeMaxLod, _probes.MaxLod);
+            }
             Gl.Uniform1(u.TintMode, (int)p.Tint);
             SunLighting l = Lighting;
             Vector3 zenith = l.Enabled ? l.Zenith : SKY_ZENITH, horizon = l.Enabled ? l.Horizon : FOG_COLOUR;
@@ -1149,6 +1328,7 @@ namespace BimGo.Rendering
             _shadows.Dispose();
             _effects.Dispose();
             _lightShadows.Dispose();
+            _probes.Dispose();
             _materials.Dispose();
             Gl.DeleteBuffer(_materialVbo);
             Gl.DeleteBuffer(_uvVbo);

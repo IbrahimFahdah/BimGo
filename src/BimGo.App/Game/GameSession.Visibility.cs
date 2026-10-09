@@ -75,6 +75,9 @@ namespace BimGo.Game
             }
             if (saved == null || saved.IsEmpty) { return; }
 
+            // The ground plane as it was left (relative to the default, so it survives a re-extraction)
+            if (saved.GroundOffset is float ground) { _groundZ = _groundDefault + ground; }
+
             foreach (string key in saved.HiddenCategories)
             {
                 if (CategoryCatalog.Find(key) is CategoryDef def && Scene.CategoryLoaded[def.Index]) { _categoryVisible[def.Index] = false; }
@@ -137,7 +140,11 @@ namespace BimGo.Game
         /// </summary>
         private VisibilitySettings ToVisibilitySettings()
         {
-            var settings = new VisibilitySettings();
+            float groundOffset = _groundZ - _groundDefault;
+            var settings = new VisibilitySettings
+            {
+                GroundOffset = MathF.Abs(groundOffset) > 0.001f ? MathF.Round(groundOffset * 1000f) / 1000f : null
+            };
             foreach (CategoryDef def in CategoryCatalog.All)
             {
                 if (Scene.CategoryLoaded[def.Index] && !_categoryVisible[def.Index]) { settings.HiddenCategories.Add(def.Key); }
@@ -190,7 +197,7 @@ namespace BimGo.Game
         {
             if (_visibilitySidecarPath == null || _sidecarVisibilityRevision == _visibilityRevision) { return; }
             _sidecarVisibilityRevision = _visibilityRevision;
-            if (!VisibilityFiles.Write(_visibilitySidecarPath, ToVisibilitySettings(), out string error)) { Toast(error, 4f); }
+            if (!VisibilityFiles.Write(_visibilitySidecarPath, ToVisibilitySettings(), out string error)) { Toast(error, 4f, important: true); }
         }
 
         #endregion
@@ -224,7 +231,7 @@ namespace BimGo.Game
             if (dynamicId > 0)
             {
                 Sound.Play(SoundId.Error);
-                Toast("Moved or cloned elements can't be hidden: demolish the clone, or undo the move");
+                Toast("Moved or cloned elements can't be hidden: demolish the clone, or undo the move", important: true);
                 return;
             }
 

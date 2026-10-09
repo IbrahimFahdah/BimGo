@@ -14,10 +14,11 @@ namespace BimGo.Rendering
     /// image takes the smallest bucket that holds its longest side (never above the size it was extracted at), so a
     /// model of 256 px library textures doesn't pay for 1024² layers. Rectangular images are stretched to the square
     /// layer; their real-world width and height keep the proportions on screen.</item>
-    /// <item><b>The table</b> is a small RGBA32F texture, five texels per material (read with texelFetch, so any
+    /// <item><b>The table</b> is a small RGBA32F texture, six texels per material (read with texelFetch, so any
     /// number of materials fits on GL 3.3):
-    /// t0 (colour, fade) · t1 (image tint, reflectivity) · t2 (scale U, scale V, offset U, offset V) ·
-    /// t3 (cos angle, sin angle, bucket or -1, layer) · t4 (appearance tint, flags: 1 = invert the image).
+    /// t0 (colour, fade) · t1 (image tint, glass reflectivity) · t2 (scale U, scale V, offset U, offset V) ·
+    /// t3 (cos angle, sin angle, bucket or -1, layer) · t4 (appearance tint, flags: 1 = invert the image) ·
+    /// t5 (shine 0–1, roughness 0–1, flags: 1 = metallic, 2 = water; ripple strength).
     /// Keep in step with <see cref="Shaders.MATERIALS_GLSL"/>.</item>
     /// <item><b>Proxies:</b> a material with no embedded image but a proxy keyword (<see cref="ProxyPack"/>) gets the
     /// pack's image as one more layer, drawn fully (fade 1, no image tint) at the proxy's real-world size.</item>
@@ -40,7 +41,13 @@ namespace BimGo.Rendering
         public static readonly int[] BUCKETS = { 256, 512, 1024, 2048 };
 
         /// <summary>Texels per material in the table (see the class remarks).</summary>
-        private const int TEXELS = 5;
+        private const int TEXELS = 6;
+
+        /// <summary>t5.z flag: a metal (its reflection takes its colour).</summary>
+        private const float FLAG_METALLIC = 1f;
+
+        /// <summary>t5.z flag: water (animated ripples).</summary>
+        private const float FLAG_WATER = 2f;
 
         /// <summary>Proxy layers are capped at this size (the pack's images are 512²).</summary>
         private const int PROXY_CAP = 512;
@@ -78,6 +85,12 @@ namespace BimGo.Rendering
 
         /// <summary>Materials drawn with a proxy image.</summary>
         public int ProxyCount { get; private set; }
+
+        /// <summary>Materials with an opaque reflection strength (shine &gt; 0) in the table.</summary>
+        public int ShinyCount { get; private set; }
+
+        /// <summary>Water materials in the table.</summary>
+        public int WaterCount { get; private set; }
 
         #endregion
 
@@ -184,7 +197,7 @@ namespace BimGo.Rendering
                     return "Not enough graphics memory for the textures: Realistic mode shows colours only. Try a smaller texture size.";
                 }
 
-                Utilities.Log_Utils.Write($"Materials: {MaterialCount} in the table ({ProxyCount} on proxies), {ImageCount} images in " +
+                Utilities.Log_Utils.Write($"Materials: {MaterialCount} in the table ({ProxyCount} on proxies, {ShinyCount} shiny, {WaterCount} water), {ImageCount} images in " +
                     $"{string.Join(", ", BUCKETS.Select((s, b) => (s, n: pending[b].Count)).Where(x => x.n > 0).Select(x => $"{x.n}×{x.s}²"))}, ≈ {GpuBytes / (1024 * 1024)} MB.");
                 return warning;
             }
@@ -215,7 +228,7 @@ namespace BimGo.Rendering
         #region Upload helpers
 
         /// <summary>
-        /// The table: five RGBA32F texels per material (see the class remarks).
+        /// The table: six RGBA32F texels per material (see the class remarks).
         /// </summary>
         private void UploadTable(SceneMaterial[] materials, string[] keys, string[] proxyOf, ProxyPack proxies,
             Dictionary<string, (int Bucket, int Layer)> placements, Dictionary<string, Vector3> averages)
@@ -223,6 +236,8 @@ namespace BimGo.Rendering
             int count = materials.Length;
             float[] data = new float[count * TEXELS * 4];
             ProxyCount = 0;
+            ShinyCount = 0;
+            WaterCount = 0;
             for (int i = 0; i < count; i++)
             {
                 SceneMaterial m = materials[i];
@@ -263,6 +278,14 @@ namespace BimGo.Rendering
                 data[o + 14] = bucket;
                 data[o + 15] = layer;
                 Put(o + 16, m.AssetTint ?? Vector3.One, proxy ? FLAG_PROXY : m.Invert ? FLAG_INVERT : 0f);
+
+                // Reflections (reflection probes round): raw strength and blur; tiers and threshold in the shader
+                data[o + 20] = m.Shine;
+                data[o + 21] = m.Roughness ?? 1f;
+                data[o + 22] = (m.Metallic ? FLAG_METALLIC : 0f) + (m.Water ? FLAG_WATER : 0f);
+                data[o + 23] = m.Water ? (m.WaterBump > 0f ? m.WaterBump : 0.1f) : 0f;
+                if (m.Shine > 0f) { ShinyCount++; }
+                if (m.Water) { WaterCount++; }
             }
 
             _table = Gl.GenTexture();

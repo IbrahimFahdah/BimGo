@@ -30,17 +30,21 @@ namespace BimGo.Game
             ("V", "Fly / walk (no-clip)"),
             ("PGUP / PGDN", "Level up / down"),
             ("H · SHIFT+H", "Go home · Set home here"),
-            ("1–8 · WHEEL", "Select gun"),
+            ("1–9 · WHEEL", "Select gun (9 Place: family library)"),
+            ("F", "Gizmo / Clone / Place: drop onto the surface below"),
             ("I · SHIFT+I", "Scan gun: hide target · isolate its category"),
             ("X", "Clear this gun's markers"),
             ("B · CTRL+1–9", "Bookmark this view · Go to bookmark"),
             ("L", "Coordinate readout"),
             ("K", "Artificial lights: off / glow / light"),
             ("O · SHIFT+O", "Shadows on/off · Sun panel"),
+            ("J", "Sun hours study (click surfaces, RMB-drag looks)"),
             ("[ ]", "Sun time −/+ 5 min (Shift: 1 min)"),
             ("CTRL+S · Z · Y", "Save · Undo · Redo (files)"),
+            ("CTRL+F", "Find a room and go there"),
             ("F5", "Refresh from Revit (live sessions)"),
             ("TAB · ESC", "Minimap · Pause menu"),
+            ("U", "Hide the UI (Esc or U shows it)"),
             ("F11 · F12", "Fullscreen · Screenshot"),
             ("F1", "Hide help · BimGo " + Program.Version)
         };
@@ -67,12 +71,15 @@ namespace BimGo.Game
             // ---- Artificial lights for this frame (after the sun: daylight dims them), and their cached shadow maps
             UpdateArtificialLights();
             string lightShadowError = _renderer.UpdateLightShadows(_groupVisible, Dynamics, ShadowSceneKey());
-            if (lightShadowError != null) { Toast(lightShadowError, 6f); }
+            if (lightShadowError != null) { Toast(lightShadowError, 6f, important: true); }
 
             // ---- Ambient occlusion and glow: half-resolution geometry pre-pass, AO + blur, bloom source + blur
             bool glow = _renderer.Artificial.Bloom > 0f;
             string effectsError = _renderer.UpdateScreenEffects(Camera, width, height, _groupVisible, Dynamics, _groundZ, _ambientOcclusion, glow);
             if (effectsError != null) { OnScreenEffectsFailure(effectsError); }
+
+            // ---- Reflection probes: a couple of faces per frame until baked, re-baked a moment after things change
+            UpdateReflectionProbes();
 
             // ---- 3D scene into the (optionally multisampled) target
             _target.Ensure(width, height, _msaa);
@@ -95,6 +102,11 @@ namespace BimGo.Game
                 Whitecard = _whitecard,
                 Realistic = _realistic,
                 Reflections = _reflections,
+                ReflectThreshold = _reflectThreshold / 100f,
+                ReflectGain = _reflectStrength,
+                ReflectDebug = _reflectDebug,
+                Probes = _reflectProbes,
+                Time = _clock,
                 Tint = _tintMode,
                 Plan = false,
                 ClipZ = new Vector2(-1e7f, 1e7f),
@@ -109,7 +121,8 @@ namespace BimGo.Game
             // Gun highlights (scan target, primed demolitions, gizmo target…)
             Gun active = _guns[_activeGun];
             _highlights.Clear();
-            if (!_paused) { active.CollectHighlights(_highlights); }
+            // Hidden UI: no tints either, unless a gun is in the middle of something (Gizmo / Clone holding an element)
+            if (!_paused && (!_uiHidden || active.CapturesInput)) { active.CollectHighlights(_highlights); }
             if (_highlights.Count > 0)
             {
                 Gl.Enable(Gl.BLEND);
@@ -133,28 +146,48 @@ namespace BimGo.Game
             // Bloom from glowing surfaces over everything (glass included)
             _renderer.CompositeGlow();
 
-            // Markers: depth-tested, then a faint x-ray copy so markers behind walls stay discoverable
-            _overlay.Begin(Camera);
-            for (int i = 0; i < _guns.Length; i++) { _guns[i].DrawWorld(_overlay, i == _activeGun); }
-            _overlay.Draw(Camera, depthTest: true, alpha: 1f, additive: false);
-            _overlay.Draw(Camera, depthTest: false, alpha: 0.16f, additive: false);
+            // Markers: depth-tested, then a faint x-ray copy so markers behind walls stay discoverable (none while the
+            // UI is hidden: clean views)
+            if (!_uiHidden)
+            {
+                _overlay.Begin(Camera);
+                for (int i = 0; i < _guns.Length; i++) { _guns[i].DrawWorld(_overlay, i == _activeGun); }
+                _overlay.Draw(Camera, depthTest: true, alpha: 1f, additive: false);
+                _overlay.Draw(Camera, depthTest: false, alpha: 0.16f, additive: false);
+            }
+
+            // Sun hours grid (study results are content, so they show with the UI hidden too)
+            DrawSunHoursCells();
 
             _target.BlitToWindow();
-            if (_thumbnailFor != null) { CaptureThumbnail(width, height); }
+            if (ThumbnailDue) { CaptureThumbnail(width, height); }
             if (_screenshotRequested) { CaptureScreenshot(width, height); }
+            if (_sunShotRequested)
+            {
+                // The study's screenshot: the 3D view plus the legend (drawn and flushed first), no other UI
+                _sunShotRequested = false;
+                Gl.Viewport(0, 0, width, height);
+                BuildSunLegend(_ui.Atlas, S(20), height - S(20) - S(78));
+                _ui.Flush(width, height);
+                CaptureScreenshot(width, height, " sun hours");
+            }
 
             // ---- Window pass: minimap 3D, then all 2D UI in one batch
             Gl.Viewport(0, 0, width, height);
             float mapX = width - S(20) - S(220), mapY = S(20);
-            if (_showMap && !_paused) { DrawMinimapPlan(mapX + S(8), mapY + S(30), S(204), S(170)); }
+            if (_showMap && !_paused && !_uiHidden) { DrawMinimapPlan(mapX + S(8), mapY + S(30), S(204), S(170)); }
 
             if (_paused)
             {
+                // A text box opened from a panel (reply, assignee) sits over the menu and takes the clicks
+                if (IsEditingComment) { _window.Input.ConsumeClicks(); }
                 BuildPauseMenu();
+                if (IsEditingComment) { BuildCommentEditor(); }
             }
             else
             {
-                BuildHud(mapX, mapY);
+                if (_uiHidden) { BuildHiddenHud(width); }
+                else { BuildHud(mapX, mapY); }
                 if (IsEditingComment) { BuildCommentEditor(); }
             }
             _ui.Flush(width, height);
@@ -171,7 +204,7 @@ namespace BimGo.Game
             _renderer.Artificial.Bloom = 0f;
             _renderer.DisableScreenEffects();
             Sound.Play(SoundId.Error);
-            Toast(reason, 6f);
+            Toast(reason, 6f, important: true);
         }
 
         /// <summary>
@@ -340,7 +373,7 @@ namespace BimGo.Game
             _ui.Rect(cx + gap, cy - t1 * 0.5f, arm, t1, UiTheme.TEXT);
             _ui.Circle(cx, cy, S(1.8f), active.Colour, 10);
 
-            if (!_window.IsCaptured && !IsEditingComment && !_sunPanelOpen)
+            if (!_window.IsCaptured && !IsEditingComment && !_sunPanelOpen && !_sunHoursOpen)
             {
                 const string hint = "Click to look around";
                 float hintWidth = UiBatch.Measure(f.Body, hint) + S(24);
@@ -354,7 +387,7 @@ namespace BimGo.Game
             // Minimap and the gun's context panel beneath it
             if (_showMap) { DrawMinimapOverlay(mapX, mapY); }
             // (hidden while the sun panel is open: the two would overlap on smaller screens)
-            if (!_sunPanelOpen)
+            if (!_sunPanelOpen && !_sunHoursOpen)
             {
                 float panelTop = _showMap ? mapY + S(208) + S(12) : S(20);
                 float panelWidth = S(260), panelX = width - S(20) - panelWidth;
@@ -365,12 +398,28 @@ namespace BimGo.Game
 
             BuildSunIcon(f, _window.Input);
             if (_sunPanelOpen) { BuildSunPanel(f, _window.Input); }
+            if (_sunHoursOpen) { BuildSunHoursPanel(f, _window.Input); }
+            BuildSunLegend(f, S(20), height - S(52) - S(78));
 
             BuildHelp(f, height);
             BuildGunBar(f, width, height, active);
             BuildRoomBanner(f, width);
             BuildLiveBanner(f, width, height);
             BuildToast(f, width);
+        }
+
+        /// <summary>
+        /// The HUD in hide-UI mode (U): only the portal flash and important toasts (errors). The comment text box is
+        /// drawn by the caller as usual.
+        /// </summary>
+        private void BuildHiddenHud(int width)
+        {
+            if (_clock < _flashUntil)
+            {
+                float t = (_flashUntil - _clock) / MathF.Max(_flashLength, 0.01f);
+                _ui.Rect(0, 0, width, _window.Height, Rgba.WithAlpha(_flashColour, 0.35f * t));
+            }
+            if (_toastImportant) { BuildToast(_ui.Atlas, width); }
         }
 
         /// <summary>

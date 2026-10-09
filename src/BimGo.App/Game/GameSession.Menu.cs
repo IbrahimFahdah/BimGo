@@ -33,8 +33,35 @@ namespace BimGo.Game
         private BookmarkRecord _editBookmark;
         private bool _editBookmarkIsNew;
 
+        // Comment issue text boxes (opened from the comment panel): a reply, or the assignee
+        private CommentRecord _editReplyFor, _editAssigneeFor;
+
+        /// <summary>Longest assignee name.</summary>
+        private const int MAX_ASSIGNEE = 60;
+
         private static readonly string[] COLOUR_OPTIONS = { "Whitecard", "Material", "Realistic" };
         private static readonly string[] MSAA_OPTIONS = { "Off", "2x", "4x" };
+
+        /// <summary>Reflections: off, some (shine tiers 50 % +), or all (25 % +).</summary>
+        private static readonly string[] REFLECTION_OPTIONS = { "Off", "Some", "All" };
+
+        /// <summary>Debug colours: off, reflection tiers, reflection probe cells.</summary>
+        private static readonly string[] DEBUG_OPTIONS = { "Off", "Reflection", "Probes" };
+
+        /// <summary>The pickable quality profiles (Custom is shown as no selection).</summary>
+        private static readonly string[] PROFILE_OPTIONS = { "Basic", "Medium", "Realistic" };
+
+        /// <summary>The pause menu's right-column tabs.</summary>
+        private static readonly string[] RIGHT_TABS = { "DISPLAY", "REFLECTIONS", "DEBUG" };
+
+        /// <summary>Height of the right column's card (unscaled): fits the Display tab, the tallest.</summary>
+        private const float RIGHT_CARD_HEIGHT = 440f;
+
+        // Open right-column tab: 0 display, 1 reflections, 2 debug (per session)
+        private int _rightTab;
+
+        /// <summary>Slider id of the reflection strength (unique across the menu's sliders).</summary>
+        private const int SLIDER_REFLECT = 17;
 
         #endregion
 
@@ -54,6 +81,7 @@ namespace BimGo.Game
             _editing = true;
             _editRecord = null;
             _editBookmark = null;
+            _editReplyFor = _editAssigneeFor = null;
             _editMax = _editChars.Length;
             _editPoint = point;
             _editElement = elementId;
@@ -71,6 +99,7 @@ namespace BimGo.Game
             _editing = true;
             _editRecord = record;
             _editBookmark = null;
+            _editReplyFor = _editAssigneeFor = null;
             _editMax = _editChars.Length;
             _editPoint = record.Local;
             _editElement = record.ElementId;
@@ -92,11 +121,47 @@ namespace BimGo.Game
             _editing = true;
             _editRecord = null;
             _editBookmark = record;
+            _editReplyFor = _editAssigneeFor = null;
             _editBookmarkIsNew = isNew;
             _editMax = BookmarkStore.MAX_NAME;
             _editLevel = string.IsNullOrEmpty(record.Level) ? null : record.Level;
             _editLength = Math.Min(record.Name?.Length ?? 0, _editMax);
             record.Name?.CopyTo(0, _editChars, 0, _editLength);
+            _window.Input.ReleaseAll();
+        }
+
+        /// <summary>
+        /// Opens the text box for a reply to a comment (from the comment panel; the menu stays open behind it).
+        /// </summary>
+        private void BeginCommentReply(CommentRecord record)
+        {
+            if (record == null) { return; }
+            _editing = true;
+            _editRecord = null;
+            _editBookmark = null;
+            _editAssigneeFor = null;
+            _editReplyFor = record;
+            _editMax = _editChars.Length;
+            _editLevel = string.IsNullOrEmpty(record.Level) ? null : record.Level;
+            _editLength = 0;
+            _window.Input.ReleaseAll();
+        }
+
+        /// <summary>
+        /// Opens the text box on a comment's assignee (ready to change; empty + Enter clears it).
+        /// </summary>
+        private void BeginCommentAssign(CommentRecord record)
+        {
+            if (record == null) { return; }
+            _editing = true;
+            _editRecord = null;
+            _editBookmark = null;
+            _editReplyFor = null;
+            _editAssigneeFor = record;
+            _editMax = MAX_ASSIGNEE;
+            _editLevel = string.IsNullOrEmpty(record.Level) ? null : record.Level;
+            _editLength = Math.Min(record.AssignedTo?.Length ?? 0, _editMax);
+            record.AssignedTo?.CopyTo(0, _editChars, 0, _editLength);
             _window.Input.ReleaseAll();
         }
 
@@ -124,12 +189,17 @@ namespace BimGo.Game
                             if (_editBookmarkIsNew && _thumbnailFor == _editBookmark) { _thumbnailFor = null; }
                             Toast(_editBookmarkIsNew ? "Bookmark cancelled (nothing was saved)" : "Name not changed");
                         }
+                        else if (_editReplyFor != null || _editAssigneeFor != null)
+                        {
+                            Toast(_editReplyFor != null ? "Reply cancelled" : "Assignee not changed");
+                        }
                         else
                         {
                             Toast(_editRecord != null ? "Edit cancelled" : "Comment cancelled");
                         }
                         _editRecord = null;
                         _editBookmark = null;
+                        _editReplyFor = _editAssigneeFor = null;
                         return;
 
                     default:
@@ -145,8 +215,26 @@ namespace BimGo.Game
             string text = new string(_editChars, 0, _editLength).Trim();
             CommentRecord editing = _editRecord;
             BookmarkRecord bookmark = _editBookmark;
+            CommentRecord replyTo = _editReplyFor, assignFor = _editAssigneeFor;
             _editRecord = null;
             _editBookmark = null;
+            _editReplyFor = _editAssigneeFor = null;
+
+            if (replyTo != null)
+            {
+                if (text.Length == 0) { Toast("Empty reply not saved"); return; }
+                Comments.AddReply(replyTo, text);
+                Sound.Play(SoundId.CommentPlace);
+                _commentsNotice = Comments.LastError ?? $"Reply added ({replyTo.ReplyCount} in the thread)";
+                return;
+            }
+            if (assignFor != null)
+            {
+                Comments.SetIssue(assignFor, assignedTo: text);
+                Sound.Play(SoundId.UiClick);
+                _commentsNotice = Comments.LastError ?? (text.Length == 0 ? "Unassigned" : $"Assigned to {text}");
+                return;
+            }
 
             if (bookmark != null)
             {
@@ -155,7 +243,7 @@ namespace BimGo.Game
                 else if (text.Length > 0) { Bookmarks.Rename(bookmark, text); }
                 Sound.Play(SoundId.Commit);
                 string verb = _editBookmarkIsNew ? "Bookmarked" : "Renamed to";
-                Toast(Bookmarks.LastError ?? $"{verb} “{bookmark.Name}” ({BookmarkHotkey(bookmark)})");
+                Toast(Bookmarks.LastError ?? $"{verb} “{bookmark.Name}” ({BookmarkHotkey(bookmark)})", important: Bookmarks.LastError != null);
                 return;
             }
 
@@ -168,7 +256,7 @@ namespace BimGo.Game
                 }
                 Comments.Update(editing, text);
                 Sound.Play(SoundId.CommentPlace);
-                Toast(Comments.LastError ?? "Comment updated");
+                Toast(Comments.LastError ?? "Comment updated", important: Comments.LastError != null);
                 return;
             }
 
@@ -178,9 +266,13 @@ namespace BimGo.Game
                 return;
             }
 
-            Comments.Add(_editPoint, text, _editElement, _editLevel);
+            // The new comment remembers where it was made from, and a picture of that view (taken next frame: the
+            // capture reads the 3D view before the UI is drawn, so the text box isn't in it)
+            CommentRecord added = Comments.Add(_editPoint, text, _editElement, _editLevel);
+            Comments.SetView(added, _player.Feet, _player.Yaw, _player.Pitch, _player.Flying);
+            _commentThumbnailFor = added;
             Sound.Play(SoundId.CommentPlace);
-            Toast(Comments.LastError ?? $"Comment saved to {Comments.FileName}");
+            Toast(Comments.LastError ?? $"Comment saved to {Comments.FileName}", important: Comments.LastError != null);
         }
 
         /// <summary>
@@ -198,7 +290,10 @@ namespace BimGo.Game
             uint frame = naming ? UiTheme.BOOKMARK : UiTheme.COMMENT;
             uint label = naming ? UiTheme.BOOKMARK_LABEL : UiTheme.COMMENT_LABEL;
             _ui.Panel(x, y, w, h, UiTheme.PANEL_STRONG, frame);
-            Text.Clear().Append(naming ? "BOOKMARK NAME · " : _editRecord != null ? "EDIT COMMENT · " : "NEW COMMENT · ").Append(_editLevel ?? "—");
+            Text.Clear().Append(naming ? "BOOKMARK NAME · "
+                : _editReplyFor != null ? "REPLY · "
+                : _editAssigneeFor != null ? "ASSIGN TO (empty = unassigned) · "
+                : _editRecord != null ? "EDIT COMMENT · " : "NEW COMMENT · ").Append(_editLevel ?? "—");
             _ui.Text(f.Small, x + S(14), y + S(12), Text.Span, label, S(1f));
 
             float boxY = y + S(32);
@@ -259,6 +354,16 @@ namespace BimGo.Game
                 BuildTexturesPanel();
                 return;
             }
+            if (IsLibraryPanelOpen)
+            {
+                BuildLibraryPanel();
+                return;
+            }
+            if (IsRoomsPanelOpen)
+            {
+                BuildRoomsPanel();
+                return;
+            }
 
             FontAtlas f = _ui.Atlas;
             InputState input = _window.Input;
@@ -283,7 +388,9 @@ namespace BimGo.Game
             float endY = height - pad - S(48);
             int hiddenThings = HiddenThingsCount();
             bool texturesButton = HasTexturePanel;
-            int buttons = (IsFileMode ? 9 : 7) + (hiddenThings > 0 ? 1 : 0) + (texturesButton ? 1 : 0);
+            bool libraryButton = HasLibrary;
+            bool roomsButton = Scene.Rooms.Length > 0;
+            int buttons = (IsFileMode ? 10 : 8) + (hiddenThings > 0 ? 1 : 0) + (texturesButton ? 1 : 0) + (libraryButton ? 1 : 0) + (roomsButton ? 1 : 0);
             float step = Math.Clamp((endY - S(12) - y) / buttons, S(40), S(54));
             float buttonH = step - S(6);
             if (MenuButton(f, leftX, y, leftW, "RESUME", primary: true, danger: false, height: buttonH)) { SetPaused(false); return; }
@@ -320,6 +427,18 @@ namespace BimGo.Game
                 if (MenuButton(f, leftX, y, leftW, TexturesMenuLabel(), false, false, height: buttonH)) { OpenTextures(); return; }
                 y += step;
             }
+            if (roomsButton)
+            {
+                if (MenuButton(f, leftX, y, leftW, "FIND ROOM", false, false, height: buttonH)) { OpenRooms(); return; }
+                y += step;
+            }
+            if (MenuButton(f, leftX, y, leftW, "SUN HOURS STUDY", false, false, height: buttonH)) { OpenSunHours(); return; }
+            y += step;
+            if (libraryButton)
+            {
+                if (MenuButton(f, leftX, y, leftW, LibraryMenuLabel(), false, false, height: buttonH)) { OpenLibrary(); return; }
+                y += step;
+            }
 
             // Walkthrough-only hiding (Scan I / Shift+I, category and link toggles)
             if (hiddenThings > 0)
@@ -348,8 +467,8 @@ namespace BimGo.Game
             // ---- Middle: geometry toggles
             if (midW > S(300)) { BuildCategoryCards(f, input, midX, pad, midW); }
 
-            // ---- Right: world and display
-            BuildDisplayCard(f, input, rightX, pad, rightW);
+            // ---- Right: quality profile, then Display · Reflections · Debug
+            BuildRightColumn(f, input, rightX, pad, rightW);
 
             // Version / file footer
             Text.Clear().Append(DocumentName).Append(" · ").AppendGrouped(Scene.Elements.Length).Append(" elements · ").AppendGrouped(Scene.TriangleCount).Append(" tris · ")
@@ -507,22 +626,55 @@ namespace BimGo.Game
         }
 
         /// <summary>
-        /// Ground plane, colour, anti-aliasing, FOV, sensitivity and toggles.
+        /// The right column: the quality profile (always visible), then the Display · Reflections · Debug tabs and the
+        /// open tab's card. One fixed card height so the column doesn't jump between tabs.
         /// </summary>
-        private void BuildDisplayCard(FontAtlas f, InputState input, float x, float top, float width)
+        private void BuildRightColumn(FontAtlas f, InputState input, float x, float top, float width)
         {
-            _ui.Text(f.Small, x, top + S(2), "WORLD & DISPLAY", UiTheme.TEXT_MUTED, S(1.8f));
-            float cardTop = top + S(26);
-            float cardH = S(508);
-            _ui.Panel(x, cardTop, width, cardH, UiTheme.CARD, UiTheme.CARD_BORDER);
+            // Quality profile: Basic / Medium / Realistic, or "Custom" once anything it sets was changed by hand
+            QualityProfile profile = CurrentProfile();
+            _ui.Text(f.Small, x, top + S(2), "QUALITY PROFILE", UiTheme.TEXT_MUTED, S(1.8f));
+            if (profile == QualityProfile.Custom) { _ui.TextRight(f.Small, x + width, top + S(2), "CUSTOM", UiTheme.MEASURE_LABEL, S(1.2f)); }
+            int shown = profile == QualityProfile.Custom ? -1 : (int)profile - 1;
+            int picked = Segmented(f, input, x, top + S(22), width, PROFILE_OPTIONS, shown);
+            if (picked != shown && picked >= 0) { ApplyProfile(QualityProfiles.PICKABLE[picked]); }
 
-            float ix = x + S(14), iw = width - S(28);
-            float y = cardTop + S(14);
+            // Tabs
+            float tabsY = top + S(68);
+            int tab = Tabs(f, input, x, tabsY, width, RIGHT_TABS, _rightTab);
+            if (tab != _rightTab)
+            {
+                _rightTab = tab;
+                _activeSlider = -1;
+            }
 
+            float cardTop = tabsY + S(32);
+            _ui.Panel(x, cardTop, width, S(RIGHT_CARD_HEIGHT), UiTheme.CARD, UiTheme.CARD_BORDER);
+            float ix = x + S(14), iw = width - S(28), y = cardTop + S(14);
+            switch (_rightTab)
+            {
+                case 1: BuildReflectionsTab(f, input, ix, y, iw); break;
+                case 2: BuildDebugTab(f, input, ix, y, iw); break;
+                default: BuildDisplayTab(f, input, ix, y, iw); break;
+            }
+        }
+
+        /// <summary>
+        /// Display tab: ground plane, colour, anti-aliasing, FOV, sensitivity and toggles.
+        /// </summary>
+        private void BuildDisplayTab(FontAtlas f, InputState input, float ix, float y, float iw)
+        {
             // Ground plane (relative to the default, shown absolute)
             Text.Clear().Append(_groundZ, 3).Append(" m");
             float ground = Slider(f, input, 0, ix, y, iw, "Ground plane", Text.Span, _groundZ, _groundDefault - 10f, _groundDefault + 10f);
-            _groundZ = MathF.Round(ground / 0.05f) * 0.05f;
+            // Only while dragging (the default needn't sit on the 5 cm steps, and must not mark the file changed)
+            ground = MathF.Round(ground / 0.05f) * 0.05f;
+            if (_activeSlider == 0 && ground != _groundZ)
+            {
+                // Saved with the model (visibility.json / the live model folder), like hidden elements
+                _groundZ = ground;
+                VisibilityChanged();
+            }
             y += S(58);
 
             // Colour mode
@@ -533,10 +685,7 @@ namespace BimGo.Game
             {
                 _whitecard = colour == 0;
                 _realistic = colour == 2;
-                if (_realistic && !_renderer.HasMaterials)
-                {
-                    Toast("No textures in this snapshot: tick “Extract materials and textures” at Go (or Export) to see them.", 5f);
-                }
+                if (_realistic && !_renderer.HasMaterials) { ToastNoTextures(); }
             }
             y += S(64);
 
@@ -569,8 +718,64 @@ namespace BimGo.Game
             _showFps = Checkbox(f, input, ix, y, iw, "Show FPS", _showFps);
             y += S(28);
             _ambientOcclusion = Checkbox(f, input, ix, y, iw, "Ambient occlusion", _ambientOcclusion);
-            y += S(28);
-            _reflections = Checkbox(f, input, ix, y, iw, "Sky reflections on glass (Realistic)", _reflections);
+        }
+
+        /// <summary>
+        /// Debug tab: colour surfaces by reflection tier or by reflection probe (not saved).
+        /// </summary>
+        private void BuildDebugTab(FontAtlas f, InputState input, float ix, float y, float iw)
+        {
+            _ui.Text(f.Body, ix, y, "Debug colours", UiTheme.TEXT);
+            int debug = Segmented(f, input, ix, y + S(22), iw, DEBUG_OPTIONS, _reflectDebug);
+            if (debug != _reflectDebug)
+            {
+                _reflectDebug = debug;
+                if (debug != 0 && (!_realistic || _renderer == null || !_renderer.HasMaterials))
+                {
+                    Toast("Debug colours need the Realistic colour mode and a snapshot with materials.", 4f);
+                }
+            }
+            y += S(66);
+
+            string help = _reflectDebug switch
+            {
+                1 => "Reflection: red 75 %+, orange 50 %, yellow 25 %, grey none, cyan glass, blue water.",
+                2 => "Probes: one colour per reflection probe, blended at room edges; grey = sky. Probes bake as you look around.",
+                _ => "Colours surfaces by reflection tier or by the probe they read. Needs the Realistic colour mode. Not saved."
+            };
+            _ui.TextWrapped(f.Body, ix, y, iw, help, UiTheme.TEXT_MUTED, maxLines: 6);
+        }
+
+        /// <summary>
+        /// The toast for Realistic without textures in the snapshot.
+        /// </summary>
+        private void ToastNoTextures() =>
+            Toast("No textures in this snapshot: tick “Extract materials and textures” at Go (or Export) to see them.", 5f);
+
+        /// <summary>
+        /// A row of tabs (text with an accent underline on the open one).
+        /// </summary>
+        /// <returns>The open tab (changed by a click).</returns>
+        private int Tabs(FontAtlas f, InputState input, float x, float y, float w, string[] labels, int selected)
+        {
+            float h = S(28);
+            float tab = w / labels.Length;
+            _ui.Rect(x, y + h - MathF.Max(1f, UiScale), w, MathF.Max(1f, UiScale), Rgba.Hex(0xFFFFFF, 0.12f));
+            for (int i = 0; i < labels.Length; i++)
+            {
+                float tx = x + i * tab;
+                bool on = i == selected;
+                bool hover = !on && Hover(input, tx, y, tab, h);
+                uint colour = on ? UiTheme.TEXT : hover ? UiTheme.ACCENT : UiTheme.TEXT_MUTED;
+                _ui.TextCentred(f.Small, tx + tab * 0.5f, y + S(7), labels[i], colour, S(1.4f));
+                if (on) { _ui.Rect(tx + S(6), y + h - S(2), tab - S(12), S(2), UiTheme.ACCENT); }
+                if (hover && input.LeftPressed)
+                {
+                    selected = i;
+                    Sound.Play(SoundId.UiClick);
+                }
+            }
+            return selected;
         }
 
         /// <summary>

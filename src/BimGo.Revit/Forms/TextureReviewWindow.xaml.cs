@@ -64,7 +64,7 @@ namespace BimGo.Forms
             _review = review;
             _services = services;
             _settings = settings;
-            _overrides = TextureOverrideSet.Load(review.HostKey);
+            _overrides = TextureOverrideSet.LoadFromModelFolder(review.ModelFolder, review.HostKey);
             _overrides.ModelTitle = review.ModelTitle;
             _items = review.Rows.Select(r => new ReviewItem(r, _overrides)).ToList();
 

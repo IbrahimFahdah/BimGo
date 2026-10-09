@@ -120,9 +120,13 @@ namespace BimGo.Extraction
         /// it). Cancelling throws <see cref="OperationCanceledException"/>; nothing in the model is changed.
         /// </param>
         /// <returns>The SceneData.</returns>
-        public static SceneData Extract(UIDocument uiDoc, LaunchSettings settings, OperationProgress progress = null)
+        /// <param name="liveSession">
+        /// True for Go and live refreshes: the family library is added when <see cref="LaunchSettings.FamilyLibrary"/>
+        /// is on. Export .bimgo passes false (files never carry the library from Revit).
+        /// </param>
+        public static SceneData Extract(UIDocument uiDoc, LaunchSettings settings, OperationProgress progress = null, bool liveSession = false)
         {
-            var extractor = new SceneExtractor(uiDoc.Document, settings, progress);
+            var extractor = new SceneExtractor(uiDoc.Document, settings, progress) { _includeLibrary = liveSession && settings.FamilyLibrary };
             return extractor.Run(uiDoc);
         }
 
@@ -190,7 +194,7 @@ namespace BimGo.Extraction
             bool[] loaded = new bool[catalog.Count];
             int totalElements = work.Sum(w => w.Elements.Count);
             int processed = 0;
-            _progress?.Begin("Extracting geometry", 0.12, 0.85);
+            _progress?.Begin("Extracting geometry", 0.12, _includeLibrary ? 0.78 : 0.85);
             foreach ((SourceModel source, CategoryDef def, List<Element> elements) in work)
             {
                 _src = source;
@@ -233,6 +237,19 @@ namespace BimGo.Extraction
             }
             if (!bounds.IsValid) { bounds = new Aabb(new Vector3(-10, -10, 0), new Vector3(10, 10, 3)); }
 
+            // The family library (live sessions, opt-in): hidden templates after every model element
+            LibraryData library = LibraryData.Empty;
+            if (_includeLibrary)
+            {
+                try { library = ExtractLibrary(loaded); }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception ex)
+                {
+                    Utilities.Log_Utils.Write($"Family library skipped: {ex}");
+                    library = LibraryData.Empty;
+                }
+            }
+
             stopwatch.Stop();
             Utilities.Log_Utils.Write($"Extracted {_elements.Count} elements, {_indices.Count / 3} triangles, {rooms.Count} rooms, {_links.Count} links " +
                 $"in {stopwatch.Elapsed.TotalSeconds:F1}s (proxies {_proxyCount}, skipped {_skippedCount}). Phases: {_phases.Existing?.Name ?? "none"} → {phase?.Name ?? "none"}.");
@@ -260,6 +277,7 @@ namespace BimGo.Extraction
                 Parameters = _parameters?.Build() ?? ParameterTable.Empty,
                 Lighting = BuildLighting(),
                 Materials = BuildMaterials(),
+                Library = library,
                 CategoryLoaded = loaded,
                 CategoryElementCounts = counts,
                 Settings = _settings,
@@ -621,7 +639,7 @@ namespace BimGo.Extraction
         /// <returns>True if a record was added.</returns>
         private bool ExtractElement(Element element, CategoryDef def)
         {
-            GeometryElement geometry = element.get_Geometry(_src.GeometryOptions ?? _geometryOptions);
+            GeometryElement geometry = element.get_Geometry((_libraryPass ? null : _src.GeometryOptions) ?? _geometryOptions);
             if (geometry == null) { return false; }
 
             // Reset per-element state
@@ -985,7 +1003,8 @@ namespace BimGo.Extraction
                 DB.Color c = material.Color;
                 if (c != null && c.IsValid)
                 {
-                    int alpha = Math.Clamp(255 - (int)(material.Transparency * 2.55), 64, 255);
+                    // A material named "mirror" is a mirror even when modelled with a glass appearance: drawn opaque
+                    int alpha = ReflectivityReader.IsMirrorByName(material) ? 255 : Math.Clamp(255 - (int)(material.Transparency * 2.55), 64, 255);
                     colour = Pack(c.Red, c.Green, c.Blue, (byte)alpha);
                 }
                 selfIllumination = ReadSelfIllumination(material);
@@ -1488,36 +1507,11 @@ namespace BimGo.Extraction
         }
 
         /// <summary>
-        /// The comments sidecar path: beside the model, else in %LocalAppData%\BimGo\Comments for unsaved/cloud models.
-        /// (A legacy &lt;model&gt;.rvtgo.json next to it is migrated when the session loads comments.)
+        /// The comments path in the model's BimGo folder (<c>%LocalAppData%\BimGo\Models\&lt;title&gt;_&lt;hash&gt;\comments.json</c>),
+        /// with the bookmarks, sun and visibility files beside it. Prepares the folder: older sidecars beside the
+        /// model or in the old Comments folder are copied in once, and with sharing on newer shared copies are taken.
         /// </summary>
-        public string ResolveCommentsPath()
-        {
-            string fileName = MakeSafeFileName(_doc.Title) + BimGoFormat.SIDECAR_SUFFIX;
-            try
-            {
-                string modelPath = _doc.PathName;
-                if (!_doc.IsModelInCloud && !string.IsNullOrEmpty(modelPath) && Path.IsPathRooted(modelPath))
-                {
-                    string folder = Path.GetDirectoryName(modelPath);
-                    if (Directory.Exists(folder))
-                    {
-                        return Path.Combine(folder, Path.GetFileNameWithoutExtension(modelPath) + BimGoFormat.SIDECAR_SUFFIX);
-                    }
-                }
-            }
-            catch
-            {
-                // Fall back below
-            }
-            return Path.Combine(Utilities.Log_Utils.Folder, "Comments", fileName);
-        }
-
-        private static string MakeSafeFileName(string name)
-        {
-            foreach (char c in Path.GetInvalidFileNameChars()) { name = name.Replace(c, '_'); }
-            return name;
-        }
+        public string ResolveCommentsPath() => ModelFolderResolver.PrepareCommentsPath(_doc, _settings);
 
         #endregion
 

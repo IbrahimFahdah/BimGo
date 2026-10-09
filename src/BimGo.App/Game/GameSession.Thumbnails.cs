@@ -23,8 +23,15 @@ namespace BimGo.Game
         /// <summary>The bookmark whose thumbnail is taken at the end of this frame's 3D pass, or null.</summary>
         private BookmarkRecord _thumbnailFor;
 
-        // Uploaded thumbnails: the base64 they came from (re-uploaded when it changes) and the GL texture (0 = unreadable)
-        private readonly Dictionary<BookmarkRecord, (string Data, uint Texture)> _thumbnailTextures = new();
+        /// <summary>The comment whose thumbnail is taken at the end of this frame's 3D pass, or null.</summary>
+        private CommentRecord _commentThumbnailFor;
+
+        /// <summary>True when a thumbnail is due this frame (bookmark or comment).</summary>
+        private bool ThumbnailDue => _thumbnailFor != null || _commentThumbnailFor != null;
+
+        // Uploaded thumbnails (bookmarks and comments): the base64 they came from (re-uploaded when it changes) and the
+        // GL texture (0 = unreadable)
+        private readonly Dictionary<object, (string Data, uint Texture)> _thumbnailTextures = new();
 
         #endregion
 
@@ -37,8 +44,10 @@ namespace BimGo.Game
         private unsafe void CaptureThumbnail(int width, int height)
         {
             BookmarkRecord record = _thumbnailFor;
+            CommentRecord comment = _commentThumbnailFor;
             _thumbnailFor = null;
-            if (record == null || width < 16 || height < 16) { return; }
+            _commentThumbnailFor = null;
+            if ((record == null && comment == null) || width < 16 || height < 16) { return; }
 
             try
             {
@@ -52,12 +61,16 @@ namespace BimGo.Game
                 }
 
                 string data = EncodeThumbnail(pixels, width, height);
-                if (Bookmarks.Bookmarks.Contains(record)) { Bookmarks.SetThumbnail(record, data); }
-                else { record.Thumbnail = data; } // pending (B): saved when its name is confirmed
+                if (record != null)
+                {
+                    if (Bookmarks.Bookmarks.Contains(record)) { Bookmarks.SetThumbnail(record, data); }
+                    else { record.Thumbnail = data; } // pending (B): saved when its name is confirmed
+                }
+                if (comment != null) { Comments.SetThumbnail(comment, data); }
             }
             catch (Exception ex)
             {
-                Utilities.Log_Utils.Write($"Bookmark thumbnail failed: {ex.Message}");
+                Utilities.Log_Utils.Write($"Thumbnail failed: {ex.Message}");
             }
         }
 
@@ -141,10 +154,19 @@ namespace BimGo.Game
         /// <summary>
         /// The GL texture of a bookmark's thumbnail (made on first use, remade when the thumbnail changes), or 0.
         /// </summary>
-        private unsafe uint ThumbnailTexture(BookmarkRecord record)
+        private uint ThumbnailTexture(BookmarkRecord record) => ThumbnailTexture(record, record?.Thumbnail, record?.Name);
+
+        /// <summary>The GL texture of a comment's thumbnail (made on first use), or 0.</summary>
+        private uint CommentThumbnailTexture(CommentRecord record) => ThumbnailTexture(record, record?.Thumbnail, "comment");
+
+        /// <summary>
+        /// The GL texture of a thumbnail owned by a bookmark or a comment (made on first use, remade when the data
+        /// changes), or 0.
+        /// </summary>
+        private unsafe uint ThumbnailTexture(object owner, string data, string name)
         {
-            string data = record?.Thumbnail;
-            if (string.IsNullOrEmpty(data)) { return 0; }
+            if (owner == null || string.IsNullOrEmpty(data)) { return 0; }
+            object record = owner;
             if (_thumbnailTextures.TryGetValue(record, out (string Data, uint Texture) cached))
             {
                 if (ReferenceEquals(cached.Data, data)) { return cached.Texture; }
@@ -180,7 +202,7 @@ namespace BimGo.Game
             }
             catch (Exception ex)
             {
-                Utilities.Log_Utils.Write($"Bookmark thumbnail unreadable ({record.Name}): {ex.Message}");
+                Utilities.Log_Utils.Write($"Thumbnail unreadable ({name}): {ex.Message}");
                 if (texture != 0) { Gl.DeleteTexture(texture); }
                 texture = 0;
             }

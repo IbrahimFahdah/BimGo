@@ -1,5 +1,6 @@
 using System.Numerics;
 using BimGo.Audio;
+using BimGo.Format;
 using BimGo.Platform;
 using BimGo.Rendering;
 using BimGo.Scene;
@@ -613,13 +614,15 @@ namespace BimGo.Game
         /// </summary>
         private void WriteOverrides(IReadOnlyList<int> indices, Func<int, TextureOverride> overrideFor)
         {
+            // The model's BimGo folder (where the comments sidecar is), else the older per-key file
             string hostKey = Scene.Provenance?.ModelKey;
-            if (string.IsNullOrWhiteSpace(hostKey))
+            string modelFolder = ModelFolders.FolderOf(Scene.CommentsPath);
+            if (modelFolder == null && string.IsNullOrWhiteSpace(hostKey))
             {
                 _texturesNotice = "Applied here only: this snapshot has no model key, so Revit can't pick the choice up.";
                 return;
             }
-            TextureOverrideSet overrides = TextureOverrideSet.Load(hostKey);
+            TextureOverrideSet overrides = TextureOverrideSet.LoadFromModelFolder(modelFolder, hostKey);
             overrides.ModelTitle ??= Scene.ModelTitle;
             foreach (int i in indices)
             {

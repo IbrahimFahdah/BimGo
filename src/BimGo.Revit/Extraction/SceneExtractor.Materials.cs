@@ -299,7 +299,7 @@ namespace BimGo.Extraction
         {
             _locator = TextureLocator.Discover(_doc.Application.VersionNumber);
             _locator.SetSearchFolders(_settings.TextureSearchFolders);
-            _overrides = TextureOverrideSet.Load(LinkResolver.HostKey(_doc));
+            _overrides = TextureOverrideSet.LoadFromModelFolder(ModelFolderResolver.FolderOf(_doc), LinkResolver.HostKey(_doc));
             Utilities.Log_Utils.Write($"Textures: Autodesk library {(_locator.HasLibrary ? string.Join("; ", _locator.LibraryRoots) : "not found")}; " +
                 $"additional render appearance paths: {(_locator.ExtraPaths.Count == 0 ? "none" : string.Join("; ", _locator.ExtraPaths))}; " +
                 $"search folders: {(_locator.SearchFolders.Count == 0 ? "none" : string.Join("; ", _locator.SearchFolders))}; " +
@@ -348,7 +348,7 @@ namespace BimGo.Extraction
             {
                 // No readable appearance (legacy presets with no properties): the shading colour stands in
                 entry.Schema = asset?.Name ?? string.Empty;
-                entry.Reflectivity = material.Transparency > 0 ? 0.06f : 0f;
+                ApplyReflectivity(entry, asset, entry.Schema, material);
                 Finish(entry, choice, shading);
                 return entry;
             }
@@ -383,7 +383,7 @@ namespace BimGo.Extraction
                 entry.Fade = (float)Math.Clamp(fade, 0.0, 1.0);
             }
 
-            entry.Reflectivity = ReadReflectivity(asset, entry.Schema, material);
+            ApplyReflectivity(entry, asset, entry.Schema, material);
             Finish(entry, choice, shading);
             return entry;
         }
@@ -507,25 +507,57 @@ namespace BimGo.Extraction
         }
 
         /// <summary>
-        /// Head-on reflectivity for the sky reflection: glass and other see-through materials only (an opaque material
-        /// reflecting the sky indoors would look wrong without a proper reflection probe).
+        /// Reflection probes round: reads the material's reflections with <see cref="ReflectivityReader"/> (every
+        /// schema; mirror / water name rules) and stores the raw values. Glass keeps <see cref="SceneMaterial.Reflectivity"/>
+        /// (its sky sheen, as in build A/B); everything else gets <see cref="SceneMaterial.Shine"/> (tiered in the app).
         /// </summary>
-        private static float ReadReflectivity(Visual.Asset asset, string schema, Material material)
+        private void ApplyReflectivity(SceneMaterial entry, Visual.Asset asset, string schema, Material material)
         {
-            bool seeThrough = material.Transparency > 0
-                || (FindDouble(asset, "generic_transparency") ?? 0.0) > 0.01
-                || schema.Contains("Glazing", StringComparison.OrdinalIgnoreCase)
-                || schema.Contains("Transparent", StringComparison.OrdinalIgnoreCase)
-                || schema.Contains("SolidGlass", StringComparison.OrdinalIgnoreCase);
-            if (!seeThrough) { return 0f; }
+            ReflectivityInfo info = ReflectivityReader.Read(asset, schema ?? string.Empty, material, RoughnessMapAverage);
+            entry.ReflectSource = string.IsNullOrEmpty(info.Source) ? null : info.Source;
+            if (!info.Mapped) { return; }
 
-            double? value = FindDouble(asset, "glazing_reflectance") ?? FindDouble(asset, "generic_reflectivity_at_0deg");
-            if (value == null && FindDouble(asset, "transparent_ior") is double ior && ior > 1.0)
+            if (info.Glass)
             {
-                double r = (ior - 1.0) / (ior + 1.0);
-                value = r * r;
+                entry.Reflectivity = info.Strength;
+                return;
             }
-            return (float)Math.Clamp(value ?? 0.06, 0.02, 0.6);
+            entry.Shine = info.Strength;
+            entry.Roughness = info.Roughness;
+            entry.Metallic = info.Metallic;
+            entry.Water = info.Water;
+            entry.WaterBump = info.Water ? info.WaterBump : 0f;
+        }
+
+        /// <summary>Average brightness of roughness maps by resolved path (shared across extractions; null = unreadable).</summary>
+        private static readonly Dictionary<string, double?> ROUGHNESS_AVERAGES = new(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>
+        /// The average brightness of a connected roughness bitmap (Prism), found like a colour texture and cached by
+        /// path. Null when the path is empty, missing or not decodable.
+        /// </summary>
+        private double? RoughnessMapAverage(Visual.Asset bitmap)
+        {
+            try
+            {
+                if (_locator == null) { return null; }
+                if (bitmap.FindByName("unifiedbitmap_Bitmap") is not Visual.AssetPropertyString path || string.IsNullOrWhiteSpace(path.Value)) { return null; }
+                TextureLookup lookup = _locator.Resolve(path.Value, DocumentFolder());
+                if (lookup.Path == null) { return null; }
+                lock (ROUGHNESS_AVERAGES)
+                {
+                    if (!ROUGHNESS_AVERAGES.TryGetValue(lookup.Path, out double? average))
+                    {
+                        average = ReflectivityReader.AverageLuminance(lookup.Path);
+                        ROUGHNESS_AVERAGES[lookup.Path] = average;
+                    }
+                    return average;
+                }
+            }
+            catch
+            {
+                return null;
+            }
         }
 
         /// <summary>

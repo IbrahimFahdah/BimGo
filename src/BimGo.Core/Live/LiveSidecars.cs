@@ -99,6 +99,7 @@ namespace BimGo.Live
             document ??= new CommentDocument();
             document.Comments ??= new List<CommentRecord>();
             document.Comments.RemoveAll(c => c == null || string.IsNullOrWhiteSpace(c.Text));
+            foreach (CommentRecord comment in document.Comments) { comment.Clean(); }
             return document;
         }
 

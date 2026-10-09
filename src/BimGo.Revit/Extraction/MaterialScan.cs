@@ -18,6 +18,8 @@ namespace BimGo.Extraction
     /// <item>where each bitmap was found (or not), and whether its path looks Autodesk-supplied;</item>
     /// <item>image formats and sizes, and an estimate of the embedded size at 512 / 1024 px;</item>
     /// <item>what texture discovery found on this machine (library roots, registry, Revit.ini).</item>
+    /// <item>reflection probes round, stage 0: the reflection strength, roughness and tier of every used material
+    /// (<see cref="ReflectivityReader"/>), the properties they came from, and the finish enum values seen.</item>
     /// </list>
     /// Read only, best effort: an unreadable material or property is noted in the report and the scan carries on.
     /// The report confirms the property names before the material extraction is written against them.
@@ -79,6 +81,17 @@ namespace BimGo.Extraction
             public string Example;
         }
 
+        /// <summary>Reflectivity of one used material (reflection probes round, stage 0).</summary>
+        private sealed class ReflectRow
+        {
+            public string Material = string.Empty;
+            public string Document = string.Empty;
+            public string Schema = string.Empty;
+            public int Uses;
+            public ReflectivityInfo Info;
+            public string Candidates = string.Empty;
+        }
+
         #endregion
 
         #region Fields
@@ -96,6 +109,18 @@ namespace BimGo.Extraction
 
         /// <summary>Tint and invert findings (build B): one line per asset or bitmap with a tint or invert on.</summary>
         private readonly List<string> _tintInvert = new();
+
+        /// <summary>Reflectivity per used material (reflection probes round, stage 0).</summary>
+        private readonly List<ReflectRow> _reflect = new();
+
+        /// <summary>Enum-style reflection properties seen in used materials: "property = value (name)" → count.</summary>
+        private readonly SortedDictionary<string, int> _enumValuesSeen = new(StringComparer.Ordinal);
+
+        /// <summary>Used materials named like water but without the Water schema (listed only, never applied).</summary>
+        private readonly List<string> _waterByNameOnly = new();
+
+        /// <summary>Average brightness of roughness maps, by resolved path (null = not decodable).</summary>
+        private readonly Dictionary<string, double?> _mapAverages = new(StringComparer.OrdinalIgnoreCase);
 
         // The material being dumped
         private string _currentMaterial = string.Empty, _currentDocument = string.Empty, _currentFolder;
@@ -258,6 +283,7 @@ namespace BimGo.Extraction
                 {
                     sb.AppendLine("    No appearance asset.");
                     _noAppearance++;
+                    NoteReflectivity(material, null, "(no appearance)", uses);
                     return;
                 }
 
@@ -266,6 +292,7 @@ namespace BimGo.Extraction
                 {
                     sb.AppendLine($"    Appearance “{appearance.Name}”: no rendering asset.");
                     _noAppearance++;
+                    NoteReflectivity(material, null, "(no rendering asset)", uses);
                     return;
                 }
 
@@ -276,6 +303,7 @@ namespace BimGo.Extraction
                     $"library “{asset.LibraryName}”; type {asset.AssetType}; {asset.Size} properties");
 
                 NoteTintAndInvert(asset, "appearance", schema);
+                NoteReflectivity(material, asset, schema, uses, appearance.Name);
 
                 // Full dump only for materials in use: unused ones get the header lines above (keeps the report readable)
                 if (_currentUsed) { DumpAsset(asset, schema, depth: 1, slotPrefix: string.Empty); }
@@ -467,6 +495,101 @@ namespace BimGo.Extraction
             }
         }
 
+        /// <summary>
+        /// Reflection probes round, stage 0: reads the reflectivity of a used material, lists the properties that bear on
+        /// it, counts the finish enum values seen and notes water-named materials without the Water schema.
+        /// Writes one summary line into the material dump.
+        /// </summary>
+        private void NoteReflectivity(Material material, Visual.Asset asset, string schema, int uses, string appearanceName = null)
+        {
+            if (!_currentUsed) { return; }
+            try
+            {
+                ReflectivityInfo info = ReflectivityReader.Read(asset, asset == null ? string.Empty : schema, material, MapAverage);
+                var candidates = new List<string>();
+                if (asset != null)
+                {
+                    for (int i = 0; i < asset.Size; i++)
+                    {
+                        Visual.AssetProperty property = asset.Get(i);
+                        string name = property?.Name;
+                        if (!ReflectivityReader.IsCandidate(name)) { continue; }
+
+                        string text = $"{name}={FormatValue(property)}";
+                        if (property is Visual.AssetPropertyEnum or Visual.AssetPropertyInteger)
+                        {
+                            int value = property is Visual.AssetPropertyEnum e ? e.Value : ((Visual.AssetPropertyInteger)property).Value;
+                            string revitName = ReflectivityReader.RevitEnumName(name, value);
+                            string guess = ReflectivityReader.GuessedName(name, value);
+                            if (revitName != null || guess != null)
+                            {
+                                string label = revitName ?? $"guess {guess}";
+                                text += $" ({label})";
+                                string key = $"{name} = {value}: Revit {revitName ?? "-"} ({ReflectivityReader.RevitEnumTypeName(name) ?? "no enum type found"}); " +
+                                             $"guess {guess ?? "-"}{(revitName != null && guess != null && !Same(revitName, guess) ? "   <<< MISMATCH" : "")}";
+                                Increment(_enumValuesSeen, key);
+                            }
+                        }
+                        int connected = 0;
+                        try { connected = property.NumberOfConnectedProperties; } catch { /* none */ }
+                        if (connected > 0) { text += " [map]"; }
+                        candidates.Add(text);
+                    }
+                }
+
+                _reflect.Add(new ReflectRow
+                {
+                    Material = material.Name,
+                    Document = _currentDocument,
+                    Schema = schema,
+                    Uses = uses,
+                    Info = info,
+                    Candidates = string.Join("; ", candidates)
+                });
+
+                bool waterName = material.Name.Contains("water", StringComparison.OrdinalIgnoreCase)
+                    || (appearanceName?.Contains("water", StringComparison.OrdinalIgnoreCase) ?? false);
+                if (waterName && !info.Water) { _waterByNameOnly.Add($"  {_currentDocument} | {material.Name} | {schema}"); }
+
+                _materials.AppendLine($"    Reflectivity: tier {ReflectivityReader.TierText(info.Tier)}; strength {info.Strength:0.##}; " +
+                    $"roughness {info.Roughness:0.##} ({ReflectivityReader.BlurText(info.Roughness)}){Flags(info)}; {info.Source}");
+            }
+            catch (Exception ex)
+            {
+                _materials.AppendLine($"    Reflectivity unreadable: {ex.Message}");
+            }
+
+            static bool Same(string a, string b) =>
+                string.Equals(a.Replace("_", "").Replace(" ", ""), b.Replace("_", "").Replace(" ", ""), StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>
+        /// The average brightness of a connected bitmap asset's image (roughness maps), found with the texture locator
+        /// and cached by path. Null when the path is empty, missing or not decodable.
+        /// </summary>
+        private double? MapAverage(Visual.Asset bitmap)
+        {
+            try
+            {
+                if (bitmap.FindByName("unifiedbitmap_Bitmap") is not Visual.AssetPropertyString path || string.IsNullOrWhiteSpace(path.Value)) { return null; }
+                TextureLookup lookup = _locator.Resolve(path.Value, _currentFolder);
+                if (lookup.Path == null) { return null; }
+                if (!_mapAverages.TryGetValue(lookup.Path, out double? average))
+                {
+                    average = ReflectivityReader.AverageLuminance(lookup.Path);
+                    _mapAverages[lookup.Path] = average;
+                }
+                return average;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static string Flags(ReflectivityInfo info) =>
+            (info.Metallic ? ", metallic" : "") + (info.Glass ? ", glass" : "") + (info.Water ? ", water" : "") + (info.Mapped ? "" : ", no rule");
+
         private void Seen(string schema, string name, string type, string value)
         {
             if (!_propertiesBySchema.TryGetValue(schema, out SortedDictionary<string, PropertySeen> names))
@@ -645,7 +768,7 @@ namespace BimGo.Extraction
             var sb = new StringBuilder();
             sb.AppendLine($"BimGo material scan — {host.Title} — {DateTime.Now:yyyy-MM-dd HH:mm}");
             sb.AppendLine($"Revit {revitVersion}; BimGo add-in {Globals.ADDIN_VERSION}; model {host.PathName}");
-            sb.AppendLine("Read-only diagnostic for the materials round. Send this file back as is.");
+            sb.AppendLine("Read-only diagnostic for the materials and reflection probes rounds. Send this file back as is.");
 
             // Discovery
             sb.AppendLine();
@@ -723,6 +846,9 @@ namespace BimGo.Extraction
             if (_tintInvert.Count == 0) { sb.AppendLine("None."); }
             foreach (string line in _tintInvert) { sb.AppendLine(line); }
 
+            // Reflectivity (reflection probes round, stage 0)
+            WriteReflectivity(sb);
+
             // Texture lines, compact
             sb.AppendLine();
             sb.AppendLine("==================== TEXTURES (used materials) ====================");
@@ -757,9 +883,74 @@ namespace BimGo.Extraction
 
             summary = $"{_usedMaterials} of {_materialCount} materials are used; {materialsWithTextures} of those have bitmaps.\n" +
                       $"{usedBitmaps.Count} distinct bitmaps: {usedFound.Count} found, {usedMissing.Count} missing.\n" +
-                      $"Autodesk Material Library on this machine: {(_locator.HasLibrary ? "found" : "not found")}.";
+                      $"Autodesk Material Library on this machine: {(_locator.HasLibrary ? "found" : "not found")}.\n" +
+                      ReflectivitySummary();
             return path;
         }
+
+        /// <summary>
+        /// The REFLECTIVITY section: tier counts, finish enum values seen (Revit names vs the table's guesses), water
+        /// found by name only, then every used material sorted by strength, with the properties it was read from.
+        /// </summary>
+        private void WriteReflectivity(StringBuilder sb)
+        {
+            sb.AppendLine();
+            sb.AppendLine("==================== REFLECTIVITY (used materials) ====================");
+            sb.AppendLine("Strength (0–1) sets the tier (rounded to the nearest 25 %); roughness sets the blur (0 sharp – 1 matt), separately.");
+            sb.AppendLine("Rules in order: Mirror schema → \"mirror\" in the name → Water schema / see-through named \"water\" → see-through (glass) → Prism (roughness map average when connected) → Generic → finish enum → legacy preset shininess → nothing.");
+            sb.AppendLine("Default threshold 50 %: only tiers 50 % and 75 % + reflect unless lowered to 25 %. Glass keeps its own sky sheen.");
+            sb.AppendLine("All values are a first proposal (ReflectivityReader.cs): mark anything that lands in the wrong tier.");
+
+            List<ReflectRow> opaque = _reflect.Where(r => !r.Info.Glass).ToList();
+            sb.AppendLine();
+            sb.AppendLine($"Used materials: {_reflect.Count}; glass: {_reflect.Count(r => r.Info.Glass)}; water: {_reflect.Count(r => r.Info.Water)}; " +
+                $"metallic: {_reflect.Count(r => r.Info.Metallic)}; no rule: {_reflect.Count(r => !r.Info.Mapped)}");
+            sb.AppendLine("Tiers (not glass): " + string.Join(", ", Enumerable.Range(0, 4).Reverse()
+                .Select(t => $"{ReflectivityReader.TierText(t)} ×{opaque.Count(r => r.Info.Tier == t)}")));
+            sb.AppendLine($"Would reflect at the 50 % default: {opaque.Count(r => r.Info.Tier >= 2)} materials, " +
+                $"{opaque.Where(r => r.Info.Tier >= 2).Sum(r => r.Uses)} element uses; at 25 %: {opaque.Count(r => r.Info.Tier >= 1)} materials, " +
+                $"{opaque.Where(r => r.Info.Tier >= 1).Sum(r => r.Uses)} element uses");
+
+            sb.AppendLine();
+            sb.AppendLine("Finish / type enum values seen (property = value: Revit enum name; the table's ordinal guess):");
+            if (_enumValuesSeen.Count == 0) { sb.AppendLine("  None."); }
+            foreach (KeyValuePair<string, int> pair in _enumValuesSeen) { sb.AppendLine($"  {pair.Key}   ×{pair.Value}"); }
+
+            sb.AppendLine();
+            sb.AppendLine("Named like water but not water (opaque, so the name rule doesn't apply):");
+            if (_waterByNameOnly.Count == 0) { sb.AppendLine("  None."); }
+            foreach (string line in _waterByNameOnly) { sb.AppendLine(line); }
+
+            sb.AppendLine();
+            sb.AppendLine("Schemas with no rule (reflect nothing):");
+            List<IGrouping<string, ReflectRow>> unmapped = _reflect.Where(r => !r.Info.Mapped).GroupBy(r => r.Schema).OrderByDescending(g => g.Count()).ToList();
+            if (unmapped.Count == 0) { sb.AppendLine("  None."); }
+            foreach (IGrouping<string, ReflectRow> group in unmapped)
+            {
+                sb.AppendLine($"  {group.Key} ×{group.Count()}: {string.Join(", ", group.Select(r => r.Material).Take(6))}{(group.Count() > 6 ? ", …" : "")}");
+            }
+
+            sb.AppendLine();
+            sb.AppendLine("Per material (tier | strength | roughness, blur | flags | uses | document | material | schema | source):");
+            foreach (ReflectRow row in _reflect.OrderByDescending(r => r.Info.Glass ? -1 : r.Info.Tier).ThenByDescending(r => r.Info.Strength).ThenBy(r => r.Material))
+            {
+                ReflectivityInfo info = row.Info;
+                string tier = info.Glass ? "glass" : ReflectivityReader.TierText(info.Tier);
+                sb.AppendLine($"  [{tier,-6}] {info.Strength:0.00} | {info.Roughness:0.00} {ReflectivityReader.BlurText(info.Roughness)}{Flags(info)} | " +
+                    $"×{row.Uses} | {(row.Document.Length == 0 ? "host" : row.Document)} | {row.Material} | {row.Schema} | {info.Source}");
+                if (row.Candidates.Length > 0) { sb.AppendLine($"           {row.Candidates}"); }
+            }
+        }
+
+        /// <summary>One line for the finished dialog: how many materials would reflect.</summary>
+        private string ReflectivitySummary()
+        {
+            List<ReflectRow> opaque = _reflect.Where(r => !r.Info.Glass).ToList();
+            return $"Reflectivity: {opaque.Count(r => r.Info.Tier >= 2)} materials at 50 %+, {opaque.Count(r => r.Info.Tier == 1)} at 25 %, " +
+                   $"{_reflect.Count(r => r.Info.Glass)} glass, {_reflect.Count(r => r.Info.Water)} water.";
+        }
+
+        private static void Increment(SortedDictionary<string, int> counts, string key) => counts[key] = counts.TryGetValue(key, out int n) ? n + 1 : 1;
 
         private static double ScaledPixels(ImageInfo info, int cap)
         {

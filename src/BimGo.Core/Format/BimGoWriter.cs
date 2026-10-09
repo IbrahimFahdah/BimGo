@@ -80,6 +80,10 @@ namespace BimGo.Format
                     {
                         WriteJson(zip, BimGoFormat.ENTRY_LIGHTING, BuildLighting(scene.Lighting), BimGoFormat.JSON_COMPACT);
                     }
+                    if (scene.Library != null && !scene.Library.IsEmpty)
+                    {
+                        WriteLibrary(zip, scene);
+                    }
                     MaterialData materials = document.Materials ?? scene.Materials;
                     if (materials != null && !materials.IsEmpty && materials.VertexMaterial.Length == scene.Vertices.Length)
                     {
@@ -250,7 +254,8 @@ namespace BimGo.Format
                     BoundsMin = record.Bounds.Min,
                     BoundsMax = record.Bounds.Max,
                     Opaque = record.OpaqueCount > 0 ? new[] { record.OpaqueStart, record.OpaqueCount } : null,
-                    Transparent = record.TransparentCount > 0 ? new[] { record.TransparentStart, record.TransparentCount } : null
+                    Transparent = record.TransparentCount > 0 ? new[] { record.TransparentStart, record.TransparentCount } : null,
+                    Library = record.IsLibraryTemplate ? true : null
                 });
             }
             return dto;
@@ -311,6 +316,28 @@ namespace BimGo.Format
                 if (name == null || !written.Add(name)) { continue; }
                 if (!name.StartsWith(BimGoFormat.TEXTURE_FOLDER, StringComparison.Ordinal)) { continue; }
                 if (!materials.Textures.TryGetValue(name, out byte[] bytes) || bytes == null || bytes.Length == 0) { continue; }
+                ZipArchiveEntry image = zip.CreateEntry(name, CompressionLevel.NoCompression);
+                using Stream stream = image.Open();
+                stream.Write(bytes);
+            }
+        }
+
+        /// <summary>
+        /// library.json (the offered types and the first template vertex) and the preview images under library/
+        /// (stored as-is: already PNG).
+        /// </summary>
+        private static void WriteLibrary(ZipArchive zip, SceneData scene)
+        {
+            LibraryData library = scene.Library;
+            var dto = new LibraryDto { VertexStart = scene.ModelVertexCount, Entries = library.Entries.ToList() };
+            WriteJson(zip, BimGoFormat.ENTRY_LIBRARY, dto, BimGoFormat.JSON_COMPACT);
+
+            var written = new HashSet<string>(StringComparer.Ordinal);
+            foreach (LibraryEntry entry in library.Entries)
+            {
+                string name = entry?.Preview;
+                if (name == null || !written.Add(name) || !name.StartsWith(BimGoFormat.LIBRARY_FOLDER, StringComparison.Ordinal)) { continue; }
+                if (!library.Previews.TryGetValue(name, out byte[] bytes) || bytes == null || bytes.Length == 0) { continue; }
                 ZipArchiveEntry image = zip.CreateEntry(name, CompressionLevel.NoCompression);
                 using Stream stream = image.Open();
                 stream.Write(bytes);

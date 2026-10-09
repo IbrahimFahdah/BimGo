@@ -242,6 +242,87 @@ namespace BimGo.Tests
         }
 
         [TestMethod]
+        public void Materials_ReflectionFieldsRoundTrip()
+        {
+            using var folder = new TempFolder();
+            MaterialData sample = Sample();
+            sample.Materials[0].Shine = 0.85f;
+            sample.Materials[0].Roughness = 0.05f;
+            sample.Materials[0].Metallic = true;
+            sample.Materials[0].ReflectSource = "metal_finish=polished";
+            sample.Materials[3].Water = true;
+            sample.Materials[3].WaterBump = 0.1f;
+            sample.Materials[3].Shine = 0.6f;
+
+            MaterialData got = WriteAndRead(TestData.BuildDocument(materials: sample), folder).Scene.Materials;
+            Assert.AreEqual(0.85f, got.Materials[0].Shine);
+            Assert.AreEqual(0.05f, got.Materials[0].Roughness);
+            Assert.IsTrue(got.Materials[0].Metallic);
+            Assert.AreEqual("metal_finish=polished", got.Materials[0].ReflectSource);
+            Assert.IsTrue(got.Materials[3].Water);
+            Assert.AreEqual(0.1f, got.Materials[3].WaterBump);
+
+            // Unset: nothing written, defaults read back (older files behave the same)
+            Assert.AreEqual(0f, got.Materials[1].Shine);
+            Assert.IsNull(got.Materials[1].Roughness);
+            Assert.IsFalse(got.Materials[1].Metallic);
+            Assert.IsFalse(got.Materials[1].Water);
+            using ZipArchive zip = ZipFile.OpenRead(folder.File("mat.bimgo"));
+            using var reader = new StreamReader(zip.GetEntry("materials.json").Open());
+            string json = reader.ReadToEnd();
+            Assert.AreEqual(2, CountOf(json, "\"shine\""), "shine is only written when set");
+            Assert.AreEqual(1, CountOf(json, "\"metallic\""));
+            Assert.AreEqual(1, CountOf(json, "\"water\""));
+
+            static int CountOf(string text, string part) => (text.Length - text.Replace(part, string.Empty).Length) / part.Length;
+        }
+
+        [TestMethod]
+        public void SceneMaterial_CleanClampsReflectionFields()
+        {
+            SceneMaterial clean = new SceneMaterial { Shine = 3f, Roughness = float.NaN, WaterBump = -1f, ReflectSource = "  " }.Clean();
+            Assert.AreEqual(1f, clean.Shine);
+            Assert.IsNull(clean.Roughness);
+            Assert.AreEqual(0f, clean.WaterBump);
+            Assert.IsNull(clean.ReflectSource);
+
+            clean = new SceneMaterial { Shine = 0.5f, Roughness = 2f, Metallic = true, Water = true }.Clean();
+            Assert.AreEqual(0.5f, clean.Shine);
+            Assert.AreEqual(1f, clean.Roughness);
+            Assert.IsTrue(clean.Metallic);
+            Assert.IsTrue(clean.Water);
+        }
+
+        [TestMethod]
+        public void Settings_ReflectionDefaultsAndSanitise()
+        {
+            var settings = new LaunchSettings();
+            Assert.AreEqual(50, settings.ReflectionThreshold);
+            Assert.AreEqual(1f, settings.ReflectionStrength);
+            Assert.IsTrue(settings.ReflectionProbes, "probes are on by default");
+            Assert.AreEqual(128, settings.ProbeResolution);
+
+            settings.ProbeResolution = 300;
+            settings.Sanitise();
+            Assert.AreEqual(256, settings.ProbeResolution);
+            settings.ProbeResolution = 7;
+            settings.Sanitise();
+            Assert.AreEqual(128, settings.ProbeResolution);
+
+            settings.ReflectionThreshold = 10;
+            settings.ReflectionStrength = 9f;
+            settings.Sanitise();
+            Assert.AreEqual(25, settings.ReflectionThreshold);
+            Assert.AreEqual(2f, settings.ReflectionStrength);
+
+            settings.ReflectionThreshold = 75;
+            settings.ReflectionStrength = float.NaN;
+            settings.Sanitise();
+            Assert.AreEqual(50, settings.ReflectionThreshold);
+            Assert.AreEqual(1f, settings.ReflectionStrength);
+        }
+
+        [TestMethod]
         public void Materials_BuildAFileLoadsAndUnknownFieldsAreIgnored()
         {
             using var folder = new TempFolder();
