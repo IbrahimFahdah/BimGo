@@ -253,6 +253,12 @@ namespace BimGo.Format
 
         /// <summary>Transparent triangles: [first index, index count].</summary>
         public int[] Transparent { get; set; }
+
+        /// <summary>
+        /// Optional: true for a family library template (hidden geometry for the Place gun; see library.json). Older
+        /// readers don't know it and would draw the template, which sits 2 km below the model.
+        /// </summary>
+        public bool? Library { get; set; }
     }
 
     /// <summary>
@@ -347,4 +353,19 @@ namespace BimGo.Format
     }
 
     #endregion
+
+    /// <summary>
+    /// library.json (optional): the family library of a live snapshot (or a file saved from one).
+    /// </summary>
+    public sealed class LibraryDto
+    {
+        /// <summary>Layout version of this entry.</summary>
+        public int Version { get; set; } = 1;
+
+        /// <summary>The first template vertex (everything from here on in geometry.bin is template geometry).</summary>
+        public int VertexStart { get; set; }
+
+        /// <summary>The offered types.</summary>
+        public List<LibraryEntry> Entries { get; set; } = new();
+    }
 }

@@ -102,6 +102,20 @@ namespace BimGo.Scene
         /// </summary>
         public bool SkipHelperGeometry { get; set; } = true;
 
+        /// <summary>
+        /// Go (live sessions) also extracts a family library (off by default): the loadable family types loaded in
+        /// the model, in the ticked FFE / services categories, with Revit's preview images and, for level-based
+        /// types, their geometry (from temporary instances in a transaction that is rolled back), so the walkthrough's
+        /// Place gun can place new instances. Export .bimgo never includes it.
+        /// </summary>
+        public bool FamilyLibrary { get; set; }
+
+        /// <summary>Most family types the library offers (the rest are left out, logged).</summary>
+        public int FamilyLibraryMax { get; set; } = 200;
+
+        /// <summary>Upper bound of <see cref="FamilyLibraryMax"/>.</summary>
+        public const int MAX_FAMILY_LIBRARY = 1000;
+
         /// <summary>Subcategory name fragments (case-insensitive) treated as helper geometry.</summary>
         public List<string> HelperSubcategoryKeywords { get; set; } = DefaultHelperKeywords();
 
@@ -492,6 +506,7 @@ namespace BimGo.Scene
             ReflectionThreshold = ReflectionThreshold <= 37 ? 25 : 50;
             ReflectionStrength = float.IsFinite(ReflectionStrength) ? Math.Clamp(ReflectionStrength, 0.5f, 2f) : 1f;
             ProbeResolution = ProbeResolution >= 192 ? 256 : 128;
+            FamilyLibraryMax = Math.Clamp(FamilyLibraryMax <= 0 ? 200 : FamilyLibraryMax, 10, MAX_FAMILY_LIBRARY);
             EmissiveKeywords = (EmissiveKeywords ?? DefaultEmissiveKeywords())
                 .Where(k => !string.IsNullOrWhiteSpace(k))
                 .Select(k => k.Trim())

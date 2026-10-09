@@ -287,6 +287,7 @@ namespace BimGo.Game
         private void OpenSunPanel()
         {
             if (_sunPanelOpen) { return; }
+            CloseSunHours(); // one panel at a time
             ShowUi(); // the panel is UI: Shift+O while hidden brings everything back
             _sunPanelOpen = true;
             _sunField = 0;

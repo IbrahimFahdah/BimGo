@@ -191,11 +191,14 @@ vec3 waterNormal(vec3 world, vec3 n, float amount, float dist)
     return normalize(n + vec3(-slope, 0.0));
 }
 
-// The probes at a point: x = first probe (-1 = none: the sky), y = second (-1 none), z = the second's weight
-vec3 probeCell(vec3 world)
+// The probes at a surface point: x = first probe (-1 = none: the sky), y = second (-1 none), z = the second's weight.
+// The cell is looked up a little off the surface along its (viewer-facing) normal, so walls, glass, floors and
+// ceilings, which lie on a room boundary, read the room they face rather than whichever room their cell straddles
+// (3/4 of a plan cell, at least 0.3 m: the pushed point's cell centre then stays on the same side).
+vec3 probeCell(vec3 world, vec3 n)
 {
     if (uProbesOn == 0) return vec3(-1.0, -1.0, 0.0);
-    vec3 c = floor((world - uProbeGridOrigin) / uProbeGridCell);
+    vec3 c = floor((world + n * max(0.3, 0.75 * uProbeGridCell.x) - uProbeGridOrigin) / uProbeGridCell);
     if (any(lessThan(c, vec3(0.0))) || any(greaterThanEqual(c, uProbeGridSize))) return vec3(-1.0, -1.0, 0.0);
     vec4 t = texelFetch(uProbeGrid, ivec3(c), 0);
     return vec3(floor(t.r * 255.0 + 0.5) - 1.0, floor(t.g * 255.0 + 0.5) - 1.0, t.b);
@@ -239,11 +242,11 @@ vec3 probeSample(int i, vec3 world, vec3 dir, float lod, out bool ok, out float 
 // The reflected environment from the probes (blended near room boundaries); have = false where there is none yet;
 // weight (0.4-1) fades reflections of very close hits (see probeSample). Smooth surfaces read at least half a mip
 // level down: a capture is magnified on big glass and mirrors, and the slight softening hides its texels.
-vec3 probeEnvironment(vec3 world, vec3 dir, float rough, out bool have, out float weight)
+vec3 probeEnvironment(vec3 world, vec3 n, vec3 dir, float rough, out bool have, out float weight)
 {
     have = false;
     weight = 1.0;
-    vec3 cell = probeCell(world);
+    vec3 cell = probeCell(world, n);
     if (cell.x < 0.0) return vec3(0.0);
     float lod = max(clamp(rough, 0.0, 1.0) * uProbeMaxLod, 0.5);
     bool okA, okB;
@@ -262,9 +265,9 @@ vec3 probeEnvironment(vec3 world, vec3 dir, float rough, out bool have, out floa
 }
 
 // Debug colours (probe cells): one hue per probe, blended like the reflections; grey where there is none
-vec3 probeDebugColour(vec3 world)
+vec3 probeDebugColour(vec3 world, vec3 n)
 {
-    vec3 cell = probeCell(world);
+    vec3 cell = probeCell(world, n);
     if (cell.x < 0.0) return vec3(0.45);
     vec3 a = 0.5 + 0.45 * cos(6.2832 * (cell.x * 0.618 + vec3(0.0, 0.33, 0.67)));
     if (cell.y < 0.0) return a;
@@ -523,7 +526,7 @@ void main()
         reflectivity = r.a;
         shine = reflectionInfo(vMaterial);
         if (uReflectDebug == 1) base.rgb = reflectionDebugColour(shine, reflectivity);
-        else if (uReflectDebug == 2) base.rgb = probeDebugColour(vWorld);
+        else if (uReflectDebug == 2) base.rgb = probeDebugColour(vWorld, gl_FrontFacing ? normalize(vNormal) : -normalize(vNormal));
     }
     if (uWhitecard == 1)
     {
@@ -578,7 +581,7 @@ void main()
             fresnel = min((r0 + (1.0 - r0) * grazing) * 0.85, 0.95);
             bool have;
             float weight;
-            vec3 env = probeEnvironment(vWorld, dir, 0.0, have, weight);
+            vec3 env = probeEnvironment(vWorld, n, dir, 0.0, have, weight);
             if (have) fresnel *= weight;
             lit = mix(lit, have ? env : skyColour(dir), fresnel);
         }
@@ -596,7 +599,7 @@ void main()
                 // The probes where baked; else the sky, toned down where AO says the surface is enclosed
                 bool have;
                 float weight;
-                vec3 env = probeEnvironment(vWorld, dir, rough, have, weight);
+                vec3 env = probeEnvironment(vWorld, n, dir, rough, have, weight);
                 if (!have) env = blurredSky(dir, rough) * mix(0.55, 1.0, ao);
                 else fresnel *= weight;
                 // Metals: the reflection takes the metal's colour (kept fairly bright: chrome is near white)
