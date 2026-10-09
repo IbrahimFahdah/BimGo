@@ -89,6 +89,16 @@ export const GunIcons = {
     arrowhead(ui, cx + Math.cos(end) * r, cy + Math.sin(end) * r, -Math.sin(end), Math.cos(end), 3.4 * u, Rgba.withAlpha(colour, 0.85));
   },
 
+  /** Place: a box (a family) dropping onto a floor line, with a down arrow. */
+  place(ui: UiBatch, cx: number, cy: number, size: number, colour: number): void {
+    const u = size / 24, w = 2 * u;
+    ui.line(cx - 10 * u, cy + 9 * u, cx + 10 * u, cy + 9 * u, w, Rgba.withAlpha(colour, 0.7));
+    ui.rect(cx - 6 * u, cy - 1 * u, 12 * u, 8 * u, Rgba.withAlpha(colour, 0.22));
+    ui.outline(cx - 6 * u, cy - 1 * u, 12 * u, 8 * u, w, colour);
+    ui.line(cx, cy - 10 * u, cx, cy - 5 * u, w, colour);
+    arrowhead(ui, cx, cy - 2.5 * u, 0, 1, 3.4 * u, colour);
+  },
+
   clone(ui: UiBatch, cx: number, cy: number, size: number, colour: number): void {
     const u = size / 24, w = 2 * u;
     ui.outline(cx - 10 * u, cy - 10 * u, 13 * u, 13 * u, w, Rgba.withAlpha(colour, 0.6));

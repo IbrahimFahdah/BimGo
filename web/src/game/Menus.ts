@@ -11,6 +11,8 @@ import { SoundId } from '../platform/audio';
 import { type InputState, Vk } from '../platform/input';
 import type { GameSession } from './GameSession';
 import { QualityProfile, QualityProfiles } from './QualityProfiles';
+import { LibraryPanel } from './LibraryPanel';
+import { RoomFinder } from './RoomFinder';
 import { BookmarkStore, shortDate } from './Stores';
 import { ColourMode } from './ViewerSettings';
 
@@ -193,8 +195,21 @@ export class PauseMenu {
   private bookmarkDeleteArmedUntil = 0;
   private bookmarksNotice: string | null = null;
 
+  /** FIND ROOM (Ctrl+F). */
+  readonly rooms: RoomFinder;
+  /** FAMILY LIBRARY (Place gun). */
+  readonly library: LibraryPanel;
+
   constructor(private readonly session: GameSession) {
     this.w = new Widgets(session);
+    this.rooms = new RoomFinder(session, this.w);
+    this.library = new LibraryPanel(session, this.w);
+    this.library.onPick = entry => session.pickFromLibrary(entry);
+  }
+
+  /** True while a panel with a search box has the keyboard (letters must not act as shortcuts, e.g. P). */
+  get capturesTyping(): boolean {
+    return this.session.paused && (this.rooms.open || this.library.open);
   }
 
   private s(v: number): number { return this.session.s(v); }
@@ -202,6 +217,8 @@ export class PauseMenu {
   /** Closes an open list (Esc); false when none was open. */
   closePanels(): boolean {
     if (this.session.textures?.close()) { return true; }
+    if (this.rooms.close()) { return true; }
+    if (this.library.close()) { return true; }
     if (this.commentsOpen && this.commentDetail) { this.commentDetail = null; return true; }
     if (this.commentsOpen) { this.commentsOpen = false; this.commentDeleteArmed = null; return true; }
     if (this.bookmarksOpen) { this.bookmarksOpen = false; this.bookmarkDeleteArmed = null; return true; }
@@ -214,6 +231,8 @@ export class PauseMenu {
     if (this.commentsOpen) { this.buildCommentsPanel(); return; }
     if (this.bookmarksOpen) { this.buildBookmarksPanel(); return; }
     if (this.session.textures?.open) { this.session.textures.build(); return; }
+    if (this.rooms.open) { this.rooms.build(); return; }
+    if (this.library.open) { this.library.build(); return; }
 
     const session = this.session, ui = session.ui, f = ui.atlas, w = this.w;
     const input = session.input;
@@ -236,7 +255,9 @@ export class PauseMenu {
     const endY = height - pad - this.s(48);
     const hiddenThings = session.hiddenThingsCount;
     const texturesButton = session.textures?.available ?? false;
-    const buttons = 7 + (hiddenThings > 0 ? 1 : 0) + (texturesButton ? 1 : 0);
+    const roomsButton = session.scene.rooms.length > 0;
+    const libraryButton = this.library.available;
+    const buttons = 8 + (hiddenThings > 0 ? 1 : 0) + (texturesButton ? 1 : 0) + (roomsButton ? 1 : 0) + (libraryButton ? 1 : 0);
     const step = Math.min(Math.max((endY - this.s(12) - y) / buttons, this.s(40)), this.s(54));
     const buttonH = step - this.s(6);
 
@@ -254,6 +275,16 @@ export class PauseMenu {
     y += step;
     if (texturesButton) {
       if (w.menuButton(f, leftX, y, leftW, session.textures.menuLabel(), false, false, true, buttonH)) { session.textures.show(); return; }
+      y += step;
+    }
+    if (roomsButton) {
+      if (w.menuButton(f, leftX, y, leftW, 'FIND ROOM', false, false, true, buttonH)) { this.rooms.show(); return; }
+      y += step;
+    }
+    if (w.menuButton(f, leftX, y, leftW, 'SUN HOURS STUDY', false, false, true, buttonH)) { session.sunHours.show(); return; }
+    y += step;
+    if (libraryButton) {
+      if (w.menuButton(f, leftX, y, leftW, this.library.menuLabel(), false, false, true, buttonH)) { this.library.show(); return; }
       y += step;
     }
     if (hiddenThings > 0) {

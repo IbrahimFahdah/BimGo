@@ -156,6 +156,6 @@ export class CommentGun extends Gun {
     const onLevel = all.filter(r => r.level === level).length;
     ui.text(f.body, x, y, `${onLevel} on this level · ${all.length} total`, UiTheme.TEXT);
     y += this.s(22);
-    ui.textWrapped(f.body, x, y, width, 'Hover a marker to read it, E to edit. Esc → COMMENTS for status, replies and the saved view.', UiTheme.TEXT_MUTED, 2);
+    ui.textWrapped(f.body, x, y, width, 'Hover a marker to read it, E to edit · Esc → COMMENTS for status and replies.', UiTheme.TEXT_MUTED, 2);
   }
 }

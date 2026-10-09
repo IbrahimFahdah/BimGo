@@ -1,5 +1,6 @@
 import { type EditRequest, type EditResult, EditOp } from '../core/edits/EditMessages';
 import { type JournalEntry, JournalOps } from '../core/edits/EditJournal';
+import { findLibraryEntry, type LibraryEntry } from '../core/scene/FamilyLibrary';
 import { FileKinds } from '../core/format/BimGoFormat';
 import type { BimGoDocument } from '../core/format/BimGoReader';
 import { SidecarJson, writeBimGo } from '../core/format/BimGoWriter';
@@ -33,7 +34,7 @@ import { downloadBlob, safeFileName } from '../platform/files';
 import { type InputState, Vk } from '../platform/input';
 import type { GameWindow } from '../platform/window';
 import { CommentGun } from './guns/CommentGun';
-import { CloneGun, type EditHost, GizmoGun, HammerGun } from './guns/EditGuns';
+import { CloneGun, type EditHost, GizmoGun, HammerGun, PlaceGun } from './guns/EditGuns';
 import type { AimInfo, Gun, GunHost, Highlight } from './guns/Gun';
 import { MeasureGun } from './guns/MeasureGun';
 import { PortalGun } from './guns/PortalGun';
@@ -45,6 +46,7 @@ import { Reflections } from './Reflections';
 import { drawProgress, type ProgressState } from './ProgressScreen';
 import { Player } from './Player';
 import { BookmarkStore, CommentStore } from './Stores';
+import { SunHoursMode } from './SunHoursMode';
 import { SunPanel } from './SunPanel';
 import { SunState } from './SunState';
 import { Textures } from './Textures';
@@ -75,8 +77,9 @@ const HELP_ROWS: [string, string][] = [
   ['V', 'Fly / walk (no-clip)'],
   ['PGUP / PGDN', 'Level up / down'],
   ['H · SHIFT+H', 'Go home · Set home here'],
-  ['1–8 · WHEEL', 'Select tool'],
+  ['1–9 · WHEEL', 'Select tool (9 Place: family library)'],
   ['6 · 7 · 8', 'Demolish · Gizmo · Clone'],
+  ['F', 'Gizmo / Clone / Place: drop onto the surface below'],
   ['I · SHIFT+I', 'Scan: hide target · isolate its category'],
   ['X', "Clear this tool's markers"],
   ['B · ALT+1–9', 'Bookmark this view · Go to bookmark'],
@@ -84,8 +87,10 @@ const HELP_ROWS: [string, string][] = [
   ['L', 'Coordinate readout'],
   ['K', 'Artificial lights: off / glow / light'],
   ['O · SHIFT+O', 'Shadows on/off · Sun panel'],
+  ['J', 'Sun hours study (click surfaces, RMB-drag looks)'],
   ['[ ]', 'Sun time −/+ 5 min (Shift: 1 min)'],
   ['TAB · ESC / P', 'Minimap · Pause menu'],
+  ['CTRL+F', 'Find a room and go there'],
   ['CTRL+S · Z · Y', 'Save · Undo · Redo'],
   ['F5 · R (SCAN)', 'Live: refresh · Show in Revit'],
   ['F11 · SHIFT+F12', 'Fullscreen · Screenshot'],
@@ -125,8 +130,11 @@ export class GameSession implements GunHost, EditHost {
   activeGun = 0;
   portalGun!: PortalGun;
   commentGun!: CommentGun;
+  placeGun!: PlaceGun;
   readonly menu: PauseMenu;
   readonly sunPanel: SunPanel;
+  /** The direct sun hours study (J). */
+  readonly sunHours: SunHoursMode;
   textures!: Textures;
   /** Bumped by every change that Save would write (comments, bookmarks, materials, edits…). */
   dirtyRevision = 0;
@@ -280,6 +288,7 @@ export class GameSession implements GunHost, EditHost {
     this.levelNamesUpper = scene.levels.map(l => l.name.toUpperCase());
     this.menu = new PauseMenu(this);
     this.sunPanel = new SunPanel(this);
+    this.sunHours = new SunHoursMode(this);
     this.editor = new TextEditor(this);
     this.reflections = new Reflections(this);
     setCurrentUser(settings.userName);
@@ -367,8 +376,9 @@ export class GameSession implements GunHost, EditHost {
 
     this.portalGun = new PortalGun(this);
     this.commentGun = new CommentGun(this);
+    this.placeGun = new PlaceGun(this);
     this.guns = [new ScanGun(this), new MeasureGun(this), this.portalGun, this.commentGun, new TeleportGun(this),
-      new HammerGun(this), new GizmoGun(this), new CloneGun(this)];
+      new HammerGun(this), new GizmoGun(this), new CloneGun(this), this.placeGun];
     this.guns.forEach((g, i) => { g.key = String(i + 1); });
 
     this.spawn();
@@ -502,6 +512,7 @@ export class GameSession implements GunHost, EditHost {
     this.updateAim();
     this.updateGuns(dt);
     this.sun.update(dt);
+    this.sunHours.update();
     this.render();
     this.updateFps(dt);
     return this.ended ? 'closed' : null;
@@ -521,7 +532,7 @@ export class GameSession implements GunHost, EditHost {
       return;
     }
     if (this.clock - this.editCancelledAt < 0.5) { return; }
-    if (!this.paused && !this.editor.active && !this.sunPanel.open) { this.setPaused(true); }
+    if (!this.paused && !this.editor.active && !this.sunPanel.open && !this.sunHours.open) { this.setPaused(true); }
   }
 
   /** Esc while moving or cloning: puts things back (the browser also frees the mouse; that doesn't pause). */
@@ -536,6 +547,14 @@ export class GameSession implements GunHost, EditHost {
 
     if (this.editor.active) {
       this.editor.update(input);
+      return;
+    }
+
+    // The sun hours study has the cursor: the player stands still, RMB-drag looks, clicks pick surfaces
+    if (this.sunHours.open && !this.paused) {
+      if (input.isPressed(Vk.F11)) { toggleFullscreen(); }
+      if (input.isPressed(Vk.F12) && input.isDown(Vk.SHIFT)) { this.screenshotRequested = true; }
+      this.sunHours.updateMode(input);
       return;
     }
 
@@ -558,7 +577,7 @@ export class GameSession implements GunHost, EditHost {
       this.cancelEdit();
     } else if (input.isPressed(Vk.ESCAPE) && this.clock - this.editCancelledAt < 0.5) {
       // The same Esc already cancelled an edit (the browser released the mouse first)
-    } else if (input.isPressed(Vk.ESCAPE) || input.isPressed(Vk.key('P'))) {
+    } else if (input.isPressed(Vk.ESCAPE) || (input.isPressed(Vk.key('P')) && !this.menu.capturesTyping)) {
       if (!(this.paused && input.isPressed(Vk.ESCAPE) && this.menu.closePanels())) { this.setPaused(!this.paused); }
     }
     if (input.isPressed(Vk.F1)) { this.showHelp = !this.showHelp; }
@@ -578,6 +597,10 @@ export class GameSession implements GunHost, EditHost {
       }
       if (!this.paused && input.isPressedOrRepeated(Vk.key('Y'))) {
         this.redo();
+        return;
+      }
+      if (!this.paused && input.isPressed(Vk.key('F'))) {
+        this.menu.rooms.show();
         return;
       }
     }
@@ -615,6 +638,10 @@ export class GameSession implements GunHost, EditHost {
       return;
     }
     if (input.isPressed(Vk.key('L'))) { this.cycleCoordinateReadout(); }
+    if (input.isPressed(Vk.key('J'))) {
+      this.sunHours.show();
+      return;
+    }
     if (input.isPressed(Vk.key('K'))) { this.cycleLightMode(); }
     if (input.isPressed(Vk.key('O'))) {
       if (input.isDown(Vk.SHIFT)) { this.sunPanel.show(); } else { this.toggleShadows(); }
@@ -654,7 +681,7 @@ export class GameSession implements GunHost, EditHost {
 
   private fixedUpdate(dt: number): void {
     this.player.controller.groundZ = this.groundZ;
-    const frozen = this.editor.active || this.sunPanel.open || this.window.isMinimised || this.guns[this.activeGun].capturesInput;
+    const frozen = this.editor.active || this.sunPanel.open || this.sunHours.open || this.window.isMinimised || this.guns[this.activeGun].capturesInput;
     this.player.fixedUpdate(dt, this.window.input, !frozen);
     this.portalGun.checkTeleport(this.player, dt);
   }
@@ -678,7 +705,7 @@ export class GameSession implements GunHost, EditHost {
 
   private updateGuns(dt: number): void {
     for (const gun of this.guns) { gun.tick(dt); }
-    if (this.paused || this.editor.active || this.sunPanel.open) { return; }
+    if (this.paused || this.editor.active || this.sunPanel.open || this.sunHours.open) { return; }
 
     const active = this.guns[this.activeGun];
     active.update(dt, this.aim);
@@ -810,6 +837,31 @@ export class GameSession implements GunHost, EditHost {
     const hit = this.bvh.raycast(origin, direction, maxDistance, this.pickMask);
     // A moved or cloned element in front of the static hit wins
     return this.dynamics?.raycast(origin, direction, hit ? hit.distance : maxDistance) ?? hit;
+  }
+
+  /** The static scene only (no moved / cloned elements), for surface picking. */
+  pickStatic(origin: Vec3, direction: Vec3, maxDistance: number): RayHit | null {
+    return this.bvh.raycast(origin, direction, maxDistance, this.pickMask);
+  }
+
+  /**
+   * Picks like {@link pick} but ignores one moved / cloned element (drop to surface casts from inside the element's own
+   * box; a moved original's static copy is already hidden).
+   */
+  pickExcluding(origin: Vec3, direction: Vec3, maxDistance: number, exclude: DynamicInstance | null): RayHit | null {
+    const hit = this.bvh.raycast(origin, direction, maxDistance, this.pickMask);
+    return this.dynamics?.raycast(origin, direction, hit ? hit.distance : maxDistance, exclude) ?? hit;
+  }
+
+  /** True when a ray towards the sun hits visible geometry (glass passes when opaqueOnly). */
+  sunRayBlocked(origin: Vec3, direction: Vec3, distance: number, opaqueOnly: boolean): boolean {
+    if (this.bvh.raycast(origin, direction, distance, this.pickMask, opaqueOnly)) { return true; }
+    return this.dynamics?.raycast(origin, direction, distance, null, opaqueOnly) != null;
+  }
+
+  /** True when a static element is visible and pickable. */
+  isPickable(element: number): boolean {
+    return this.pickMask[element] === true;
   }
 
   /** True if a pick target still exists: a visible static element or an active dynamic instance. */
@@ -1203,6 +1255,16 @@ export class GameSession implements GunHost, EditHost {
 
   // #region Rooms
 
+  /** The index of the room the player stands in, or −1. */
+  get currentRoomIndex(): number {
+    return this.roomIndex;
+  }
+
+  /** The smallest room containing a point (host rooms win), or −1. */
+  findRoomAt(x: number, y: number, z: number): number {
+    return this.findRoom(x, y, z);
+  }
+
   get currentRoom(): RoomInfo | null {
     return this.roomIndex >= 0 ? this.scene.rooms[this.roomIndex] : null;
   }
@@ -1350,9 +1412,20 @@ export class GameSession implements GunHost, EditHost {
       this.overlay.draw(this.camera, false, 0.16, false);
     }
 
+    // Sun hours grid (study results are content, so they show with the UI hidden too)
+    this.sunHours.drawCells();
+
     // Captures of the 3D view (no HUD)
     if (this.thumbnailFor || this.commentThumbnailFor) { this.captureThumbnail(width, height); }
     if (this.screenshotRequested) { this.captureScreenshot(width, height); }
+    if (this.sunHours.shotRequested) {
+      // The study's screenshot: the 3D view plus the legend (drawn and flushed first), no other UI
+      this.sunHours.shotRequested = false;
+      gl.viewport(0, 0, width, height);
+      this.sunHours.buildLegend(this.ui.atlas, this.s(20), height - this.s(20) - this.s(78));
+      this.ui.flush(width, height);
+      this.captureScreenshot(width, height, ' sun hours');
+    }
 
     // ---- Window pass: minimap 3D, then all 2D UI in one batch
     gl.viewport(0, 0, width, height);
@@ -1485,18 +1558,18 @@ export class GameSession implements GunHost, EditHost {
     return canvas;
   }
 
-  private captureScreenshot(width: number, height: number): void {
+  private captureScreenshot(width: number, height: number, suffix = ''): void {
     this.screenshotRequested = false;
     if (width <= 0 || height <= 0) { return; }
     const canvas = this.viewCanvas(width, height);
     const d = new Date();
     const two = (n: number) => n.toString().padStart(2, '0');
-    const name = `${safeFileName(this.scene.modelTitle)} ${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())} ${two(d.getHours())}${two(d.getMinutes())}${two(d.getSeconds())}.png`;
+    const name = `${safeFileName(this.scene.modelTitle)}${suffix} ${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())} ${two(d.getHours())}${two(d.getMinutes())}${two(d.getSeconds())}.png`;
     this.sound.play(SoundId.UiClick);
     this.flash(0x60ffffff, 0.12);
     canvas.toBlob(blob => {
       if (!blob) {
-        this.toast('Screenshot failed');
+        this.toast('Screenshot failed', 2.6, true);
         return;
       }
       downloadBlob(blob, name);
@@ -1560,7 +1633,7 @@ export class GameSession implements GunHost, EditHost {
     ui.rect(cx + gap, cy - t1 * 0.5, arm, t1, UiTheme.TEXT);
     ui.circle(cx, cy, this.s(1.8), active.colour, 10);
 
-    if (!this.window.isCaptured && !this.editor.active && !this.sunPanel.open) {
+    if (!this.window.isCaptured && !this.editor.active && !this.sunPanel.open && !this.sunHours.open) {
       const hint = 'Click to look around';
       const hintWidth = UiBatch.measure(f.body, hint) + this.s(24);
       ui.panel(cx - hintWidth * 0.5, cy + this.s(28), hintWidth, this.s(28), UiTheme.PANEL, UiTheme.PANEL_BORDER);
@@ -1573,7 +1646,7 @@ export class GameSession implements GunHost, EditHost {
     // Minimap and the gun's context panel beneath it
     if (this.showMap) { this.drawMinimapOverlay(mapX, mapY); }
     // (hidden while the sun panel is open: the two would overlap on smaller screens)
-    if (!this.sunPanel.open) {
+    if (!this.sunPanel.open && !this.sunHours.open) {
       const panelTop = this.showMap ? mapY + this.s(208) + this.s(12) : this.s(20);
       const panelWidth = this.s(260), panelX = width - this.s(20) - panelWidth;
       ui.panel(panelX, panelTop, panelWidth, this.s(active.panelHeight) + this.s(24), UiTheme.PANEL, UiTheme.PANEL_BORDER);
@@ -1582,6 +1655,8 @@ export class GameSession implements GunHost, EditHost {
 
     this.sunPanel.buildIcon(f, this.window.input);
     if (this.sunPanel.open) { this.sunPanel.build(f, this.window.input); }
+    if (this.sunHours.open) { this.sunHours.buildPanel(f, this.window.input); }
+    this.sunHours.buildLegend(f, this.s(20), height - this.s(52) - this.s(78));
 
     this.buildHelp(f, height);
     this.buildGunBar(f, width, height, active);
@@ -1767,7 +1842,7 @@ export class GameSession implements GunHost, EditHost {
 
   /** Hides or restores a static element (drawing, picking, collision and shadows). */
   setStaticHidden(element: number, hidden: boolean): void {
-    if (this.hidden[element] === hidden) { return; }
+    if (this.hidden[element] === hidden || this.scene.elements[element].isLibraryTemplate) { return; }
     this.hidden[element] = hidden;
     this.sceneRevision++;
     this.renderer.setElementHidden(element, hidden || this.userHidden[element]);
@@ -1898,12 +1973,15 @@ export class GameSession implements GunHost, EditHost {
     const target = this.describeTarget(request.elementId, request.targetCloneKey ?? 0);
     this.journal.add({
       seq: 0,
-      op: request.op === EditOp.Transform ? JournalOps.TRANSFORM : request.op === EditOp.Copy ? JournalOps.CLONE : JournalOps.HIDE,
+      op: request.op === EditOp.Transform ? JournalOps.TRANSFORM : request.op === EditOp.Copy ? JournalOps.CLONE
+        : request.op === EditOp.Place ? JournalOps.PLACE : JournalOps.HIDE,
       mode: request.op === EditOp.Delete ? JournalOps.MODE_DELETE : request.op === EditOp.PhaseDemolish ? JournalOps.MODE_DEMOLISH : null,
       elementId: target.elementId,
       uniqueId: target.uniqueId,
       targetCloneKey: target.cloneKey,
       newCloneKey: request.newCloneKey ?? 0,
+      typeUniqueId: request.op === EditOp.Place ? request.typeUniqueId ?? null : null,
+      typeId: request.op === EditOp.Place ? request.typeId ?? 0 : 0,
       pivot: request.pivot ?? vec3(),
       offset: request.translation ?? vec3(),
       angle: request.angle ?? 0,
@@ -1911,7 +1989,7 @@ export class GameSession implements GunHost, EditHost {
       utc: new Date().toISOString(),
       user: this.settings.userName,
       appliedToRevit: this.source.isRevit,
-      revitElementId: request.op === EditOp.Copy && this.source.isRevit ? result.newElementId ?? 0 : 0
+      revitElementId: (request.op === EditOp.Copy || request.op === EditOp.Place) && this.source.isRevit ? result.newElementId ?? 0 : 0
     });
   }
 
@@ -1952,6 +2030,8 @@ export class GameSession implements GunHost, EditHost {
   }
 
   private applyEntry(entry: JournalEntry): boolean {
+    // A family library placement has no target: it clones the type's template
+    if (entry.op === JournalOps.PLACE) { return this.applyPlaceEntry(entry); }
     const target = this.resolveTarget(entry.targetCloneKey, entry.uniqueId, entry.elementId);
     if (!target) { return false; }
     const { element, clone } = target;
@@ -1983,6 +2063,50 @@ export class GameSession implements GunHost, EditHost {
         return false;
     }
   }
+
+  /** Journal replay of a placement: the type's template cloned under the entry's key, where the entry put it. */
+  private applyPlaceEntry(entry: JournalEntry): boolean {
+    const type = findLibraryEntry(this.scene.library, entry.typeUniqueId);
+    const placed = type ? this.createPlacement(type, entry.newCloneKey) : null;
+    if (!placed) {
+      console.info(`Journal entry ${entry.seq}: family type ${entry.typeUniqueId ?? '?'} is not in this model's library; the placement is not shown.`);
+      this.nextCloneKey = Math.max(this.nextCloneKey, entry.newCloneKey);
+      return false;
+    }
+    this.setPlacement(placed, V.sub(entry.pivot, this.scene.originOffset), entry.angle);
+    placed.committed = true;
+    placed.revitId = entry.revitElementId;
+    return true;
+  }
+
+  // #region Family library (port of GameSession.Library.cs, placement half)
+
+  /** Opens the family library panel (Place gun LMB, pause menu). */
+  openLibrary(): void {
+    this.menu.library.show();
+  }
+
+  /** A card was picked: back to the walkthrough with the Place gun holding a new instance in front of the player. */
+  pickFromLibrary(entry: LibraryEntry): void {
+    this.setPaused(false);
+    const slot = this.guns.indexOf(this.placeGun);
+    if (slot >= 0) { this.selectGun(slot); }
+    this.placeGun.begin(entry);
+  }
+
+  /** A new (uncommitted) instance of a library type: a clone of its hidden template (null when it has none). */
+  createPlacement(entry: LibraryEntry, cloneKey = 0): DynamicInstance | null {
+    const record = this.scene.elements[entry.element];
+    if (entry.element < 0 || !record?.isLibraryTemplate) { return null; }
+    return this.createClone(entry.element, null, cloneKey);
+  }
+
+  /** Puts a placement where a scene-local pivot and angle say (the template's own pivot is 2 km below the model). */
+  setPlacement(instance: DynamicInstance, pivot: Vec3, angle: number): void {
+    this.dynamics.setTransform(instance, V.sub(pivot, instance.basePivot), angle);
+  }
+
+  // #endregion
 
   /** Everything hosted by an element, recursively (doors in a wall…), excluding the element itself. */
   private collectHosted(hostId: number): number[] {
@@ -2372,6 +2496,8 @@ export class GameSession implements GunHost, EditHost {
     this.thumbnailTextures.clear();
     this.sound.dispose();
     this.overlay.dispose();
+    this.sunHours.dispose();
+    this.menu.library.dispose();
     this.renderer?.dispose();
   }
 

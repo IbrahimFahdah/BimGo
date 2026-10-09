@@ -170,7 +170,7 @@ export function blocksBrowserDefault(vk: number, ctrl: boolean, alt: boolean): b
     case Vk.LEFT: case Vk.UP: case Vk.RIGHT: case Vk.DOWN: case Vk.LMENU: case Vk.RMENU:
       return true;
   }
-  if (ctrl && (vk === Vk.key('S') || vk === Vk.key('O'))) { return true; }
+  if (ctrl && (vk === Vk.key('S') || vk === Vk.key('O') || vk === Vk.key('F'))) { return true; } // Ctrl+F: find room
   if (alt && vk >= 0x31 && vk <= 0x39) { return true; } // Alt+1–9: bookmarks
   return false;
 }

@@ -1,6 +1,8 @@
 import { EditOp, type EditResult } from '../../core/edits/EditMessages';
 import { type Vec3, Vec3 as V, vec3 } from '../../core/math/Vector';
+import { isLibraryEmpty, type LibraryEntry, libraryLabel, placeableCount } from '../../core/scene/FamilyLibrary';
 import { type Aabb, type ElementRecord, PhaseRole } from '../../core/scene/SceneData';
+import type { RayHit } from '../../engine/physics/Bvh';
 import type { DynamicInstance, DynamicSet } from '../../engine/physics/DynamicSet';
 import type { Overlay3D } from '../../engine/render/Overlay3D';
 import { Rgba } from '../../engine/ui/Rgba';
@@ -32,6 +34,14 @@ export interface EditHost extends GunHost {
   toggleGizmoSnap(): void;
   stepSnapMove(direction: number): void;
   stepSnapAngle(direction: number): void;
+  /** Picks like pick() but ignores one moved / cloned element (drop to surface). */
+  pickExcluding(origin: Vec3, direction: Vec3, maxDistance: number, exclude: DynamicInstance | null): RayHit | null;
+  /** Opens the family library panel (Place gun). */
+  openLibrary(): void;
+  /** A new (uncommitted) instance of a library type: a clone of its hidden template; null when it has none. */
+  createPlacement(entry: LibraryEntry, cloneKey?: number): DynamicInstance | null;
+  /** Puts a placement where a scene-local pivot and angle say. */
+  setPlacement(instance: DynamicInstance, pivot: Vec3, angle: number): void;
 }
 
 // #region Demolish
@@ -246,8 +256,14 @@ export class GizmoController {
   private static readonly MOVE_SPEED = 1;              // m/s
   private static readonly ROTATE_SPEED = Math.PI / 2;  // rad/s
   private static readonly FINE = 0.25;
+  /** Drop to surface: furthest drop (m) below the element's base. */
+  static readonly MAX_DROP = 10;
+  /** Drop to surface: the ray starts this far above the box's base (at most half its height), so a sunk element is lifted. */
+  private static readonly LIFT_REACH = 0.3;
 
   target: DynamicInstance | null = null;
+  // After a drop the height is exact, not a whole snap increment: snapping leaves Z alone until E / Q steps it
+  private zFree = false;
   mode = GizmoMode.Move;
   private startOffset: Vec3 = vec3();
   private rawOffset: Vec3 = vec3();
@@ -271,6 +287,7 @@ export class GizmoController {
     this.startOffset = V.copy(target.offset);
     this.rawOffset = V.copy(target.offset);
     this.startAngle = this.rawAngle = target.angle;
+    this.zFree = false;
   }
 
   cancel(): DynamicInstance | null {
@@ -308,15 +325,15 @@ export class GizmoController {
         if (tap('D', Vk.RIGHT)) { stepMove = V.add(stepMove, flatRight); }
         if (tap('A', Vk.LEFT)) { stepMove = V.sub(stepMove, flatRight); }
         this.rawOffset = V.add(this.rawOffset, V.scale(nearestAxis(stepMove), step));
-        if (tap('E')) { this.rawOffset.z += step; }
-        if (tap('Q')) { this.rawOffset.z -= step; }
+        if (tap('E')) { this.rawOffset.z += step; this.zFree = false; }
+        if (tap('Q')) { this.rawOffset.z -= step; this.zFree = false; }
       } else {
         if (tap('A', Vk.LEFT)) { this.rawAngle += angleStep; }
         if (tap('D', Vk.RIGHT)) { this.rawAngle -= angleStep; }
       }
       // Clamp the change since lock-on to whole increments (also tidies a smooth move made before snapping)
       const d = V.sub(this.rawOffset, this.startOffset);
-      this.rawOffset = V.add(this.startOffset, vec3(snap(d.x, step), snap(d.y, step), snap(d.z, step)));
+      this.rawOffset = V.add(this.startOffset, vec3(snap(d.x, step), snap(d.y, step), this.zFree ? d.z : snap(d.z, step)));
       this.rawAngle = this.startAngle + snap(this.rawAngle - this.startAngle, angleStep);
     } else {
       const scale = input.isDown(Vk.SHIFT) ? GizmoController.FINE : 1;
@@ -338,6 +355,28 @@ export class GizmoController {
     if (this.rawOffset.x !== o.x || this.rawOffset.y !== o.y || this.rawOffset.z !== o.z || this.rawAngle !== target.angle) {
       this.host.dynamics.setTransform(target, this.rawOffset, this.rawAngle);
     }
+  }
+
+  /**
+   * Drops or lifts the target so the bottom of its box rests on the first surface straight below the box's bottom
+   * centre: one ray down from a little above the base, against the visible static scene and the other moved / cloned
+   * elements, never the target itself. The first hit wins (a lamp over a desk lands on the desk). Stays locked on.
+   * @returns What happened (moved, and a message for a toast).
+   */
+  dropToSurface(): { moved: boolean; message: string | null } {
+    const target = this.target;
+    if (!target) { return { moved: false, message: null }; }
+    const bounds = target.worldBounds;
+    const reach = Math.min(GizmoController.LIFT_REACH, Math.max(0, bounds.size.z) * 0.5);
+    const centre = bounds.center;
+    const hit = this.host.pickExcluding(vec3(centre.x, centre.y, bounds.min.z + reach), vec3(0, 0, -1), reach + GizmoController.MAX_DROP, target);
+    if (!hit) { return { moved: false, message: 'Nothing below to drop onto' }; }
+    const change = hit.point.z - bounds.min.z;
+    if (Math.abs(change) < 5e-4) { return { moved: false, message: 'Already resting on the surface below' }; }
+    this.rawOffset = V.add(target.offset, vec3(0, 0, change));
+    this.zFree = true;
+    this.host.dynamics.setTransform(target, this.rawOffset, target.angle);
+    return { moved: true, message: change < 0 ? `Dropped ${(-change).toFixed(3)} m onto the surface below` : `Lifted ${change.toFixed(3)} m onto the surface` };
   }
 
   draw(overlay: Overlay3D, colour: number): void {
@@ -426,6 +465,7 @@ const GizmoPanel = {
   handleKeys(host: EditHost, gizmo: GizmoController, input: InputState): void {
     if (input.isPressed(Vk.key('G'))) { host.toggleGizmoSnap(); }
     if (!gizmo.active) { return; }
+    if (input.isPressed(Vk.key('F'))) { GizmoPanel.drop(host, gizmo); }
     if (input.isPressed(Vk.key('R'))) {
       gizmo.toggleMode();
       host.sound.play(SoundId.UiClick);
@@ -433,6 +473,14 @@ const GizmoPanel = {
     const rotating = gizmo.mode === GizmoMode.Rotate;
     if (input.isPressed(Vk.key('Z'))) { if (rotating) { host.stepSnapAngle(-1); } else { host.stepSnapMove(-1); } }
     if (input.isPressed(Vk.key('X'))) { if (rotating) { host.stepSnapAngle(1); } else { host.stepSnapMove(1); } }
+  },
+
+  /** F while locked on: drop or lift onto the surface below, with a sound and a note; true when it moved. */
+  drop(host: EditHost, gizmo: GizmoController): boolean {
+    const { moved, message } = gizmo.dropToSurface();
+    host.sound.play(moved ? SoundId.UiClick : SoundId.Error);
+    if (message) { host.toast(moved ? message + ' (RMB commits)' : message); }
+    return moved;
   },
 
   snapText(host: EditHost): string {
@@ -461,7 +509,7 @@ const GizmoPanel = {
         ui.text(f.body, x, y, 'Shift fine · G snap on/off · Ctrl flips snap', UiTheme.TEXT_MUTED);
       }
       y += s(18);
-      ui.text(f.body, x, y, rotating ? 'Z/X angle step' : 'Z/X move step', UiTheme.TEXT_MUTED);
+      ui.text(f.body, x, y, rotating ? 'Z/X angle step · F drop to surface' : 'Z/X move step · F drop to surface', UiTheme.TEXT_MUTED);
       y += s(18);
       ui.text(f.body, x, y, 'RMB commit · Esc cancel', UiTheme.TEXT_MUTED);
       return;
@@ -479,7 +527,7 @@ const GizmoPanel = {
     y += s(22);
     ui.textWrapped(f.body, x, y, width, hovered.familyType, UiTheme.TEXT_SOFT, 1);
     y += s(20);
-    if (hovered.movable) { ui.text(f.body, x, y, 'Movable: LMB locks on', UiTheme.GOOD); }
+    if (hovered.movable) { ui.text(f.body, x, y, title === 'GIZMO' ? 'Movable: LMB locks on · F drops to surface' : 'Movable: LMB clones', UiTheme.GOOD); }
     else { ui.textWrapped(f.body, x, y, width, `Can't move: ${hovered.moveBlockReason}`, UiTheme.DANGER, 1); }
     y += s(20);
     if (host.editsLocalOnly) { ui.text(f.body, x, y, 'Not connected to Revit: walkthrough only', UiTheme.DANGER); }
@@ -506,7 +554,14 @@ export class GizmoGun extends Gun {
 
   drawIcon(ui: UiBatch, cx: number, cy: number, size: number, colour: number): void { GunIcons.gizmo(ui, cx, cy, size, colour); }
   clearMarkers(): void { /* none */ }
-  override onKeys(input: InputState): void { GizmoPanel.handleKeys(this.host, this.gizmo, input); }
+  override onKeys(input: InputState): void {
+    // Aim + F (not locked on): drop or lift the aimed element onto the surface below and commit it at once
+    if (!this.gizmo.active && input.isPressed(Vk.key('F'))) {
+      this.dropAimed();
+      return;
+    }
+    GizmoPanel.handleKeys(this.host, this.gizmo, input);
+  }
   override onDeselect(): void { this.hover = -1; this.hoverDynamic = 0; }
 
   override update(dt: number, aim: AimInfo): void {
@@ -520,21 +575,45 @@ export class GizmoGun extends Gun {
 
   override onPrimary(aim: AimInfo): void {
     if (this.gizmo.active) { return; }
-    const host = this.host;
     if (!aim.hit) {
-      host.sound.play(SoundId.Error);
+      this.host.sound.play(SoundId.Error);
       return;
     }
-    const record = host.scene.elements[aim.hit.element];
+    if (this.lockOn(aim.hit.element, aim.hit.dynamicId)) { this.host.sound.play(SoundId.Grab); }
+  }
+
+  /** Locks the gizmo on to an element (its moved / cloned instance when dynamicId > 0); refuses elements that can't move. */
+  private lockOn(element: number, dynamicId: number): boolean {
+    const host = this.host;
+    const record = host.scene.elements[element];
     if (!record.movable) {
       host.sound.play(SoundId.Error);
       host.toast(`Can't move ${record.name}: ${record.moveBlockReason}`, 2.6, true);
+      return false;
+    }
+    const instance = dynamicId > 0 ? host.dynamics.find(dynamicId) : host.makeDynamic(element);
+    if (!instance) { return false; }
+    this.gizmo.begin(instance);
+    return true;
+  }
+
+  /**
+   * F while aiming (not locked on): locks on to the aimed element, drops or lifts it onto the first surface below and
+   * commits that as one move (Ctrl+Z undoes it in a file). Nothing below or already resting: nothing changes.
+   */
+  private dropAimed(): void {
+    const host = this.host;
+    if (this.hover < 0) {
+      host.sound.play(SoundId.Error);
+      host.toast('Aim at furniture or a fitting, then F drops it onto the surface below');
       return;
     }
-    const instance = aim.hit.dynamicId > 0 ? host.dynamics.find(aim.hit.dynamicId) : host.makeDynamic(aim.hit.element);
-    if (!instance) { return; }
-    this.gizmo.begin(instance);
-    host.sound.play(SoundId.Grab);
+    if (!this.lockOn(this.hover, this.hoverDynamic)) { return; }
+    if (GizmoPanel.drop(host, this.gizmo)) {
+      this.commit();
+      return;
+    }
+    host.restoreIfUnmoved(this.gizmo.cancel());
   }
 
   override onSecondary(): void {
@@ -723,6 +802,182 @@ export class CloneGun extends Gun {
 
   drawPanel(ui: UiBatch, x: number, y: number, width: number): void {
     GizmoPanel.draw(ui, this.host, this.gizmo, 'CLONE', UiTheme.CLONE_LABEL, this.hover, x, y, width);
+  }
+}
+
+/**
+ * Gun 9: places new instances of loadable family types from the family library (port of PlaceGun.cs). Not holding
+ * anything: LMB opens the library, RMB places the last picked type again. A picked type appears in front of the
+ * player, resting on the surface below, in the gizmo's move mode (Clone's controls, F included). RMB commits (Revit
+ * places the type, or the file records a `place`); Esc discards. A placement is a clone of the type's hidden template,
+ * so once committed every other gun treats it like a clone.
+ */
+export class PlaceGun extends Gun {
+  /** How far in front of the player a new placement appears (m, plus half its plan size). */
+  private static readonly PLACE_DISTANCE = 1.6;
+  private readonly gizmo: GizmoController;
+  private entry: LibraryEntry | null = null;
+  private last: LibraryEntry | null = null;
+
+  constructor(private readonly host: EditHost) {
+    super(host);
+    this.gizmo = new GizmoController(host);
+  }
+
+  get name(): string { return 'PLACE'; }
+  get hintPrimary(): string { return this.gizmo.active ? 'Esc discard' : 'Family library'; }
+  get hintSecondary(): string {
+    return this.gizmo.active ? (this.host.editsGoToRevit ? 'Commit to Revit' : 'Commit') : this.last ? 'Place again' : '—';
+  }
+  get colour(): number { return UiTheme.PLACE; }
+  get panelHeight(): number { return 140; }
+  override get capturesInput(): boolean { return this.gizmo.active; }
+
+  drawIcon(ui: UiBatch, cx: number, cy: number, size: number, colour: number): void { GunIcons.place(ui, cx, cy, size, colour); }
+  clearMarkers(): void { /* none */ }
+  override onKeys(input: InputState): void { GizmoPanel.handleKeys(this.host, this.gizmo, input); }
+
+  override update(dt: number): void {
+    if (this.gizmo.active) { this.gizmo.update(dt, this.host.input); }
+  }
+
+  override onPrimary(): void {
+    if (!this.gizmo.active) { this.host.openLibrary(); }
+  }
+
+  override onSecondary(): void {
+    if (this.gizmo.active) {
+      this.commit();
+      return;
+    }
+    if (this.last) { this.begin(this.last); }
+    else {
+      this.host.sound.play(SoundId.Error);
+      this.host.toast('Pick a family first: LMB opens the family library');
+    }
+  }
+
+  override onCancel(): void {
+    const placed = this.gizmo.end();
+    if (placed) { this.host.dynamics.remove(placed); }
+    this.entry = null;
+    this.host.sound.play(SoundId.Remove);
+    this.host.toast('Placement discarded');
+  }
+
+  /**
+   * Makes a new instance of a library type in front of the player, drops it onto the surface below and locks the
+   * gizmo on in move mode. Discards a placement still being held.
+   */
+  begin(entry: LibraryEntry): void {
+    const host = this.host;
+    if (!entry.placeable || entry.element < 0) {
+      host.sound.play(SoundId.Error);
+      host.toast(`${libraryLabel(entry)}: ${entry.reason ?? 'not placeable'}`, 2.6, true);
+      return;
+    }
+    if (this.gizmo.active) { this.onCancel(); }
+
+    const placed = host.createPlacement(entry);
+    if (!placed) {
+      host.sound.play(SoundId.Error);
+      host.toast(`${libraryLabel(entry)} has no geometry in this snapshot`, 2.6, true);
+      return;
+    }
+
+    // In front of the player at foot level, far enough that its footprint clears the player
+    const template = host.scene.elements[entry.element].bounds;
+    const size = template.size;
+    const reach = PlaceGun.PLACE_DISTANCE + 0.5 * Math.max(size.x, size.y);
+    const forward = host.camera.forward;
+    let fx = forward.x, fy = forward.y;
+    const l = Math.hypot(fx, fy);
+    if (l > 1e-3) { fx /= l; fy /= l; } else { fx = 1; fy = 0; }
+    const feet = host.player.feet;
+    const pivotToBase = placed.basePivot.z - template.min.z; // the template's pivot relative to its box bottom
+    host.setPlacement(placed, vec3(feet.x + fx * reach, feet.y + fy * reach, feet.z + Math.max(0, pivotToBase)), 0);
+
+    this.entry = entry;
+    this.last = entry;
+    this.gizmo.begin(placed);
+    this.gizmo.dropToSurface(); // quietly onto the floor (or desk) in front; F does it again after moving
+    host.sound.play(SoundId.Grab);
+    host.toast(`${libraryLabel(entry)}: move it, then RMB commits it (Esc discards it)`);
+  }
+
+  /** Keeps the placement and asks the model source to create it (Revit places the type; a file records a `place`). */
+  private commit(): void {
+    const host = this.host, entry = this.entry;
+    const placed = this.gizmo.end();
+    this.entry = null;
+    if (!placed || !entry) { return; }
+    placed.committed = true;
+    const label = libraryLabel(entry);
+
+    host.sound.play(SoundId.Commit);
+    const sent = host.submitEdit({
+      op: EditOp.Place,
+      elementId: 0,
+      newCloneKey: placed.cloneKey,
+      typeUniqueId: entry.typeUniqueId,
+      typeId: entry.typeId,
+      pivot: host.toRevit(placed.pivot),
+      translation: vec3(),
+      angle: placed.angle,
+      label: 'Place ' + label
+    }, result => {
+      if (result.success) {
+        if (result.newElementId && result.newElementId > 0) {
+          placed.revitId = result.newElementId;
+          host.toast(`Placed in Revit: ${label} (id ${result.newElementId})`);
+        } else {
+          host.toast(`Placed: ${label}`);
+        }
+        return;
+      }
+      host.dynamics.remove(placed);
+      host.sound.play(SoundId.Error);
+      host.toast(`${host.editTargetName} refused the placement (${result.message}). Removed.`, 4, true);
+    });
+    if (!sent) { host.toast(`${label} kept in the walkthrough only (not connected to Revit)`); }
+  }
+
+  override collectHighlights(highlights: Highlight[]): void {
+    const target = this.gizmo.target;
+    if (target) { highlights.push({ element: target.element, dynamicId: target.id, colour: UiTheme.PLACE, strength: 0.3 }); }
+  }
+
+  override drawWorld(overlay: Overlay3D, selected: boolean): void {
+    if (selected) { this.gizmo.draw(overlay, UiTheme.PLACE); }
+  }
+
+  drawPanel(ui: UiBatch, x: number, y: number, width: number): void {
+    const host = this.host;
+    if (this.gizmo.active) {
+      GizmoPanel.draw(ui, host, this.gizmo, 'PLACE', UiTheme.PLACE_LABEL, -1, x, y, width);
+      return;
+    }
+    const f = ui.atlas;
+    ui.text(f.small, x, y, 'PLACE', UiTheme.PLACE_LABEL, this.s(1.1));
+    y += this.s(20);
+    const library = host.scene.library;
+    if (isLibraryEmpty(library)) {
+      ui.textWrapped(f.body, x, y, width, 'No family library in this model.', UiTheme.TEXT_MUTED, 1);
+      y += this.s(19);
+      ui.textWrapped(f.body, x, y, width, 'Revit: Options → Geometry → Family library, then Go.', UiTheme.TEXT_MUTED, 2);
+      return;
+    }
+    ui.text(f.body, x, y, `${placeableCount(library).toLocaleString('en')} family types to place`, UiTheme.TEXT);
+    y += this.s(22);
+    ui.text(f.body, x, y, 'LMB opens the family library', UiTheme.TEXT_SOFT);
+    y += this.s(20);
+    if (this.last) {
+      ui.textWrapped(f.body, x, y, width, libraryLabel(this.last), UiTheme.PLACE_LABEL, 1);
+      y += this.s(19);
+      ui.text(f.body, x, y, 'RMB places it again', UiTheme.TEXT_MUTED);
+      y += this.s(19);
+    }
+    if (host.editsLocalOnly) { ui.text(f.body, x, y, 'Not connected to Revit: walkthrough only', UiTheme.DANGER); }
   }
 }
 

@@ -57,7 +57,7 @@ const MONO = "Consolas, 'Courier New', ui-monospace, monospace";
  */
 export class FontAtlas {
   /** Extra non-Latin-1 characters used by the HUD. */
-  private static readonly EXTRA = ['Δ', '−', '—', '–', '…', '•', '↑', '↓', '←', '→', '“', '”', '’', '≈'];
+  private static readonly EXTRA = ['Δ', '−', '—', '–', '…', '•', '↑', '↓', '←', '→', '“', '”', '’', '≈', '‹', '›', '≥'];
 
   /** The GL texture. */
   texture: WebGLTexture | null = null;

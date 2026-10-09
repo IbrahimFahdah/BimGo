@@ -90,6 +90,8 @@ export class ReflectionProbes {
   private data: WebGLTexture | null = null;
   private fbo: WebGLFramebuffer | null = null;
   private readFbo: WebGLFramebuffer | null = null;
+  /** Colour-only draw target for the mip blits (WebGL wants every attachment the same size, so no depth here). */
+  private mipFbo: WebGLFramebuffer | null = null;
   private depth: WebGLRenderbuffer | null = null;
   private size = 0;
   private levels = 0;
@@ -215,6 +217,7 @@ export class ReflectionProbes {
     gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
     const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
     this.readFbo = gl.createFramebuffer();
+    this.mipFbo = gl.createFramebuffer();
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
 
     const error = gl.getError();
@@ -237,9 +240,10 @@ export class ReflectionProbes {
     gl.deleteTexture(this.data);
     gl.deleteFramebuffer(this.fbo);
     gl.deleteFramebuffer(this.readFbo);
+    gl.deleteFramebuffer(this.mipFbo);
     gl.deleteRenderbuffer(this.depth);
     this.array = this.grid = this.data = null;
-    this.fbo = this.readFbo = null;
+    this.fbo = this.readFbo = this.mipFbo = null;
     this.depth = null;
     this.probes.length = 0;
     this.size = this.levels = 0;
@@ -652,12 +656,11 @@ export class ReflectionProbes {
       gl.bindFramebuffer(gl.READ_FRAMEBUFFER, this.readFbo);
       gl.framebufferTextureLayer(gl.READ_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, this.array, level - 1, layer);
       gl.readBuffer(gl.COLOR_ATTACHMENT0);
-      gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, this.fbo);
+      gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, this.mipFbo);
       gl.framebufferTextureLayer(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, this.array, level, layer);
       gl.blitFramebuffer(0, 0, from, from, 0, 0, to, to, gl.COLOR_BUFFER_BIT, gl.LINEAR);
     }
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.fbo);
-    gl.framebufferTextureLayer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, this.array, 0, layer);
 
     if (face === 5) {
       const p = this.probes[probe];
