@@ -5,9 +5,10 @@ import { SCENE_VERTEX_SIZE } from '../../core/scene/SceneData';
 import { gl } from '../gl/Gl';
 import { ShaderProgram } from '../gl/ShaderProgram';
 import {
-  FULLSCREEN_VS, GEOMETRY_FS, GEOMETRY_GROUND_FS, GROUND_FS, GROUND_VS, SCENE_FS, SCENE_VS, SHADOW_DEPTH_FS, SHADOW_TRANSMIT_FS,
-  SHADOW_VS, SKY_FS
+  CAP_FS, CAP_STENCIL_FS, CAP_VS, EXPOSURE_FS, FULLSCREEN_VS, GEOMETRY_FS, GEOMETRY_GROUND_FS, GROUND_FS, GROUND_VS, SCENE_FS, SCENE_VS,
+  SHADOW_DEPTH_FS, SHADOW_TRANSMIT_FS, SHADOW_VS, SKY_FS
 } from '../gl/Shaders';
+import type { LocalPlane } from '../../core/scene/SectionCut';
 import { FpsCamera } from './FpsCamera';
 import { ArtificialLighting, LightShadows } from './LightShadows';
 import { MaterialTextures } from './MaterialTextures';
@@ -46,6 +47,8 @@ export interface SceneDrawParams {
   time?: number;
   /** Realistic: 0 = Revit tint off, 1 = multiply. */
   tintMode?: number;
+  /** Apply the section cut (setSection): the player's view and highlights only. */
+  section?: boolean;
 }
 
 type Uniforms = Record<string, WebGLUniformLocation | null>;
@@ -68,6 +71,7 @@ const LIGHT_UNIFORMS = ['uSun', 'uSunDir', 'uSunColor', 'uSkyColor', 'uShadowStr
 const AO_UNIFORMS = ['uAoOn', 'uAoForward', 'uAoScale'];
 const ARTIFICIAL_UNIFORMS = ['uLightCount', 'uLightPos', 'uLightColor', 'uLightShadow', 'uLightShadowTexel', 'uEmissive', 'uShoulder'];
 const GEOMETRY_UNIFORMS = ['uViewProj', 'uModel', 'uEye', 'uRight', 'uUp', 'uForward'];
+const CLIP_UNIFORMS = ['uClipCount', 'uClipPlanes'];
 
 /**
  * Draws the scene, sky and ground with sun shadows, ambient occlusion, artificial lights and glow (port of
@@ -154,6 +158,22 @@ export class SceneRenderer {
   private probeErrorReported = false;
   private colourArrayPlaceholder: WebGLTexture | null = null;
 
+  // Section cut: planes for the scene and geometry passes, and the cap programs
+  private readonly clipPlanes = new Float32Array(4 * 7);
+  private clipCount = 0;
+  private clipBox = false;
+  private capStencilProgram!: ShaderProgram;
+  private capProgram!: ShaderProgram;
+  private capStencilU: Uniforms = {};
+  private capU: Uniforms = {};
+  private capVao: WebGLVertexArrayObject | null = null;
+  private capVbo: WebGLBuffer | null = null;
+  private readonly capCorners = new Float32Array(6 * 3);
+
+  // Photo mode exposure
+  private exposureProgram!: ShaderProgram;
+  private exposureColour: WebGLUniformLocation | null = null;
+
   /** This frame's sun and sky (set by the session before UpdateShadows). */
   lighting: SunLighting = NO_SUN;
 
@@ -182,12 +202,12 @@ export class SceneRenderer {
 
     this.scene = locations(this.sceneProgram, ['uViewProj', 'uModel', 'uEye', 'uLightDir', 'uFogColor', 'uFogDensity', 'uWhitecard',
       'uPlan', 'uClipZ', 'uOverride', 'uRealistic', 'uReflections', 'uTintMode', 'uSkyZenith', 'uSkyHorizon', ...PROBE_UNIFORMS, ...LIGHT_UNIFORMS,
-      ...AO_UNIFORMS, ...ARTIFICIAL_UNIFORMS]);
+      ...AO_UNIFORMS, ...ARTIFICIAL_UNIFORMS, ...CLIP_UNIFORMS]);
     this.sky = locations(this.skyProgram, ['uInvViewProj', 'uEye', 'uSun', 'uSunDir', 'uZenith', 'uHorizon', 'uSunDisc']);
     this.ground = locations(this.groundProgram, ['uViewProj', 'uCenter', 'uHalf', 'uEye', 'uFogColor', ...LIGHT_UNIFORMS, ...AO_UNIFORMS, ...ARTIFICIAL_UNIFORMS]);
     this.depthU = locations(this.shadowDepthProgram, ['uViewProj', 'uModel']);
     this.transmitU = locations(this.shadowTransmitProgram, ['uViewProj', 'uModel', 'uGlass', 'uWhitecard']);
-    this.geometryU = locations(this.geometryProgram, [...GEOMETRY_UNIFORMS, 'uGlow']);
+    this.geometryU = locations(this.geometryProgram, [...GEOMETRY_UNIFORMS, 'uGlow', ...CLIP_UNIFORMS]);
     this.groundGeometryU = locations(this.groundGeometryProgram, [...GEOMETRY_UNIFORMS, 'uCenter', 'uHalf']);
     for (const program of [this.sceneProgram, this.groundProgram]) { assignSamplerUnits(program); }
     for (const [u, program] of [[this.scene, this.sceneProgram], [this.ground, this.groundProgram]] as const) {
@@ -223,6 +243,8 @@ export class SceneRenderer {
     this.drawOffsets = new Int32Array(maxChunks);
 
     this.emptyVao = gl.createVertexArray();
+    this.initialiseSection();
+    this.initialisePhoto();
     this.shadows.initialise();
     this.effects.initialise();
   }
@@ -568,6 +590,7 @@ export class SceneRenderer {
     this.geometryProgram.use();
     this.applyGeometry(this.geometryU, camera.viewProjection, eye, right, up, forward);
     gl.uniform1f(this.geometryU.uGlow, glow ? 1 : 0);
+    this.applyClip(this.geometryU, true);
     this.flushDynamic();
     this.drawBatches(camera.planes, groupVisible, false, false);
     if (this.dynamics && this.dynamics.instances.length > 0) { this.drawDynamicInstances(this.dynamics, camera.planes, false, this.geometryU.uModel); }
@@ -917,6 +940,7 @@ export class SceneRenderer {
     gl.uniform1i(u.uWhitecard, p.whitecard ? 1 : 0);
     gl.uniform1i(u.uPlan, p.plan ? 1 : 0);
     gl.uniform2f(u.uClipZ, p.clipZMin, p.clipZMax);
+    this.applyClip(u, p.section === true);
     gl.uniform4f(u.uOverride, r, g, b, a);
 
     const realistic = p.realistic && !p.whitecard && this.hasMaterials;
@@ -949,10 +973,197 @@ export class SceneRenderer {
 
   // #endregion
 
+  // #region Section cut (port of SceneRenderer.Section.cs)
+
+  // The scene and geometry pre-pass shaders discard what the cut's planes remove; drawSectionCaps fills the cut
+  // solids. Shadows, light shadows and reflection probes ignore the cut (the whole building still casts and reflects).
+  // Caps, per plane whose cut-away side holds the eye: (1) the opaque scene cut by that plane alone is drawn into the
+  // stencil with INVERT, no colour, no depth test, so a pixel stays odd when its ray, from the plane on, ends inside a
+  // solid; (2) the cap polygon (the box face, or a large square on the free plane, cut by the other planes) is drawn
+  // where the stencil is odd, depth-tested, in one flat colour.
+
+  private initialiseSection(): void {
+    this.capStencilProgram = ShaderProgram.create('section stencil', SCENE_VS, CAP_STENCIL_FS);
+    this.capStencilU = locations(this.capStencilProgram, ['uViewProj', 'uModel', 'uCapPlane', 'uCapShade']);
+    this.capProgram = ShaderProgram.create('section cap', CAP_VS, CAP_FS);
+    this.capU = locations(this.capProgram, ['uViewProj', 'uClipCount', 'uClipPlanes', 'uSkip', 'uColor']);
+    gl.useProgram(null);
+
+    this.capVao = gl.createVertexArray();
+    gl.bindVertexArray(this.capVao);
+    this.capVbo = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.capVbo);
+    gl.bufferData(gl.ARRAY_BUFFER, this.capCorners.byteLength, gl.STREAM_DRAW);
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 12, 0);
+    gl.bindVertexArray(null);
+  }
+
+  /**
+   * Sets the cut for the coming frames (scene-local (n, d), n·p > d cut away; box faces first when box, then the free
+   * plane). An empty list removes the cut.
+   */
+  setSection(planes: readonly LocalPlane[], box: boolean): void {
+    this.clipCount = Math.min(planes.length, 7);
+    for (let i = 0; i < this.clipCount; i++) {
+      const p = planes[i];
+      this.clipPlanes.set([p.x, p.y, p.z, p.w], i * 4);
+    }
+    this.clipBox = box && this.clipCount >= 6;
+  }
+
+  get hasSection(): boolean { return this.clipCount > 0; }
+
+  /** Uploads the cut (or none) to the current program. */
+  private applyClip(u: Uniforms, on: boolean): void {
+    const count = on ? this.clipCount : 0;
+    gl.uniform1i(u.uClipCount, count);
+    if (count > 0) { gl.uniform4fv(u.uClipPlanes, this.clipPlanes, 0, count * 4); }
+  }
+
+  /**
+   * Fills the cut solids (after the opaque scene, before the ground; the target must have a stencil).
+   * @param colour The caps' flat colour (RGB 0–1).
+   * @param extent Half size of the free plane's cap square (m): larger than the model.
+   */
+  drawSectionCaps(viewProjection: Matrix4x4, frustum: Float32Array, eye: Vec3, groupVisible: boolean[], dynamics: DynamicSet | null,
+    colour: Vec3, extent: number): void {
+    if (this.clipCount === 0) { return; }
+    this.flushDynamic();
+    gl.enable(gl.STENCIL_TEST);
+    gl.stencilMask(0xff);
+    const cp = this.clipPlanes;
+    for (let i = 0; i < this.clipCount; i++) {
+      const o = i * 4;
+      if (cp[o] * eye.x + cp[o + 1] * eye.y + cp[o + 2] * eye.z <= cp[o + 3]) { continue; } // the eye is on the kept side
+
+      // (1) Parity of the scene cut by this plane alone
+      gl.clearStencil(0);
+      gl.clear(gl.STENCIL_BUFFER_BIT);
+      gl.colorMask(false, false, false, false);
+      gl.depthMask(false);
+      gl.disable(gl.DEPTH_TEST);
+      gl.stencilFunc(gl.ALWAYS, 0, 1);
+      gl.stencilOp(gl.KEEP, gl.KEEP, gl.INVERT);
+      this.capStencilProgram.use();
+      gl.uniformMatrix4fv(this.capStencilU.uViewProj, false, viewProjection);
+      gl.uniformMatrix4fv(this.capStencilU.uModel, false, this.identity);
+      gl.uniform4f(this.capStencilU.uCapPlane, cp[o], cp[o + 1], cp[o + 2], cp[o + 3]);
+      gl.uniform1f(this.capStencilU.uCapShade, 1);
+      this.drawBatches(frustum, groupVisible, false, false);
+      if (dynamics && dynamics.instances.length > 0) { this.drawDynamicInstances(dynamics, frustum, false, this.capStencilU.uModel); }
+
+      gl.colorMask(true, true, true, true);
+      gl.enable(gl.DEPTH_TEST);
+      gl.depthFunc(gl.LESS);
+      gl.stencilFunc(gl.EQUAL, 1, 1);
+      gl.stencilOp(gl.KEEP, gl.KEEP, gl.KEEP);
+
+      // (2) The cap polygon in the flat cap colour
+      if (!this.capPolygon(i, eye, extent)) { continue; }
+      gl.depthMask(true);
+      this.capProgram.use();
+      gl.uniformMatrix4fv(this.capU.uViewProj, false, viewProjection);
+      gl.uniform1i(this.capU.uClipCount, this.clipCount);
+      gl.uniform4fv(this.capU.uClipPlanes, cp, 0, this.clipCount * 4);
+      gl.uniform1i(this.capU.uSkip, i);
+      gl.uniform4f(this.capU.uColor, colour.x, colour.y, colour.z, 1);
+      gl.bindVertexArray(this.capVao);
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.capVbo);
+      gl.bufferSubData(gl.ARRAY_BUFFER, 0, this.capCorners);
+      gl.drawArrays(gl.TRIANGLES, 0, 6);
+      gl.bindVertexArray(null);
+    }
+    gl.disable(gl.STENCIL_TEST);
+    gl.colorMask(true, true, true, true);
+    gl.depthMask(true);
+    gl.enable(gl.DEPTH_TEST);
+    gl.depthFunc(gl.LEQUAL);
+  }
+
+  /** The cap polygon of plane i as two triangles: a box face, or a square of half size extent around the eye's foot on a free plane. */
+  private capPolygon(i: number, eye: Vec3, extent: number): boolean {
+    const cp = this.clipPlanes;
+    if (this.clipBox && i < 6) {
+      const min = [-cp[7], -cp[15], -cp[23]], max = [cp[3], cp[11], cp[19]];
+      const axis = i >> 1, at = i % 2 === 0 ? max[axis] : min[axis];
+      const u = (axis + 1) % 3, v = (axis + 2) % 3;
+      const corner = (a: number, b: number): Vec3 => {
+        const c = [0, 0, 0];
+        c[axis] = at;
+        c[u] = a;
+        c[v] = b;
+        return vec3(c[0], c[1], c[2]);
+      };
+      this.quad(corner(min[u], min[v]), corner(max[u], min[v]), corner(max[u], max[v]), corner(min[u], max[v]));
+      return true;
+    }
+    const o = i * 4;
+    const normal = vec3(cp[o], cp[o + 1], cp[o + 2]);
+    if (V.lengthSquared(normal) < 1e-8) { return false; }
+    const centre = V.sub(eye, V.scale(normal, V.dot(normal, eye) - cp[o + 3]));
+    const tangent = Math.abs(normal.z) < 0.9 ? V.normalize(V.cross(vec3(0, 0, 1), normal)) : V.normalize(V.cross(vec3(1, 0, 0), normal));
+    const bitangent = V.cross(normal, tangent);
+    const a = V.scale(tangent, extent), b = V.scale(bitangent, extent);
+    this.quad(V.sub(V.sub(centre, a), b), V.sub(V.add(centre, a), b), V.add(V.add(centre, a), b), V.add(V.sub(centre, a), b));
+    return true;
+  }
+
+  private quad(a: Vec3, b: Vec3, c: Vec3, d: Vec3): void {
+    let k = 0;
+    for (const p of [a, b, c, a, c, d]) {
+      this.capCorners[k++] = p.x;
+      this.capCorners[k++] = p.y;
+      this.capCorners[k++] = p.z;
+    }
+  }
+
+  // #endregion
+
+  // #region Photo exposure (port of SceneRenderer.Photo.cs)
+
+  private initialisePhoto(): void {
+    this.exposureProgram = ShaderProgram.create('photo exposure', FULLSCREEN_VS, EXPOSURE_FS);
+    this.exposureColour = this.exposureProgram.uniform('uColor');
+    gl.useProgram(null);
+  }
+
+  /** Scales the colours already in the bound target by 2^ev (no-op at 0); brightening in steps of at most ×2. */
+  applyExposure(ev: number): void {
+    if (Math.abs(ev) < 0.01) { return; }
+    let factor = Math.pow(2, Math.min(Math.max(ev, -3), 3));
+    gl.disable(gl.DEPTH_TEST);
+    gl.depthMask(false);
+    gl.enable(gl.BLEND);
+    this.exposureProgram.use();
+    gl.bindVertexArray(this.emptyVao);
+    if (factor < 1) {
+      gl.blendFunc(gl.DST_COLOR, gl.ZERO);
+      gl.uniform3f(this.exposureColour, factor, factor, factor);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+    } else {
+      gl.blendFunc(gl.DST_COLOR, gl.ONE);
+      while (factor > 1.001) {
+        const step = Math.min(factor, 2);
+        gl.uniform3f(this.exposureColour, step - 1, step - 1, step - 1);
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+        factor /= step;
+      }
+    }
+    gl.bindVertexArray(null);
+    gl.disable(gl.BLEND);
+    gl.depthMask(true);
+    gl.enable(gl.DEPTH_TEST);
+  }
+
+  // #endregion
+
   /** Releases GL resources. */
   dispose(): void {
     for (const p of [this.sceneProgram, this.skyProgram, this.groundProgram, this.shadowDepthProgram, this.shadowTransmitProgram,
-      this.geometryProgram, this.groundGeometryProgram]) { p?.dispose(); }
+      this.geometryProgram, this.groundGeometryProgram, this.capStencilProgram, this.capProgram, this.exposureProgram]) { p?.dispose(); }
+    gl.deleteBuffer(this.capVbo);
+    gl.deleteVertexArray(this.capVao);
     this.shadows.dispose();
     this.effects.dispose();
     this.lightShadows.dispose();

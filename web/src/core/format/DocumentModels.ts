@@ -1,5 +1,6 @@
 import { clamp, f32, type Vec3, vec3 } from '../math/Vector';
 import type { SiteInfo } from '../scene/ModelInfo';
+import { SectionCut } from '../scene/SectionCut';
 import { arr, bool, float, int, isBlank, type Json, newId, num, objOrNull, str } from './Json';
 
 // Ports of CommentModels.cs, BookmarkModels.cs, SunModels.cs and VisibilityModels.cs: the optional document
@@ -39,6 +40,15 @@ export interface CommentRecord {
   view: CommentView | null;
   /** A small picture of that view (base64 JPEG, 192 × 108), or null. */
   thumbnail: string | null;
+  /**
+   * The commented element's Revit UniqueId (BCF round: lets BCF exports name the right element even when an
+   * ElementId repeats in a linked model), or null.
+   */
+  elementUniqueId: string | null;
+  /** The larger picture used for BCF snapshots: its name, "comments/<id>.jpg" (inside the .bimgo), or null. */
+  snapshot: string | null;
+  /** Runtime only: the snapshot's JPEG bytes (loaded with the comments, or just taken), or null. */
+  snapshotData: Uint8Array | null;
   /** Runtime only: scene-local position. */
   local: Vec3;
   /** Runtime only: the list header. */
@@ -61,6 +71,11 @@ export interface CommentView {
   yaw: number;
   pitch: number;
   flying: boolean;
+  /**
+   * The section cut when the view was saved: GO restores it, BCF exports it as clipping planes; a cut with nothing
+   * on clears the cut; null (older comments) leaves the current cut alone.
+   */
+  section: SectionCut | null;
 }
 
 /** Comment issue statuses (stored as these strings; port of CommentStatus). */
@@ -115,7 +130,10 @@ export function cleanComment(c: CommentRecord): CommentRecord {
   if (c.replies && c.replies.length === 0) { c.replies = null; }
   const v = c.view;
   if (v && ![v.x, v.y, v.z, v.yaw, v.pitch].every(Number.isFinite)) { c.view = null; }
+  c.view?.section?.clean();
   if (isBlank(c.thumbnail)) { c.thumbnail = null; }
+  if (isBlank(c.elementUniqueId)) { c.elementUniqueId = null; }
+  if (!CommentSnapshots.isValidName(c.snapshot)) { c.snapshot = null; }
   return c;
 }
 
@@ -149,14 +167,41 @@ export function readComment(j: Json): CommentRecord {
       : null,
     view: readCommentView(objOrNull(j.view)),
     thumbnail: str(j.thumbnail, null),
+    elementUniqueId: str(j.elementUniqueId, null),
+    snapshot: str(j.snapshot, null),
+    snapshotData: null,
     local: vec3(),
     header: ''
   };
 }
 
 function readCommentView(j: Json | null): CommentView | null {
-  return j ? { x: num(j.x), y: num(j.y), z: num(j.z), yaw: float(j.yaw), pitch: float(j.pitch), flying: bool(j.flying) } : null;
+  return j
+    ? { x: num(j.x), y: num(j.y), z: num(j.z), yaw: float(j.yaw), pitch: float(j.pitch), flying: bool(j.flying), section: SectionCut.read(j.section) }
+    : null;
 }
+
+/**
+ * The larger comment pictures used for BCF snapshots (port of CommentSnapshots): JPEGs named
+ * "comments/<comment id>.jpg", stored as entries inside a .bimgo.
+ */
+export const CommentSnapshots = {
+  FOLDER: 'comments/',
+
+  /** The picture name for a comment id (characters other than letters, digits and '-' replaced). */
+  nameFor(commentId: string): string {
+    let file = (commentId ?? '').replace(/[^A-Za-z0-9-]/g, '_');
+    if (!file) { file = newId(); }
+    return `comments/${file}.jpg`;
+  },
+
+  /** True for "comments/<safe name>.jpg" (no sub-folders, no ".."). */
+  isValidName(name: string | null | undefined): boolean {
+    if (!name || !name.startsWith('comments/') || !name.toLowerCase().endsWith('.jpg')) { return false; }
+    const file = name.slice('comments/'.length, -4);
+    return file.length > 0 && file.length <= 80 && /^[A-Za-z0-9_-]+$/.test(file);
+  }
+};
 
 export function emptyComments(): CommentDocument {
   return { version: 1, model: '', units: 'metres, Revit internal coordinates', comments: [] };
@@ -271,6 +316,11 @@ export interface BookmarkRecord {
   flying: boolean;
   level: string;
   sun: SunTime | null;
+  /**
+   * The section cut when the bookmark was set: GO restores it; a cut with nothing on clears the cut; null (older
+   * bookmarks) leaves the current cut alone.
+   */
+  section: SectionCut | null;
   /** PNG as base64, or null. */
   thumbnail: string | null;
   /** Runtime only. */
@@ -298,6 +348,7 @@ export function readBookmark(j: Json): BookmarkRecord {
     flying: bool(j.flying),
     level: str(j.level, ''),
     sun: sun ? readSunTime(sun) : null,
+    section: SectionCut.read(j.section),
     thumbnail: str(j.thumbnail, null),
     local: vec3(),
     detail: ''
@@ -348,6 +399,8 @@ export interface VisibilitySettings {
    * level), so it stays right after a re-extraction. Null = the default.
    */
   groundOffset: number | null;
+  /** The section cut, or null when nothing is cut. */
+  section: SectionCut | null;
 }
 
 /** Most the ground plane can move from its default (m), as the pause menu slider. */
@@ -370,12 +423,19 @@ export function readVisibility(j: Json): VisibilitySettings {
       .filter((e): e is Json => e !== null)
       .map(e => ({ link: str(e.link, null), uniqueId: str(e.uniqueId, null), id: num(e.id) }))
       .filter(e => (e.uniqueId !== null && e.uniqueId.length > 0) || e.id > 0),
-    groundOffset: cleanGroundOffset(j.groundOffset)
+    groundOffset: cleanGroundOffset(j.groundOffset),
+    section: activeSection(SectionCut.read(j.section))
   };
 }
 
 export function isVisibilityEmpty(v: VisibilitySettings): boolean {
-  return v.hiddenCategories.length === 0 && v.hiddenLinks.length === 0 && v.hiddenElements.length === 0 && v.groundOffset === null;
+  return v.hiddenCategories.length === 0 && v.hiddenLinks.length === 0 && v.hiddenElements.length === 0 && v.groundOffset === null
+    && v.section === null;
+}
+
+/** A cut kept only when it cuts. */
+export function activeSection(cut: SectionCut | null): SectionCut | null {
+  return cut?.isActive ? cut : null;
 }
 
 // #endregion

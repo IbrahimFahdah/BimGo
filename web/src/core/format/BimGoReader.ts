@@ -17,6 +17,7 @@ import {
   type SunSettings, type VisibilitySettings
 } from './DocumentModels';
 import { arr, bool, float, int, isBlank, type Json, num, obj, objOrNull, readVector3, str } from './Json';
+import { IfcGuid } from './IfcGuid';
 import { ZipError, type ZipReader as ZipReaderType, ZipReader } from './Zip';
 
 /** A .bimgo opened for a walkthrough (port of BimGoDocument). */
@@ -89,6 +90,11 @@ async function readDocument(file: Blob, name: string, progress?: ReadProgress): 
   const elements = (await readJson(zip, BimGoFormat.ENTRY_ELEMENTS, true))!;
   const parameters = await readJson(zip, BimGoFormat.ENTRY_PARAMETERS, false);
   const comments = readCommentDocument(await readJson(zip, BimGoFormat.ENTRY_COMMENTS, false));
+  for (const comment of comments.comments) {
+    // BCF pictures (optional entries; a missing one leaves the comment without)
+    comment.snapshotData = comment.snapshot ? await readBytes(zip, comment.snapshot) : null;
+    if (!comment.snapshotData) { comment.snapshot = null; }
+  }
   const journal = await readJson(zip, BimGoFormat.ENTRY_JOURNAL, false);
   const bookmarks = readBookmarkDocument(await readJson(zip, BimGoFormat.ENTRY_BOOKMARKS, false));
   const sunJson = await readJson(zip, BimGoFormat.ENTRY_SUN, false);
@@ -164,6 +170,7 @@ function buildScene(name: string, manifest: Json, model: Json, elementsJson: Jso
     return {
       elementId: num(dto.id),
       uniqueId: str(dto.uniqueId, ''),
+      ifcGuid: IfcGuid.isValid(str(dto.ifcGuid, null)) ? dto.ifcGuid as string : '',
       hostId: num(dto.hostId),
       name: str(dto.name, '(unnamed)'),
       categoryName: str(dto.categoryName, CATEGORIES[category].label),

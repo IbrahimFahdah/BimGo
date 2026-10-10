@@ -89,7 +89,7 @@ function floorScene(): SceneData {
     view.setUint32(i * 28 + 24, 0xffffffff, true);
   });
   const element: ElementRecord = {
-    elementId: 1, uniqueId: 'floor', hostId: 0, name: 'Floor', categoryName: 'Floors', familyType: '', levelName: '', categoryIndex: 1,
+    elementId: 1, uniqueId: 'floor', ifcGuid: '', hostId: 0, name: 'Floor', categoryName: 'Floors', familyType: '', levelName: '', categoryIndex: 1,
     opaqueStart: 0, opaqueCount: 6, transparentStart: 0, transparentCount: 0,
     bounds: new Aabb(vec3(-10, -10, 0), vec3(10, 10, 0)), isProxy: false, movable: false, moveBlockReason: null, pivot: vec3(),
     phase: PhaseRole.Existing, link: 0, isLibraryTemplate: false

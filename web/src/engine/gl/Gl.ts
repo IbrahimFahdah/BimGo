@@ -33,7 +33,7 @@ export function initGl(canvas: HTMLCanvasElement): WebGL2RenderingContext {
     alpha: false,
     antialias: false,
     depth: true,
-    stencil: false,
+    stencil: true,
     premultipliedAlpha: false,
     preserveDrawingBuffer: false,
     powerPreference: 'high-performance'

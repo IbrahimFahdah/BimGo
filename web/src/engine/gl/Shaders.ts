@@ -8,6 +8,63 @@ precision highp sampler2DArray;
 precision highp sampler2DArrayShadow;
 `;
 
+export const CLIP_GLSL = `
+uniform int uClipCount;
+uniform vec4 uClipPlanes[7];
+bool sectionCut(vec3 p)
+{
+    for (int i = 0; i < uClipCount; i++)
+    {
+        if (dot(uClipPlanes[i].xyz, p) > uClipPlanes[i].w) return true;
+    }
+    return false;
+}
+`;
+
+export const CAP_STENCIL_FS = HEADER + `in vec3 vWorld;
+in vec4 vColor;
+uniform vec4 uCapPlane;
+uniform float uCapShade;
+out vec4 oColor;
+void main()
+{
+    if (dot(uCapPlane.xyz, vWorld) > uCapPlane.w) discard;
+    oColor = vec4(vColor.rgb * uCapShade, 1.0);
+}`;
+
+export const CAP_VS = HEADER + `layout(location = 0) in vec3 aPos;
+uniform mat4 uViewProj;
+out vec3 vWorld;
+void main()
+{
+    vWorld = aPos;
+    gl_Position = uViewProj * vec4(aPos, 1.0);
+}`;
+
+export const CAP_FS = HEADER + `
+uniform int uClipCount;
+uniform vec4 uClipPlanes[7];
+uniform int uSkip;
+uniform vec4 uColor;
+in vec3 vWorld;
+out vec4 oColor;
+void main()
+{
+    for (int i = 0; i < uClipCount; i++)
+    {
+        if (i != uSkip && dot(uClipPlanes[i].xyz, vWorld) > uClipPlanes[i].w + 0.0005) discard;
+    }
+    oColor = uColor;
+}`;
+
+export const EXPOSURE_FS = HEADER + `in vec2 vNdc;
+uniform vec3 uColor;
+out vec4 oColor;
+void main()
+{
+    oColor = vec4(uColor, 1.0);
+}`;
+
 export const SCENE_VS = HEADER + `layout(location = 0) in vec3 aPos;
 layout(location = 1) in vec3 aNormal;
 layout(location = 2) in vec4 aColor;
@@ -435,7 +492,7 @@ vec3 shoulder(vec3 c)
 }
 `;
 
-export const SCENE_FS = HEADER + SUN_GLSL + AO_GLSL + LIGHTS_GLSL + MATERIALS_GLSL + `
+export const SCENE_FS = HEADER + CLIP_GLSL + SUN_GLSL + AO_GLSL + LIGHTS_GLSL + MATERIALS_GLSL + `
 in vec3 vWorld;
 in vec3 vNormal;
 in vec4 vColor;
@@ -457,6 +514,7 @@ void main()
     vec2 uvDx = dFdx(vUv);
     vec2 uvDy = dFdy(vUv);
     if (vWorld.z < uClipZ.x || vWorld.z > uClipZ.y) discard;
+    if (sectionCut(vWorld)) discard;
 
     vec4 base = vColor;
     float reflectivity = 0.0;
@@ -677,7 +735,8 @@ void main()
     oColor = vec4(shoulder(c), 1.0);
 }`;
 
-export const GEOMETRY_GLSL = HEADER + `uniform vec3 uEye;
+export const GEOMETRY_GLSL = HEADER + CLIP_GLSL + `
+uniform vec3 uEye;
 uniform vec3 uRight;
 uniform vec3 uUp;
 uniform vec3 uForward;
@@ -700,6 +759,7 @@ in vec3 vNormal;
 in vec3 vEmissive;
 void main()
 {
+    if (sectionCut(vWorld)) discard;
     writeGeometry(vWorld, vNormal);
     oGlow = vec4(vEmissive * uGlow, 1.0);
 }`;

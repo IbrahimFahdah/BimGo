@@ -33,7 +33,7 @@ export class SunPanel {
 
   show(): void {
     if (this.open) { return; }
-    this.session.sunHours.close(); // the sun panel and the sun hours study close each other
+    this.session.closeModes(this); // one panel at a time (the study, the section editor, photo mode)
     this.session.showUi();
     this.open = true;
     this.field = 0;

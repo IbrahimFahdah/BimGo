@@ -90,6 +90,8 @@ export enum PhaseRole {
 export interface ElementRecord {
   elementId: number;
   uniqueId: string;
+  /** The element's IFC GUID (22 characters; BCF round), or empty for files written before it was captured. */
+  ifcGuid: string;
   hostId: number;
   name: string;
   categoryName: string;

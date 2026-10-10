@@ -129,6 +129,18 @@ export class Widgets {
     return value;
   }
 
+  /**
+   * A compact [−] value [+] stepper (port of StepperValue).
+   * @returns The value after this frame's clicks (clamped, rounded to the step).
+   */
+  stepper(f: FontAtlas, x: number, y: number, value: number, step: number, min: number, max: number, decimals: number, unit: string): number {
+    let changed = value;
+    if (this.smallButton(f, x, y, this.s(30), this.s(30), '−')) { changed = value - step; }
+    this.ui.textCentred(f.bold, x + this.s(94), y + this.s(6), value.toFixed(decimals) + unit, UiTheme.TEXT);
+    if (this.smallButton(f, x + this.s(158), y, this.s(30), this.s(30), '+')) { changed = value + step; }
+    return changed === value ? value : Math.round(Math.min(Math.max(changed, min), max) / step) * step;
+  }
+
   /** A row of tabs (text with an accent underline on the open one); returns the open tab (changed by a click). */
   tabs(f: FontAtlas, x: number, y: number, w: number, labels: string[], selected: number): number {
     const ui = this.ui;
@@ -626,12 +638,19 @@ export class PauseMenu {
     if (this.commentDetail) { return; }
 
     if (this.commentsNotice) { ui.textWrapped(f.body, ix, buttonsY - this.s(30), iw, this.commentsNotice, UiTheme.MEASURE_TEXT, 1); }
-    if (w.menuButton(f, ix, buttonsY, this.s(200), 'EXPORT CSV…', false, false, count > 0)) {
-      session.exportComments();
-      this.commentsNotice = `Exported ${count} comments (your Downloads folder)`;
-      session.sound.play(SoundId.Commit);
+    // EXPORT BCF (the comments shown) · IMPORT BCF · BCF coordinates · CLOSE
+    const gap = this.s(10);
+    const bw = Math.min(this.s(230), (iw - gap * 3) / 4);
+    let bx = ix;
+    if (w.menuButton(f, bx, buttonsY, bw, 'EXPORT BCF…', false, false, count > 0)) {
+      void session.bcf.exportShown(session.comments.comments.filter(r => this.matchesCommentFilter(r)));
     }
-    if (w.menuButton(f, ix + this.s(216), buttonsY, this.s(160), 'CLOSE', false, false)) { this.closePanels(); }
+    bx += bw + gap;
+    if (w.menuButton(f, bx, buttonsY, bw, 'IMPORT BCF…', false, false)) { void session.bcf.importFile(); }
+    bx += bw + gap;
+    if (w.menuButton(f, bx, buttonsY, bw, session.bcf.coordinateLabel, false, false)) { session.bcf.cycleCoordinates(); }
+    bx += bw + gap;
+    if (w.menuButton(f, bx, buttonsY, bw, 'CLOSE', false, false)) { this.closePanels(); }
   }
 
   /** The scrolling rows: status bar, thumbnail, header, text, issue line and GO / OPEN / DELETE. */
@@ -787,7 +806,7 @@ export class PauseMenu {
     if (w.menuButton(f, bx, buttonsY, bw, 'SET VIEW HERE', false, false, true, bh)) {
       // Where the player stands now (the picture is taken from the 3D view behind the menu, next frame)
       const p = session.player;
-      comments.setView(record, p.feet, p.yaw, p.pitch, p.flying);
+      comments.setView(record, p.feet, p.yaw, p.pitch, p.flying, session.section.current);
       session.commentThumbnailFor = record;
       this.commentsNotice = 'View and picture set to where you stand';
       session.sound.play(SoundId.Commit);
@@ -1028,7 +1047,7 @@ export class PauseMenu {
   // #endregion
 }
 
-type EditMode = 'comment' | 'bookmark' | 'user' | 'reply' | 'assign';
+type EditMode = 'comment' | 'bookmark' | 'user' | 'reply' | 'assign' | 'sunStudy';
 
 /**
  * The text box for comments, bookmark names and the author name (port of the Comment editor region of
@@ -1097,6 +1116,12 @@ export class TextEditor {
     this.overMenu = true;
   }
 
+  /** A name for the finished sun / daylight study (same name replaces). */
+  nameSunStudy(suggestion: string, max: number): void {
+    this.start('sunStudy', max, suggestion.slice(0, max));
+    this.level = null;
+  }
+
   /** The author name (from the pause menu; returns there afterwards). */
   renameUser(): void {
     this.start('user', 40, this.session.settings.userName);
@@ -1143,6 +1168,8 @@ export class TextEditor {
     if (this.mode === 'bookmark') {
       if (this.bookmarkIsNew && session.thumbnailFor === this.bookmark) { session.thumbnailFor = null; }
       session.toast(this.bookmarkIsNew ? 'Bookmark cancelled (nothing was saved)' : 'Name not changed');
+    } else if (this.mode === 'sunStudy') {
+      session.toast('Study not saved');
     } else if (this.mode === 'reply' || this.mode === 'assign') {
       session.menu.setCommentsNotice(this.mode === 'reply' ? 'Reply cancelled' : 'Assignee not changed');
     } else if (this.mode === 'comment') {
@@ -1168,6 +1195,11 @@ export class TextEditor {
       session.comments.setIssue(record, { assignedTo: text });
       session.sound.play(SoundId.UiClick);
       session.menu.setCommentsNotice(text ? `Assigned to ${text}` : 'Unassigned');
+      return;
+    }
+
+    if (mode === 'sunStudy') {
+      void session.sunHours.saveStudy(text);
       return;
     }
 
@@ -1206,9 +1238,9 @@ export class TextEditor {
     }
     // The new comment remembers where it was made from, and a picture of that view (taken next frame: the capture
     // reads the 3D view before the UI is drawn, so the text box isn't in it)
-    const added = session.comments.add(this.point, text, this.elementId, this.level);
+    const added = session.comments.add(this.point, text, this.elementId, this.level, session.uniqueIdOf(this.elementId));
     const p = session.player;
-    session.comments.setView(added, p.feet, p.yaw, p.pitch, p.flying);
+    session.comments.setView(added, p.feet, p.yaw, p.pitch, p.flying, session.section.current);
     session.commentThumbnailFor = added;
     session.sound.play(SoundId.CommentPlace);
     session.toast(`Comment added (kept in ${session.comments.fileName})`);
@@ -1222,10 +1254,12 @@ export class TextEditor {
     const x = session.screenWidth * 0.5 - w * 0.5, y = session.screenHeight * 0.5 + this.s(48);
 
     const naming = this.mode === 'bookmark' || this.mode === 'user';
-    const frame = naming ? UiTheme.BOOKMARK : UiTheme.COMMENT;
-    const label = naming ? UiTheme.BOOKMARK_LABEL : UiTheme.COMMENT_LABEL;
+    const study = this.mode === 'sunStudy';
+    const frame = study ? UiTheme.SUN : naming ? UiTheme.BOOKMARK : UiTheme.COMMENT;
+    const label = study ? UiTheme.SUN_LABEL : naming ? UiTheme.BOOKMARK_LABEL : UiTheme.COMMENT_LABEL;
     ui.panel(x, y, w, h, UiTheme.PANEL_STRONG, frame);
     const title = this.mode === 'user' ? 'YOUR NAME (SHOWN ON COMMENTS)'
+      : study ? 'SUN STUDY NAME (same name replaces)'
       : `${this.mode === 'bookmark' ? 'BOOKMARK NAME' : this.mode === 'reply' ? 'REPLY' : this.mode === 'assign' ? 'ASSIGN TO (empty = unassigned)'
         : this.record ? 'EDIT COMMENT' : 'NEW COMMENT'} · ${this.level ?? '—'}`;
     ui.text(f.small, x + this.s(14), y + this.s(12), title, label, this.s(1));

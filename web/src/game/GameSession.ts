@@ -31,6 +31,7 @@ import type { FontAtlas } from '../engine/ui/UiFont';
 import { UiTheme } from '../engine/ui/UiTheme';
 import { SoundId, SoundSystem } from '../platform/audio';
 import { downloadBlob, safeFileName } from '../platform/files';
+import { IfcGuid } from '../core/format/IfcGuid';
 import { type InputState, Vk } from '../platform/input';
 import type { GameWindow } from '../platform/window';
 import { CommentGun } from './guns/CommentGun';
@@ -46,6 +47,9 @@ import { Reflections } from './Reflections';
 import { drawProgress, type ProgressState } from './ProgressScreen';
 import { Player } from './Player';
 import { BookmarkStore, CommentStore } from './Stores';
+import { CommentsBcf, SNAPSHOT_MAX_WIDTH } from './CommentsBcf';
+import { PhotoMode } from './PhotoMode';
+import { SectionMode } from './SectionMode';
 import { SunHoursMode } from './SunHoursMode';
 import { SunPanel } from './SunPanel';
 import { SunState } from './SunState';
@@ -87,12 +91,14 @@ const HELP_ROWS: [string, string][] = [
   ['L', 'Coordinate readout'],
   ['K', 'Artificial lights: off / glow / light'],
   ['O · SHIFT+O', 'Shadows on/off · Sun panel'],
-  ['J', 'Sun hours study (click surfaces, RMB-drag looks)'],
+  ['J', 'Sun / daylight study (click surfaces, RMB-drag looks)'],
+  ['P · SHIFT+P · CTRL+P', 'Section box · cut at aimed surface · clear'],
   ['[ ]', 'Sun time −/+ 5 min (Shift: 1 min)'],
-  ['TAB · ESC / P', 'Minimap · Pause menu'],
+  ['TAB · ESC', 'Minimap · Pause menu'],
   ['CTRL+F', 'Find a room and go there'],
   ['CTRL+S · Z · Y', 'Save · Undo · Redo'],
   ['F5 · R (SCAN)', 'Live: refresh · Show in Revit'],
+  ['M', 'Photo mode: hi-res stills and 360° panoramas'],
   ['F11 · SHIFT+F12', 'Fullscreen · Screenshot'],
   ['F1', 'Hide help · BimGo Web ' + __BIMGO_VERSION__]
 ];
@@ -133,8 +139,14 @@ export class GameSession implements GunHost, EditHost {
   placeGun!: PlaceGun;
   readonly menu: PauseMenu;
   readonly sunPanel: SunPanel;
-  /** The direct sun hours study (J). */
+  /** The sun / daylight study (J). */
   readonly sunHours: SunHoursMode;
+  /** The section box and quick plane (P, Shift+P, Ctrl+P). */
+  readonly section: SectionMode;
+  /** Photo mode (M). */
+  readonly photo: PhotoMode;
+  /** BCF export / import of comments. */
+  readonly bcf: CommentsBcf;
   textures!: Textures;
   /** Bumped by every change that Save would write (comments, bookmarks, materials, edits…). */
   dirtyRevision = 0;
@@ -165,6 +177,7 @@ export class GameSession implements GunHost, EditHost {
   private isolateBackup: boolean[] | null = null;
   private readonly elementIndexById = new Map<number, number>();
   private readonly elementIndexByUniqueId = new Map<string, number>();
+  private elementIndexByIfcGuid: Map<string, number> | null = null;
   private readonly levelNamesUpper: string[];
   private readonly doorCategory: number;
 
@@ -289,6 +302,9 @@ export class GameSession implements GunHost, EditHost {
     this.menu = new PauseMenu(this);
     this.sunPanel = new SunPanel(this);
     this.sunHours = new SunHoursMode(this);
+    this.section = new SectionMode(this);
+    this.photo = new PhotoMode(this);
+    this.bcf = new CommentsBcf(this);
     this.editor = new TextEditor(this);
     this.reflections = new Reflections(this);
     setCurrentUser(settings.userName);
@@ -532,7 +548,7 @@ export class GameSession implements GunHost, EditHost {
       return;
     }
     if (this.clock - this.editCancelledAt < 0.5) { return; }
-    if (!this.paused && !this.editor.active && !this.sunPanel.open && !this.sunHours.open) { this.setPaused(true); }
+    if (!this.paused && !this.editor.active && !this.cursorModeOpen) { this.setPaused(true); }
   }
 
   /** Esc while moving or cloning: puts things back (the browser also frees the mouse; that doesn't pause). */
@@ -547,6 +563,21 @@ export class GameSession implements GunHost, EditHost {
 
     if (this.editor.active) {
       this.editor.update(input);
+      return;
+    }
+
+    // Photo mode has the cursor: RMB-drag looks, Enter shoots
+    if (this.photo.open && !this.paused) {
+      if (input.isPressed(Vk.F11)) { toggleFullscreen(); }
+      this.photo.updateMode(input);
+      return;
+    }
+
+    // The section box editor has the cursor: RMB-drag looks, handles drag the cut
+    if (this.section.open && !this.paused) {
+      if (input.isPressed(Vk.F11)) { toggleFullscreen(); }
+      if (input.isPressed(Vk.F12) && input.isDown(Vk.SHIFT)) { this.screenshotRequested = true; }
+      this.section.updateMode(input);
       return;
     }
 
@@ -577,8 +608,8 @@ export class GameSession implements GunHost, EditHost {
       this.cancelEdit();
     } else if (input.isPressed(Vk.ESCAPE) && this.clock - this.editCancelledAt < 0.5) {
       // The same Esc already cancelled an edit (the browser released the mouse first)
-    } else if (input.isPressed(Vk.ESCAPE) || (input.isPressed(Vk.key('P')) && !this.menu.capturesTyping)) {
-      if (!(this.paused && input.isPressed(Vk.ESCAPE) && this.menu.closePanels())) { this.setPaused(!this.paused); }
+    } else if (input.isPressed(Vk.ESCAPE)) {
+      if (!(this.paused && this.menu.closePanels())) { this.setPaused(!this.paused); }
     }
     if (input.isPressed(Vk.F1)) { this.showHelp = !this.showHelp; }
     if (input.isPressed(Vk.F11)) { toggleFullscreen(); }
@@ -601,6 +632,10 @@ export class GameSession implements GunHost, EditHost {
       }
       if (!this.paused && input.isPressed(Vk.key('F'))) {
         this.menu.rooms.show();
+        return;
+      }
+      if (!this.paused && input.isPressed(Vk.key('P'))) {
+        this.section.clear();
         return;
       }
     }
@@ -642,6 +677,14 @@ export class GameSession implements GunHost, EditHost {
       this.sunHours.show();
       return;
     }
+    if (input.isPressed(Vk.key('M'))) {
+      this.photo.show();
+      return;
+    }
+    if (input.isPressed(Vk.key('P'))) {
+      if (input.isDown(Vk.SHIFT)) { this.section.quickPlane(); } else { this.section.show(); }
+      return;
+    }
     if (input.isPressed(Vk.key('K'))) { this.cycleLightMode(); }
     if (input.isPressed(Vk.key('O'))) {
       if (input.isDown(Vk.SHIFT)) { this.sunPanel.show(); } else { this.toggleShadows(); }
@@ -681,7 +724,7 @@ export class GameSession implements GunHost, EditHost {
 
   private fixedUpdate(dt: number): void {
     this.player.controller.groundZ = this.groundZ;
-    const frozen = this.editor.active || this.sunPanel.open || this.sunHours.open || this.window.isMinimised || this.guns[this.activeGun].capturesInput;
+    const frozen = this.editor.active || this.cursorModeOpen || this.window.isMinimised || this.guns[this.activeGun].capturesInput;
     this.player.fixedUpdate(dt, this.window.input, !frozen);
     this.portalGun.checkTeleport(this.player, dt);
   }
@@ -691,7 +734,7 @@ export class GameSession implements GunHost, EditHost {
     c.position = this.player.getEye(clamp(alpha, 0, 1), dt);
     c.yaw = this.player.yaw;
     c.pitch = this.player.pitch;
-    c.horizontalFovDegrees = this.settings.fieldOfView;
+    c.horizontalFovDegrees = this.photo.open ? this.photo.fov : this.settings.fieldOfView;
     c.viewportWidth = this.window.width;
     c.viewportHeight = this.window.height;
     c.aspect = this.window.width / Math.max(this.window.height, 1);
@@ -705,7 +748,7 @@ export class GameSession implements GunHost, EditHost {
 
   private updateGuns(dt: number): void {
     for (const gun of this.guns) { gun.tick(dt); }
-    if (this.paused || this.editor.active || this.sunPanel.open || this.sunHours.open) { return; }
+    if (this.paused || this.editor.active || this.cursorModeOpen) { return; }
 
     const active = this.guns[this.activeGun];
     active.update(dt, this.aim);
@@ -833,24 +876,110 @@ export class GameSession implements GunHost, EditHost {
     this.flashUntil = this.clock + seconds;
   }
 
+  /**
+   * Picks against visible geometry: the static scene and moved / cloned elements. Geometry the section cut removes is
+   * passed through (tools ignore it; collision doesn't).
+   */
   pick(origin: Vec3, direction: Vec3, maxDistance: number): RayHit | null {
-    const hit = this.bvh.raycast(origin, direction, maxDistance, this.pickMask);
-    // A moved or cloned element in front of the static hit wins
-    return this.dynamics?.raycast(origin, direction, hit ? hit.distance : maxDistance) ?? hit;
+    return this.pickExcluding(origin, direction, maxDistance, null);
   }
 
-  /** The static scene only (no moved / cloned elements), for surface picking. */
+  /** The static scene only (no moved / cloned elements, the cut not considered). */
   pickStatic(origin: Vec3, direction: Vec3, maxDistance: number): RayHit | null {
     return this.bvh.raycast(origin, direction, maxDistance, this.pickMask);
   }
 
+  /** Like {@link pickStatic}, skipping geometry the section cut removes (the sun study's surface clicks). */
+  pickStaticVisible(origin: Vec3, direction: Vec3, maxDistance: number): RayHit | null {
+    return this.pastCut(origin, direction, maxDistance, (o, d, m) => this.bvh.raycast(o, d, m, this.pickMask));
+  }
+
   /**
    * Picks like {@link pick} but ignores one moved / cloned element (drop to surface casts from inside the element's own
-   * box; a moved original's static copy is already hidden).
+   * box; a moved original's static copy is already hidden). Hits in geometry the section cut removes are skipped.
    */
   pickExcluding(origin: Vec3, direction: Vec3, maxDistance: number, exclude: DynamicInstance | null): RayHit | null {
-    const hit = this.bvh.raycast(origin, direction, maxDistance, this.pickMask);
-    return this.dynamics?.raycast(origin, direction, hit ? hit.distance : maxDistance, exclude) ?? hit;
+    return this.pastCut(origin, direction, maxDistance, (o, d, m) => {
+      const hit = this.bvh.raycast(o, d, m, this.pickMask);
+      // A moved or cloned element in front of the static hit wins
+      return this.dynamics?.raycast(o, d, hit ? hit.distance : m, exclude) ?? hit;
+    });
+  }
+
+  /** Repeats a pick past hits the section cut removes (at most 16 times). */
+  private pastCut(origin: Vec3, direction: Vec3, maxDistance: number, once: (o: Vec3, d: Vec3, m: number) => RayHit | null): RayHit | null {
+    if (!this.section?.isActive) { return once(origin, direction, maxDistance); }
+    let travelled = 0;
+    for (let attempt = 0; attempt < 16 && travelled < maxDistance; attempt++) {
+      const hit = once(V.add(origin, V.scale(direction, travelled)), direction, maxDistance - travelled);
+      if (!hit) { return null; }
+      if (!this.section.isCut(hit.point)) { return { ...hit, distance: hit.distance + travelled }; }
+      travelled += hit.distance + 0.002;
+    }
+    return null;
+  }
+
+  /** The world ray under a window pixel. */
+  screenRay(px: number, py: number): { origin: Vec3; direction: Vec3 } {
+    const camera = this.camera;
+    const x = px / Math.max(1, this.screenWidth) * 2 - 1, y = 1 - py / Math.max(1, this.screenHeight) * 2;
+    const inverse = camera.inverseViewProjection;
+    const near = Mat4.transform4(x, y, -1, 1, inverse), far = Mat4.transform4(x, y, 1, 1, inverse);
+    const a = vec3(near[0] / near[3], near[1] / near[3], near[2] / near[3]);
+    const b = vec3(far[0] / far[3], far[1] / far[3], far[2] / far[3]);
+    return { origin: camera.position, direction: V.normalize(V.sub(b, a)) };
+  }
+
+  /** True while a mode that frees the cursor is open (sun panel, study, section editor, photo mode). */
+  get cursorModeOpen(): boolean {
+    return this.sunPanel.open || this.sunHours.open || this.section.open || this.photo.open;
+  }
+
+  /** Closes the cursor modes other than the one opening (one panel at a time). */
+  closeModes(except: object | null): void {
+    if (except !== this.sunPanel) { this.sunPanel.close(); }
+    if (except !== this.sunHours) { this.sunHours.close(); }
+    if (except !== this.section) { this.section.close(); }
+    if (except !== this.photo) { this.photo.close(); }
+  }
+
+  /** The host element index for a UniqueId (preferred) or ElementId, or −1. */
+  elementIndexOf(uniqueId: string | null, elementId: number): number {
+    if (uniqueId) {
+      const byUnique = this.elementIndexByUniqueId.get(uniqueId);
+      if (byUnique !== undefined) { return byUnique; }
+    }
+    return elementId > 0 ? this.elementIndexById.get(elementId) ?? -1 : -1;
+  }
+
+  /** The element with an IFC GUID (any model, templates excluded), or −1. */
+  elementIndexOfIfcGuid(ifcGuid: string): number {
+    if (!IfcGuid.isValid(ifcGuid)) { return -1; }
+    if (!this.elementIndexByIfcGuid) {
+      this.elementIndexByIfcGuid = new Map();
+      this.scene.elements.forEach((r, e) => {
+        if (r.ifcGuid && !r.isLibraryTemplate && !this.elementIndexByIfcGuid!.has(r.ifcGuid)) { this.elementIndexByIfcGuid!.set(r.ifcGuid, e); }
+      });
+    }
+    return this.elementIndexByIfcGuid.get(ifcGuid) ?? -1;
+  }
+
+  /** A host element's UniqueId by ElementId, or null. */
+  uniqueIdOf(elementId: number): string | null {
+    const index = elementId > 0 ? this.elementIndexById.get(elementId) : undefined;
+    return index !== undefined ? this.scene.elements[index].uniqueId || null : null;
+  }
+
+  /** "2.05 Kitchen" (number and name). */
+  roomLabel(room: number): string {
+    const r = this.scene.rooms[room];
+    if (!r) { return 'no room'; }
+    return !r.number.trim() || r.number === '—' ? r.name : `${r.number} ${r.name}`;
+  }
+
+  /** A ray against the visible static scene (glass skipped when opaqueOnly; the cut not considered: light still passes it). */
+  castStatic(origin: Vec3, direction: Vec3, maxDistance: number, opaqueOnly: boolean): RayHit | null {
+    return this.bvh.raycast(origin, direction, maxDistance, this.pickMask, opaqueOnly);
   }
 
   /** True when a ray towards the sun hits visible geometry (glass passes when opaqueOnly). */
@@ -967,17 +1096,27 @@ export class GameSession implements GunHost, EditHost {
   }
 
   /**
-   * Back to where a comment was made from (its saved view); older comments without one: 1.6 m in front of the marker,
-   * on its level, looking at it.
+   * Back to where a comment was made from (its saved view, with its cut); older comments without one: 1.6 m in front
+   * of the marker, on its level, looking at it.
    */
   teleportToComment(record: CommentRecord): void {
     const viewFeet = this.comments.viewFeet(record);
     if (viewFeet && record.view) {
+      if (record.view.section) { this.section.apply(record.view.section, false); }
       if (record.view.flying !== this.player.flying) { this.player.toggleFly(); }
       this.player.teleportTo(viewFeet, record.view.yaw, clamp(record.view.pitch, -1.5, 1.5));
       return;
     }
-    const marker = record.local;
+    const { feet, yaw, pitch } = this.approachMarker(record.local);
+    if (this.player.flying) { this.player.toggleFly(); }
+    this.player.teleportTo(feet, yaw, pitch);
+  }
+
+  /**
+   * A standing spot 1.6 m from a marker on the player's side (or under it when that spot is blocked), on the marker's
+   * level, looking at it: GO for comments without a saved view, and their BCF viewpoint.
+   */
+  approachMarker(marker: Vec3): { feet: Vec3; yaw: number; pitch: number } {
     // Approach from the player's side (so we don't end up on the far side of a wall)
     let dx = marker.x - this.player.feet.x, dy = marker.y - this.player.feet.y;
     const l = Math.hypot(dx, dy);
@@ -992,9 +1131,8 @@ export class GameSession implements GunHost, EditHost {
 
     const look = V.sub(marker, vec3(feet.x, feet.y, feet.z + CharacterController.STAND_EYE));
     const yaw = Math.atan2(look.y, look.x);
-    const pitch = Math.atan2(look.z, Math.max(0.01, Math.hypot(look.x, look.y)));
-    if (this.player.flying) { this.player.toggleFly(); }
-    this.player.teleportTo(feet, yaw, clamp(pitch, -1.2, 1.2));
+    const pitch = clamp(Math.atan2(look.z, Math.max(0.01, Math.hypot(look.x, look.y))), -1.2, 1.2);
+    return { feet, yaw, pitch };
   }
 
   floorAt(x: number, y: number, floorZ: number): Vec3 {
@@ -1004,17 +1142,13 @@ export class GameSession implements GunHost, EditHost {
     return feet;
   }
 
-  exportComments(): void {
-    downloadBlob(this.comments.exportCsv(), `${safeFileName(this.scene.modelTitle)} comments.csv`);
-  }
-
   // #endregion
 
   // #region Bookmarks
 
   private addBookmarkHere(): void {
     const p = this.player;
-    const record = this.bookmarks.createPending(null, p.feet, p.yaw, p.pitch, p.flying, this.currentLevelName, this.sun.bookmarkTime());
+    const record = this.bookmarks.createPending(null, p.feet, p.yaw, p.pitch, p.flying, this.currentLevelName, this.sun.bookmarkTime(), this.section.current);
     this.thumbnailFor = record;
     this.sound.play(SoundId.CommentPlace);
     this.editor.renameBookmark(record, true);
@@ -1022,14 +1156,14 @@ export class GameSession implements GunHost, EditHost {
 
   addBookmarkFromMenu(): BookmarkRecord {
     const p = this.player;
-    const added = this.bookmarks.add(null, p.feet, p.yaw, p.pitch, p.flying, this.currentLevelName, this.sun.bookmarkTime());
+    const added = this.bookmarks.add(null, p.feet, p.yaw, p.pitch, p.flying, this.currentLevelName, this.sun.bookmarkTime(), this.section.current);
     this.thumbnailFor = added;
     return added;
   }
 
   setBookmarkHere(record: BookmarkRecord): void {
     const p = this.player;
-    this.bookmarks.update(record, p.feet, p.yaw, p.pitch, p.flying, this.currentLevelName, this.sun.bookmarkTime());
+    this.bookmarks.update(record, p.feet, p.yaw, p.pitch, p.flying, this.currentLevelName, this.sun.bookmarkTime(), this.section.current);
     this.thumbnailFor = record;
     this.sound.play(SoundId.Commit);
   }
@@ -1047,6 +1181,7 @@ export class GameSession implements GunHost, EditHost {
 
   goToBookmark(record: BookmarkRecord): void {
     if (record.sun) { this.sun.applyTime(record.sun); }
+    if (record.section) { this.section.apply(record.section, false); }
     if (record.flying !== this.player.flying) { this.player.toggleFly(); }
     this.player.teleportTo(record.local, record.yaw, clamp(record.pitch, -1.5, 1.5));
     this.sound.play(SoundId.Teleport);
@@ -1111,6 +1246,7 @@ export class GameSession implements GunHost, EditHost {
 
     // The ground plane as it was left (metres from its default)
     if (saved.groundOffset !== null) { this.groundZ = this.groundDefault + saved.groundOffset; }
+    this.section.restore(saved.section);
 
     for (const key of saved.hiddenCategories) {
       const def = findCategory(key);
@@ -1320,14 +1456,65 @@ export class GameSession implements GunHost, EditHost {
       clipZMin: -1e7,
       clipZMax: 1e7,
       fogDensity: 0.0022,
-      sun: true
+      sun: true,
+      section: true
     };
   }
 
   private render(): void {
     const width = this.window.width, height = this.window.height;
-    const renderer = this.renderer, settings = this.settings;
     this.trackDynamics();
+
+    // ---- Photo mode: a pending shot renders off-screen first (camera restored afterwards)
+    this.photo.renderPending();
+
+    this.renderScene(width, height, null, false);
+
+    // Captures of the 3D view (no HUD)
+    if (this.thumbnailFor || this.commentThumbnailFor) { this.captureThumbnail(width, height); }
+    if (this.screenshotRequested) { this.captureScreenshot(width, height); }
+    if (this.sunHours.shotRequested) {
+      // The study's screenshot: the 3D view plus the legend (drawn and flushed first), no other UI
+      this.sunHours.shotRequested = false;
+      gl.viewport(0, 0, width, height);
+      this.sunHours.buildLegend(this.ui.atlas, this.s(20), height - this.s(20) - this.s(78));
+      this.ui.flush(width, height);
+      this.captureScreenshot(width, height, ' ' + this.sunHours.shotSuffix);
+    }
+
+    // ---- Window pass: minimap 3D, then all 2D UI in one batch
+    gl.viewport(0, 0, width, height);
+    const mapX = width - this.s(20) - this.s(220), mapY = this.s(20);
+    if (this.showMap && !this.paused && !this.uiHidden && !this.photo.open) { this.drawMinimapPlan(mapX + this.s(8), mapY + this.s(30), this.s(204), this.s(170)); }
+
+    if (this.paused) {
+      // A text box opened from a panel (reply, assignee, edit) sits over the menu, which then gets no clicks
+      if (this.editor.active) { this.window.input.consumeClicks(); }
+      this.menu.build();
+      if (this.editor.active) { this.editor.build(); }
+    } else if (this.photo.open) {
+      // Photo mode: a clean frame, the grid and the photo panel only
+      this.photo.buildOverlay(this.ui.atlas, this.window.input, width, height);
+      this.buildToast(this.ui.atlas, width);
+    } else if (this.uiHidden) {
+      this.buildHiddenHud(width);
+    } else {
+      // A text box (comment, bookmark or study name) takes the clicks: panels behind it stay still
+      if (this.editor.active) { this.window.input.consumeClicks(); }
+      this.buildHud(mapX, mapY);
+      if (this.editor.active) { this.editor.build(); }
+    }
+    this.ui.flush(width, height);
+  }
+
+  /**
+   * The 3D passes into a framebuffer (null = the canvas): shadows, lights, AO and glow, the scene, section caps,
+   * ground, highlights, glass, bloom, photo exposure, then (not for photos) markers and the section gizmo. Uses the
+   * camera as it stands.
+   * @param photo A photo: no probe baking, no highlights, markers or gizmos.
+   */
+  renderScene(width: number, height: number, framebuffer: WebGLFramebuffer | null, photo: boolean): void {
+    const renderer = this.renderer, settings = this.settings;
 
     // ---- Sun lighting and shadow maps (only changed cascades re-render)
     renderer.lighting = this.sun.lighting();
@@ -1350,10 +1537,10 @@ export class GameSession implements GunHost, EditHost {
     if (effectsError) { this.onScreenEffectsFailure(effectsError); }
 
     // ---- Reflection probes: a couple of faces per frame until baked, re-baked a moment after things change
-    this.reflections.update(this.sceneParams(), String(this.shadowSceneKey));
+    if (!photo) { this.reflections.update({ ...this.sceneParams(), section: false }, String(this.shadowSceneKey)); }
 
     // ---- 3D scene
-    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
     gl.viewport(0, 0, width, height);
     const fog = renderer.fogColour;
     gl.clearColor(fog.x, fog.y, fog.z, 1);
@@ -1367,13 +1554,20 @@ export class GameSession implements GunHost, EditHost {
     const p = this.sceneParams();
     this.renderer.drawStatic(p, this.groupVisible, false);
     this.renderer.drawDynamic(p, this.dynamics, false);
+    if (this.section.isActive) {
+      // Fill the cut solids (stencil caps) before the ground
+      const size = this.scene.bounds.size;
+      const extent = Math.hypot(size.x, size.y, size.z) + 50;
+      this.renderer.drawSectionCaps(this.camera.viewProjection, this.camera.planes, this.camera.position, this.groupVisible, this.dynamics,
+        this.section.capColour, extent);
+    }
     this.renderer.drawGround(this.camera, this.groundZ);
 
     // Gun highlights (scan target…)
     const active = this.guns[this.activeGun];
     this.highlights.length = 0;
     // (hidden UI: only a gun holding an element keeps its tint, so the held element stays visible)
-    if (!this.paused && (!this.uiHidden || active.capturesInput)) { active.collectHighlights(this.highlights); }
+    if (!photo && !this.photo.open && !this.paused && (!this.uiHidden || active.capturesInput)) { active.collectHighlights(this.highlights); }
     if (this.highlights.length > 0) {
       gl.enable(gl.BLEND);
       gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
@@ -1404,8 +1598,12 @@ export class GameSession implements GunHost, EditHost {
     // Bloom from glowing surfaces over everything (glass included)
     this.renderer.compositeGlow();
 
-    // Markers: depth-tested, then a faint x-ray copy so markers behind walls stay discoverable
-    if (!this.uiHidden) {
+    // Photo exposure (the preview and the photo alike)
+    if (this.photo.open) { this.renderer.applyExposure(this.photo.exposure); }
+
+    // Markers: depth-tested, then a faint x-ray copy so markers behind walls stay discoverable (none while the UI is
+    // hidden or in photo mode: clean views)
+    if (!this.uiHidden && !photo && !this.photo.open) {
       this.overlay.begin(this.camera);
       this.guns.forEach((gun, i) => gun.drawWorld(this.overlay, i === this.activeGun));
       this.overlay.draw(this.camera, true, 1, false);
@@ -1415,35 +1613,9 @@ export class GameSession implements GunHost, EditHost {
     // Sun hours grid (study results are content, so they show with the UI hidden too)
     this.sunHours.drawCells();
 
-    // Captures of the 3D view (no HUD)
-    if (this.thumbnailFor || this.commentThumbnailFor) { this.captureThumbnail(width, height); }
-    if (this.screenshotRequested) { this.captureScreenshot(width, height); }
-    if (this.sunHours.shotRequested) {
-      // The study's screenshot: the 3D view plus the legend (drawn and flushed first), no other UI
-      this.sunHours.shotRequested = false;
-      gl.viewport(0, 0, width, height);
-      this.sunHours.buildLegend(this.ui.atlas, this.s(20), height - this.s(20) - this.s(78));
-      this.ui.flush(width, height);
-      this.captureScreenshot(width, height, ' sun hours');
-    }
-
-    // ---- Window pass: minimap 3D, then all 2D UI in one batch
-    gl.viewport(0, 0, width, height);
-    const mapX = width - this.s(20) - this.s(220), mapY = this.s(20);
-    if (this.showMap && !this.paused && !this.uiHidden) { this.drawMinimapPlan(mapX + this.s(8), mapY + this.s(30), this.s(204), this.s(170)); }
-
-    if (this.paused) {
-      // A text box opened from a panel (reply, assignee, edit) sits over the menu, which then gets no clicks
-      if (this.editor.active) { this.window.input.consumeClicks(); }
-      this.menu.build();
-      if (this.editor.active) { this.editor.build(); }
-    } else if (this.uiHidden) {
-      this.buildHiddenHud(width);
-    } else {
-      this.buildHud(mapX, mapY);
-      if (this.editor.active) { this.editor.build(); }
-    }
-    this.ui.flush(width, height);
+    // Section box frame and handles (editor only)
+    if (!photo) { this.section.drawGizmo(); }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   }
 
   private drawMinimapPlan(x: number, y: number, w: number, h: number): void {
@@ -1600,7 +1772,22 @@ export class GameSession implements GunHost, EditHost {
         if (this.bookmarks.bookmarks.includes(record)) { this.bookmarks.setThumbnail(record, data); }
         else { record.thumbnail = data; } // pending (B): saved when its name is confirmed
       }
-      if (comment) { this.comments.setThumbnail(comment, data); }
+      if (comment) {
+        // Comments also keep a larger picture for BCF snapshots (one save for both)
+        const snapshotWidth = Math.min(SNAPSHOT_MAX_WIDTH, Math.min(width, Math.trunc(height * 16 / 9)));
+        let snapshot: Uint8Array | null = null;
+        if (snapshotWidth >= THUMB_WIDTH) {
+          const snapshotHeight = Math.trunc(snapshotWidth * 9 / 16);
+          const picture = document.createElement('canvas');
+          picture.width = snapshotWidth;
+          picture.height = snapshotHeight;
+          const pc = picture.getContext('2d')!;
+          pc.imageSmoothingQuality = 'high';
+          pc.drawImage(source, (width - cropW) / 2, (height - cropH) / 2, cropW, cropH, 0, 0, snapshotWidth, snapshotHeight);
+          snapshot = base64Bytes(picture.toDataURL('image/jpeg', 0.82).replace(/^data:image\/jpeg;base64,/, ''));
+        }
+        this.comments.setPictures(comment, data, snapshot);
+      }
     } catch (e) {
       console.info(`Thumbnail failed: ${e instanceof Error ? e.message : String(e)}`);
     }
@@ -1633,7 +1820,7 @@ export class GameSession implements GunHost, EditHost {
     ui.rect(cx + gap, cy - t1 * 0.5, arm, t1, UiTheme.TEXT);
     ui.circle(cx, cy, this.s(1.8), active.colour, 10);
 
-    if (!this.window.isCaptured && !this.editor.active && !this.sunPanel.open && !this.sunHours.open) {
+    if (!this.window.isCaptured && !this.editor.active && !this.cursorModeOpen) {
       const hint = 'Click to look around';
       const hintWidth = UiBatch.measure(f.body, hint) + this.s(24);
       ui.panel(cx - hintWidth * 0.5, cy + this.s(28), hintWidth, this.s(28), UiTheme.PANEL, UiTheme.PANEL_BORDER);
@@ -1646,7 +1833,7 @@ export class GameSession implements GunHost, EditHost {
     // Minimap and the gun's context panel beneath it
     if (this.showMap) { this.drawMinimapOverlay(mapX, mapY); }
     // (hidden while the sun panel is open: the two would overlap on smaller screens)
-    if (!this.sunPanel.open && !this.sunHours.open) {
+    if (!this.sunPanel.open && !this.sunHours.open && !this.section.open) {
       const panelTop = this.showMap ? mapY + this.s(208) + this.s(12) : this.s(20);
       const panelWidth = this.s(260), panelX = width - this.s(20) - panelWidth;
       ui.panel(panelX, panelTop, panelWidth, this.s(active.panelHeight) + this.s(24), UiTheme.PANEL, UiTheme.PANEL_BORDER);
@@ -1656,6 +1843,7 @@ export class GameSession implements GunHost, EditHost {
     this.sunPanel.buildIcon(f, this.window.input);
     if (this.sunPanel.open) { this.sunPanel.build(f, this.window.input); }
     if (this.sunHours.open) { this.sunHours.buildPanel(f, this.window.input); }
+    this.section.buildPanel(f, this.window.input);
     this.sunHours.buildLegend(f, this.s(20), height - this.s(52) - this.s(78));
 
     this.buildHelp(f, height);
@@ -2368,7 +2556,8 @@ export class GameSession implements GunHost, EditHost {
   /** Hidden categories, links and elements, by stable keys (port of ToVisibilitySettings). */
   private toVisibilitySettings(): VisibilitySettings {
     const settings: VisibilitySettings = {
-      hiddenCategories: [], hiddenLinks: [], hiddenElements: [], groundOffset: cleanGroundOffset(this.groundZ - this.groundDefault)
+      hiddenCategories: [], hiddenLinks: [], hiddenElements: [], groundOffset: cleanGroundOffset(this.groundZ - this.groundDefault),
+      section: this.section.current.isActive ? this.section.current.clone() : null
     };
     for (const def of CATEGORIES) {
       if (this.scene.categoryLoaded[def.index] && !this.categoryVisible[def.index]) { settings.hiddenCategories.push(def.key); }
@@ -2497,6 +2686,8 @@ export class GameSession implements GunHost, EditHost {
     this.sound.dispose();
     this.overlay.dispose();
     this.sunHours.dispose();
+    this.section.dispose();
+    this.photo.dispose();
     this.menu.library.dispose();
     this.renderer?.dispose();
   }
@@ -2504,6 +2695,14 @@ export class GameSession implements GunHost, EditHost {
   s(value: number): number {
     return value * this.ui.scale;
   }
+}
+
+/** Base64 text as bytes. */
+function base64Bytes(text: string): Uint8Array {
+  const binary = atob(text);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) { bytes[i] = binary.charCodeAt(i); }
+  return bytes;
 }
 
 /** Crossing-number point-in-polygon test. */

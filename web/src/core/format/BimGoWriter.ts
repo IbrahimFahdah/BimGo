@@ -10,10 +10,11 @@ import { isLibraryEmpty, type LibraryEntry } from '../scene/FamilyLibrary';
 import { BimGoFormat, FileKinds, formatPhaseRole } from './BimGoFormat';
 import type { BimGoDocument } from './BimGoReader';
 import {
-  type BookmarkDocument, type BookmarkRecord, type CommentDocument, isVisibilityEmpty, type SunSettings, type SunTime, type VisibilitySettings
+  type BookmarkDocument, type BookmarkRecord, type CommentDocument, CommentSnapshots, isVisibilityEmpty, type SunSettings, type SunTime, type VisibilitySettings
 } from './DocumentModels';
 import { obj, type Json } from './Json';
 import { ZipWriter } from './ZipWriter';
+import type { SectionCut } from '../scene/SectionCut';
 
 /** Who wrote the file (port of WriterInfo). */
 export interface WriterInfo {
@@ -67,6 +68,7 @@ export async function writeBimGo(document: BimGoDocument, content: SaveContent, 
   progress?.(0.9);
 
   await zip.addText(BimGoFormat.ENTRY_COMMENTS, json(commentDocument(content.comments), true), signal);
+  await writeCommentSnapshots(zip, content.comments, signal);
   await zip.addText(BimGoFormat.ENTRY_JOURNAL, json({ entries: content.journal.entries.map(journalEntry) }, true), signal);
 
   // Optional parts: older readers ignore entries they don't know, so no format bump is needed
@@ -180,6 +182,7 @@ function buildElements(scene: SceneData): Json {
     elements: scene.elements.map(r => ({
       id: r.elementId,
       uniqueId: r.uniqueId || null,
+      ifcGuid: r.ifcGuid || null,
       name: r.name,
       category: r.categoryIndex,
       categoryName: r.categoryName,
@@ -216,8 +219,10 @@ function commentDocument(d: CommentDocument): Json {
       id: c.id, author: c.author, created: c.created, text: c.text, x: c.x, y: c.y, z: c.z, elementId: c.elementId, level: c.level,
       edited: c.edited, editedBy: c.editedBy, status: c.status, assignedTo: c.assignedTo, priority: c.priority, updated: c.updated,
       updatedBy: c.updatedBy, replies: c.replies?.map(r => ({ id: r.id, author: r.author, created: r.created, text: r.text })) ?? null,
-      view: c.view ? { x: c.view.x, y: c.view.y, z: c.view.z, yaw: f(c.view.yaw), pitch: f(c.view.pitch), flying: c.view.flying } : null,
-      thumbnail: c.thumbnail
+      view: c.view
+        ? { x: c.view.x, y: c.view.y, z: c.view.z, yaw: f(c.view.yaw), pitch: f(c.view.pitch), flying: c.view.flying, section: section(c.view.section) }
+        : null,
+      thumbnail: c.thumbnail, elementUniqueId: c.elementUniqueId, snapshot: c.snapshot
     }))
   };
 }
@@ -225,8 +230,30 @@ function commentDocument(d: CommentDocument): Json {
 function visibility(v: VisibilitySettings): Json {
   return {
     hiddenCategories: v.hiddenCategories, hiddenLinks: v.hiddenLinks, hiddenElements: v.hiddenElements,
-    groundOffset: v.groundOffset === null ? null : f(v.groundOffset)
+    groundOffset: v.groundOffset === null ? null : f(v.groundOffset), section: section(v.section)
   };
+}
+
+/** A section cut as SectionCut's JSON (flat camelCase members). */
+function section(c: SectionCut | null): Json | null {
+  if (!c) { return null; }
+  return {
+    boxOn: c.boxOn, minX: f(c.boxMin.x), minY: f(c.boxMin.y), minZ: f(c.boxMin.z), maxX: f(c.boxMax.x), maxY: f(c.boxMax.y), maxZ: f(c.boxMax.z),
+    planeOn: c.planeOn, planeX: f(c.planePoint.x), planeY: f(c.planePoint.y), planeZ: f(c.planePoint.z),
+    normalX: f(c.planeNormal.x), normalY: f(c.planeNormal.y), normalZ: f(c.planeNormal.z)
+  };
+}
+
+/** The comments' BCF pictures under comments/ (stored as is: JPEG). Optional entries: older readers ignore them. */
+async function writeCommentSnapshots(zip: ZipWriter, comments: CommentDocument, signal?: AbortSignal): Promise<void> {
+  const written = new Set<string>();
+  for (const c of comments.comments) {
+    if (!c.snapshotData || c.snapshotData.length === 0 || !CommentSnapshots.isValidName(c.snapshot)) { continue; }
+    const key = c.snapshot!.toLowerCase();
+    if (written.has(key)) { continue; }
+    written.add(key);
+    await zip.add(c.snapshot!, c.snapshotData, false, signal);
+  }
 }
 
 function libraryEntry(e: LibraryEntry): Json {
@@ -264,7 +291,7 @@ function sunSettings(s: SunSettings): Json {
 function bookmark(b: BookmarkRecord): Json {
   return {
     id: b.id, name: b.name, author: b.author, created: b.created, x: b.x, y: b.y, z: b.z, yaw: f(b.yaw), pitch: f(b.pitch),
-    flying: b.flying, level: b.level, sun: b.sun ? sunTime(b.sun) : null, thumbnail: b.thumbnail
+    flying: b.flying, level: b.level, sun: b.sun ? sunTime(b.sun) : null, section: section(b.section), thumbnail: b.thumbnail
   };
 }
 

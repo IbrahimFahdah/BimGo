@@ -42,15 +42,23 @@ export async function pickBimGoFile(): Promise<PickedFile | null> {
       // SecurityError (no gesture) or similar: fall back to the input element
     }
   }
-  const file = await pickWithInput();
+  const file = await pickWithInput(BIMGO_EXTENSION);
   return file ? { file, handle: null } : null;
 }
 
-function pickWithInput(): Promise<File | null> {
+/**
+ * Shows an Open dialog for other files (e.g. BCF: ".bcf,.bcfzip"). Must run soon after a user gesture.
+ * @returns The chosen file, or null when cancelled.
+ */
+export function pickFile(accept: string): Promise<File | null> {
+  return pickWithInput(accept);
+}
+
+function pickWithInput(accept: string): Promise<File | null> {
   return new Promise(resolve => {
     const input = document.createElement('input');
     input.type = 'file';
-    input.accept = BIMGO_EXTENSION;
+    input.accept = accept;
     input.addEventListener('change', () => resolve(input.files?.[0] ?? null), { once: true });
     input.addEventListener('cancel', () => resolve(null), { once: true });
     input.click();

@@ -1,7 +1,8 @@
 import {
   type BookmarkDocument, type BookmarkRecord, cleanComment, type CommentDocument, CommentPriority, type CommentRecord, type CommentReply,
-  CommentStatus, currentUser, type SunTime
+  CommentSnapshots, CommentStatus, currentUser, type SunTime
 } from '../core/format/DocumentModels';
+import type { SectionCut } from '../core/scene/SectionCut';
 import { newId } from '../core/format/Json';
 import { type Vec3, vec3 } from '../core/math/Vector';
 
@@ -43,7 +44,7 @@ export class CommentStore {
     return { version: 1, model: this.model, units: 'metres, Revit internal coordinates', comments: [...this.comments] };
   }
 
-  add(local: Vec3, text: string, elementId: number, level: string | null): CommentRecord {
+  add(local: Vec3, text: string, elementId: number, level: string | null, elementUniqueId: string | null = null): CommentRecord {
     const record: CommentRecord = {
       id: newId(),
       author: currentUser,
@@ -64,6 +65,9 @@ export class CommentStore {
       replies: null,
       view: null,
       thumbnail: null,
+      elementUniqueId: elementUniqueId || null,
+      snapshot: null,
+      snapshotData: null,
       local: vec3(),
       header: ''
     };
@@ -121,10 +125,10 @@ export class CommentStore {
   }
 
   /** Sets the viewpoint a comment is seen from (scene-local feet; stored in Revit internal metres). */
-  setView(record: CommentRecord, localFeet: Vec3, yaw: number, pitch: number, flying: boolean): void {
+  setView(record: CommentRecord, localFeet: Vec3, yaw: number, pitch: number, flying: boolean, section: SectionCut | null = null): void {
     record.view = {
       x: round4(localFeet.x + this.origin.x), y: round4(localFeet.y + this.origin.y), z: round4(localFeet.z + this.origin.z),
-      yaw, pitch, flying
+      yaw, pitch, flying, section: section?.clone() ?? null
     };
     if (this.comments.includes(record)) { this.save(); }
   }
@@ -140,6 +144,52 @@ export class CommentStore {
     if (!data) { return; }
     record.thumbnail = data;
     if (this.comments.includes(record)) { this.save(); }
+  }
+
+  /**
+   * Stores a comment's thumbnail (base64 JPEG) and, when given, the larger picture kept for BCF snapshots (JPEG bytes,
+   * saved as comments/<id>.jpg in the .bimgo), then saves once.
+   */
+  setPictures(record: CommentRecord, thumbnail: string | null, snapshot: Uint8Array | null): void {
+    if (thumbnail) { record.thumbnail = thumbnail; }
+    if (snapshot && snapshot.length > 0) {
+      record.snapshot = CommentSnapshots.nameFor(record.id);
+      record.snapshotData = snapshot;
+    }
+    if (this.comments.includes(record)) { this.save(); }
+  }
+
+  /** Moves a comment's marker (scene-local) without saving: imports place markers before one save. */
+  setMarker(record: CommentRecord, local: Vec3): void {
+    record.x = round4(local.x + this.origin.x);
+    record.y = round4(local.y + this.origin.y);
+    record.z = round4(local.z + this.origin.z);
+    record.local = vec3(local.x, local.y, local.z);
+  }
+
+  /** The scene-local position of an internal point (for imported views). */
+  toLocal(x: number, y: number, z: number): Vec3 {
+    return vec3(x - this.origin.x, y - this.origin.y, z - this.origin.z);
+  }
+
+  /** Finishes a BCF import with one save: new comments join the list, merged ones get their labels rebuilt. */
+  applyImport(added: readonly CommentRecord[], merged: readonly CommentRecord[]): void {
+    for (const record of added) {
+      if (!record.text.trim() || this.comments.includes(record)) { continue; }
+      this.prepare(record);
+      this.comments.push(record);
+    }
+    for (const record of merged) {
+      if (this.comments.includes(record)) { this.prepare(record); }
+    }
+    this.save();
+  }
+
+  /** The comment with this id (case-insensitive), or null. */
+  find(id: string): CommentRecord | null {
+    if (!id) { return null; }
+    const lower = id.toLowerCase();
+    return this.comments.find(c => c.id.toLowerCase() === lower) ?? null;
   }
 
   update(record: CommentRecord, text: string): boolean {
@@ -170,22 +220,6 @@ export class CommentStore {
   private save(): void {
     this.revision++;
     this.onChanged?.();
-  }
-
-  /** The comments as CSV (UTF-8 with BOM, like the desktop export). */
-  exportCsv(): Blob {
-    const lines = ['Id,Author,Created,Edited,Edited by,Status,Priority,Assigned to,Replies,Last reply,Level,Element id,X (m),Y (m),Z (m),Text,Thread'];
-    for (const r of this.comments) {
-      const replies = r.replies ?? [];
-      const thread = replies.map(reply => `${reply.author} (${csvDate(reply.created)}): ${reply.text}`).join('\n');
-      lines.push([
-        r.id, csv(r.author), csvDate(r.created), r.edited ? csvDate(r.edited) : '', csv(r.editedBy ?? ''),
-        CommentStatus.label(r.status), CommentPriority.label(r.priority), csv(r.assignedTo ?? ''), String(replies.length),
-        replies.length > 0 ? csvDate(replies[replies.length - 1].created) : '', csv(r.level),
-        r.elementId > 0 ? String(r.elementId) : '', fixed3(r.x), fixed3(r.y), fixed3(r.z), csv(r.text), csv(thread)
-      ].join(','));
-    }
-    return new Blob(['﻿' + lines.join('\r\n') + '\r\n'], { type: 'text/csv;charset=utf-8' });
   }
 
   private prepare(record: CommentRecord): void {
@@ -248,17 +282,19 @@ export class BookmarkStore {
     return 'View';
   }
 
-  add(name: string | null, localFeet: Vec3, yaw: number, pitch: number, flying: boolean, level: string, sun: SunTime | null = null): BookmarkRecord {
-    const record = this.createPending(name, localFeet, yaw, pitch, flying, level, sun);
+  add(name: string | null, localFeet: Vec3, yaw: number, pitch: number, flying: boolean, level: string, sun: SunTime | null = null,
+    section: SectionCut | null = null): BookmarkRecord {
+    const record = this.createPending(name, localFeet, yaw, pitch, flying, level, sun, section);
     this.bookmarks.push(record);
     this.save();
     return record;
   }
 
   /** A bookmark that joins the list only once its name is confirmed (B). */
-  createPending(name: string | null, localFeet: Vec3, yaw: number, pitch: number, flying: boolean, level: string, sun: SunTime | null = null): BookmarkRecord {
+  createPending(name: string | null, localFeet: Vec3, yaw: number, pitch: number, flying: boolean, level: string, sun: SunTime | null = null,
+    section: SectionCut | null = null): BookmarkRecord {
     const record = this.blank(BookmarkStore.cleanName(name) ?? this.nextDefaultName());
-    Object.assign(record, { yaw, pitch, flying, level: level ?? '', sun: sun ? { ...sun } : null });
+    Object.assign(record, { yaw, pitch, flying, level: level ?? '', sun: sun ? { ...sun } : null, section: section?.clone() ?? null });
     this.setPosition(record, localFeet);
     this.prepare(record);
     return record;
@@ -281,10 +317,11 @@ export class BookmarkStore {
     return true;
   }
 
-  update(record: BookmarkRecord, localFeet: Vec3, yaw: number, pitch: number, flying: boolean, level: string, sun: SunTime | null = null): boolean {
+  update(record: BookmarkRecord, localFeet: Vec3, yaw: number, pitch: number, flying: boolean, level: string, sun: SunTime | null = null,
+    section: SectionCut | null = null): boolean {
     if (!this.bookmarks.includes(record)) { return false; }
     this.setPosition(record, localFeet);
-    Object.assign(record, { yaw, pitch, flying, level: level ?? '', sun: sun ? { ...sun } : null });
+    Object.assign(record, { yaw, pitch, flying, level: level ?? '', sun: sun ? { ...sun } : null, section: section?.clone() ?? null });
     this.prepare(record);
     this.save();
     return true;
@@ -322,7 +359,7 @@ export class BookmarkStore {
   private blank(name: string): BookmarkRecord {
     return {
       id: newId(), name, author: currentUser, created: new Date().toISOString(), x: 0, y: 0, z: 0, yaw: 0, pitch: 0,
-      flying: false, level: '', sun: null, thumbnail: null, local: vec3(), detail: ''
+      flying: false, level: '', sun: null, section: null, thumbnail: null, local: vec3(), detail: ''
     };
   }
 
@@ -340,18 +377,4 @@ export class BookmarkStore {
     const sun = s ? ` · SUN ${s.day}/${s.month} ${two(Math.trunc(s.minutes / 60))}:${two(s.minutes % 60)}` : '';
     record.detail = `${level} · ${record.author} · ${shortDate(record.created)}${fly}${sun}`;
   }
-}
-
-function csv(value: string): string {
-  return /[,"\n\r]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
-}
-
-function csvDate(iso: string): string {
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? '' : `${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())} ${two(d.getHours())}:${two(d.getMinutes())}`;
-}
-
-/** "0.###" (up to three decimals, no trailing zeros). */
-function fixed3(v: number): string {
-  return String(Math.round(v * 1000) / 1000);
 }

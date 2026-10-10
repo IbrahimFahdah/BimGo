@@ -1,8 +1,10 @@
 // Builds public/samples/BimGo Sample Pavilion.bimgo: a small two-storey pavilion made from boxes, so visitors without
 // a Revit export can try every tool. It also carries Realistic materials (polished concrete, metals, glass, a mirror and
-// a pool, so reflections and probes show), comments as issues and a small family library for the Place gun. Everything here is generated (no Revit or third-party content), so it can ship
+// a pool, so reflections and probes show), comments as issues (GUID ids, so BCF exports merge back), a bookmark with a
+// section cut, IFC GUIDs and shared coordinates (BCF viewpoints) and a small family library for the Place gun. Everything here is generated (no Revit or third-party content), so it can ship
 // with the site. Run: node scripts/make-sample.mjs
 import { Buffer } from 'node:buffer';
+import { createHash } from 'node:crypto';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -14,6 +16,15 @@ const OUT = resolve(here, '../public/samples/BimGo Sample Pavilion.bimgo');
 // ---- Categories (catalog keys; the file's own order)
 const CATEGORY_KEYS = ['walls', 'floors', 'roofs', 'doors', 'windows', 'stairs', 'railings', 'columns', 'furniture', 'planting', 'lightfixtures', 'casework'];
 const cat = key => CATEGORY_KEYS.indexOf(key);
+
+// IFC's compressed GUID (22 characters) of a stable GUID made from text, so the sample's elements can be named in BCF
+const IFC_CHARS = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_$';
+function ifcGuidOf(text) {
+  let value = BigInt('0x' + createHash('md5').update(text).digest('hex'));
+  let out = '';
+  for (let i = 0; i < 22; i++) { out = IFC_CHARS[Number(value & 63n)] + out; value >>= 6n; }
+  return out;
+}
 
 // ---- Colours (RGBA bytes)
 const C = {
@@ -269,12 +280,17 @@ const manifest = {
   format: 'bimgo', formatVersion: 1, generator: 'BimGo Web sample generator', generatorVersion: '1.0', kind: 'revit-export',
   title: 'BimGo Sample Pavilion', createdUtc: created, units: 'metres',
   provenance: { modelTitle: 'BimGo Sample Pavilion', revitVersion: '', extractedBy: 'scripts/make-sample.mjs', extractedUtc: created },
-  counts: { elements: elements.length, triangles: indices.length / 3, rooms: 3, comments: 3, bookmarks: 3 }
+  counts: { elements: elements.length, triangles: indices.length / 3, rooms: 3, comments: 4, bookmarks: 4 }
 };
 const model = {
   originOffset: [0, 0, 0], boundsMin: [-0.4, -8.8, -SLAB], boundsMax: [W + 0.4, D + 0.4, ROOF + 0.3],
   phaseId: 2, phaseName: 'New Construction', existingPhaseId: 1, existingPhaseName: 'Existing',
-  site: { hasLocation: true, latitude: -27.4698, longitude: 153.0251, timeZone: 10, placeName: 'Brisbane', sunStart: '2026-06-21T14:30', trueNorthAngle: 0 },
+  site: {
+    hasLocation: true, latitude: -27.4698, longitude: 153.0251, timeZone: 10, placeName: 'Brisbane', sunStart: '2026-06-21T14:30', trueNorthAngle: 0,
+    // Shared (survey) coordinates near Brisbane's grid, so BCF viewpoints and the L readout have them
+    hasSharedTransform: true, sharedEast: 502350, sharedNorth: 6961420, sharedElevation: 12, sharedAngle: 0,
+    projectBasePoint: { position: [0, 0, 0], sharedPosition: [502350, 6961420, 12] }
+  },
   spawn: { eye: [7, -13, 1.62], yaw: Math.PI / 2, pitch: 0.06, source: 'sample' },
   levels: [{ name: 'Level 1', elevation: 0 }, { name: 'Level 2', elevation: L2 }, { name: 'Roof', elevation: ROOF }],
   rooms: [
@@ -286,7 +302,7 @@ const model = {
 };
 const elementsJson = {
   elements: elements.map(e => ({
-    id: e.id, uniqueId: e.uniqueId, name: e.name, category: e.category, familyType: e.familyType, level: e.level,
+    id: e.id, uniqueId: e.uniqueId, ...(e.uniqueId ? { ifcGuid: ifcGuidOf(e.uniqueId) } : {}), name: e.name, category: e.category, familyType: e.familyType, level: e.level,
     ...(e.hostId ? { hostId: e.hostId } : {}), movable: e.movable, ...(e.moveBlockReason ? { moveBlockReason: e.moveBlockReason } : {}),
     ...(e.phase ? { phase: e.phase } : {}), pivot: r3(e.pivot), boundsMin: r3(e.min), boundsMax: r3(e.max),
     opaque: e.opaque, transparent: e.transparent, ...(e.library ? { library: true } : {})
@@ -301,16 +317,22 @@ const parameters = {
   rows: elements.map(e => Object.entries({ ...e.params, 'Model': 'BimGo Sample Pavilion' }).flatMap(([n, v]) => [pool(names, n), pool(values, v)]))
 };
 
+// A plane just inside the south wall, cutting away the street side: the lobby and cafe open up (internal metres)
+const CAFE_CUT = { boxOn: false, planeOn: true, planeX: 7, planeY: 0.35, planeZ: 0, normalX: 0, normalY: -1, normalZ: 0 };
 const comments = {
   model: 'BimGo Sample Pavilion', units: 'metres, Revit internal coordinates',
   comments: [
-    { id: 'sample-c1', author: 'BimGo', created, text: 'Welcome! Esc opens the menu, F1 shows the keys. Try the tools 1–9 at the bottom.', x: 7, y: 1.2, z: 1.6, elementId: 0, level: 'Level 1',
+    { id: '5a3c1e2b7d4f4c8e9a1b2c3d4e5f6001', author: 'BimGo', created, text: 'Welcome! Esc opens the menu, F1 shows the keys. Try the tools 1–9 at the bottom.', x: 7, y: 1.2, z: 1.6, elementId: 0, level: 'Level 1',
       view: { x: 7, y: -3, z: 0, yaw: Math.PI / 2, pitch: 0.05, flying: false } },
-    { id: 'sample-c2', author: 'BimGo', created, text: 'Tool 7 (Gizmo) moves furniture: click a chair, WASD to move, right-click to commit.', x: 10, y: 5.5, z: 1.2, elementId: 0, level: 'Level 1',
+    { id: '5a3c1e2b7d4f4c8e9a1b2c3d4e5f6002', author: 'BimGo', created, text: 'Tool 7 (Gizmo) moves furniture: click a chair, WASD to move, right-click to commit.', x: 10, y: 5.5, z: 1.2, elementId: 0, level: 'Level 1',
       status: 'inProgress', priority: 'high', assignedTo: 'Sam', updated: created, updatedBy: 'BimGo',
-      replies: [{ id: 'sample-r1', author: 'Sam', created, text: 'F drops a moved chair onto the floor or a table below it.' }] },
-    { id: 'sample-c3', author: 'BimGo', created, text: 'Realistic colour mode (Esc → Display) shows the polished floor, the mirror upstairs and the pool reflecting.', x: 7, y: -3.4, z: 0.8, elementId: 0, level: 'Level 1',
-      status: 'closed' }
+      replies: [{ id: '5a3c1e2b7d4f4c8e9a1b2c3d4e5f6101', author: 'Sam', created, text: 'F drops a moved chair onto the floor or a table below it.' }] },
+    { id: '5a3c1e2b7d4f4c8e9a1b2c3d4e5f6003', author: 'BimGo', created, text: 'Realistic colour mode (Esc → Display) shows the polished floor, the mirror upstairs and the pool reflecting.', x: 7, y: -3.4, z: 0.8, elementId: 0, level: 'Level 1',
+      status: 'closed' },
+    { id: '5a3c1e2b7d4f4c8e9a1b2c3d4e5f6004', author: 'BimGo', created,
+      text: 'P opens the section box (Shift+P cuts at the wall you aim at, Ctrl+P clears), M is photo mode (stills and 360°), J the sun and daylight study. Esc → COMMENTS exports these issues to BCF.',
+      x: 7, y: 0.4, z: 2.2, elementId: 0, level: 'Level 1',
+      view: { x: 7, y: -7, z: 0, yaw: Math.PI / 2, pitch: 0.02, flying: false, section: CAFE_CUT } }
   ]
 };
 const bookmarks = {
@@ -318,7 +340,9 @@ const bookmarks = {
   bookmarks: [
     { id: 'sample-b1', name: 'Street view', author: 'BimGo', created, x: 7, y: -13, z: 0, yaw: Math.PI / 2, pitch: 0.06, flying: false, level: 'Level 1' },
     { id: 'sample-b2', name: 'Cafe', author: 'BimGo', created, x: 9.2, y: 2.2, z: 0, yaw: 0.9, pitch: -0.1, flying: false, level: 'Level 1' },
-    { id: 'sample-b3', name: 'Studio', author: 'BimGo', created, x: 12.8, y: 1.2, z: L2, yaw: 2.6, pitch: -0.1, flying: false, level: 'Level 2' }
+    { id: 'sample-b3', name: 'Studio', author: 'BimGo', created, x: 12.8, y: 1.2, z: L2, yaw: 2.6, pitch: -0.1, flying: false, level: 'Level 2' },
+    { id: 'sample-b4', name: 'Section through the ground floor', author: 'BimGo', created, x: 7, y: -7, z: 0, yaw: Math.PI / 2, pitch: 0.02, flying: false,
+      level: 'Level 1', section: CAFE_CUT }
   ]
 };
 const sun = { version: 1, enabled: true, time: { month: 6, day: 21, minutes: 870, daylightSaving: false }, sunIntensity: 1, skyIntensity: 1, shadowIntensity: 0.85, glassTransmission: 1 };

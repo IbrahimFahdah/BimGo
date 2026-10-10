@@ -24,13 +24,68 @@ export interface SunHoursSettings {
   wallOffset: number;
   /** True when glass stops direct sun (default: sun passes through glazing). */
   glassBlocks: boolean;
+  /** The pass / fail test: off (values and their legend) or on (cells pass or fail the mode's target). */
+  target: SunTarget;
+  /** Sun hours: hours of direct sun a cell needs to pass (0.5–12, default 2). */
+  targetHours: number;
+  /** What the study computes (daylight round). */
+  mode: StudyMode;
+  /** Daylight modes: horizontal faces are tested this high above them (m, 0–2; default 0.7 work plane). */
+  workPlane: number;
+  /** Daylight modes: rays per cell towards the sky (128, 256 or 512; default 256). */
+  rays: number;
+  /** Illuminance: include direct sun (off: the sky only). */
+  directSun: boolean;
+  /** Daylight modes: standard reflectances (ceiling 0.7, walls 0.5, floor 0.2) instead of the colours'. */
+  standardReflectance: boolean;
+  /** Daylight factor: the % a cell needs to pass (0.5–10, default 2). */
+  factorTarget: number;
+  /** Illuminance: the lux a cell must reach (50–5000, default 300) ... */
+  luxTarget: number;
+  /** ... for at least this share of the time samples (0.1–1, default 0.5). */
+  luxShare: number;
+}
+
+/** What the study panel (J) computes (port of StudyMode). */
+export enum StudyMode {
+  SunHours = 0,
+  DaylightFactor = 1,
+  Illuminance = 2
+}
+
+/** The pass / fail test. Stored as a number: 1 and 2 (presets in an earlier build) read as on. */
+export enum SunTarget {
+  Off = 0,
+  On = 3
 }
 
 export const SUN_HOURS_GRID_SIZES = [0.1, 0.25, 0.5, 1];
 export const SUN_HOURS_STEPS = [5, 10, 15];
+export const STUDY_RAY_COUNTS = [128, 256, 512];
 
 export function defaultSunHoursSettings(): SunHoursSettings {
-  return { month: 6, day: 21, startMinutes: 9 * 60, endMinutes: 15 * 60, stepMinutes: 5, daylightSaving: false, gridSize: 0.25, floorOffset: 0, wallOffset: 0, glassBlocks: false };
+  return {
+    month: 6, day: 21, startMinutes: 9 * 60, endMinutes: 15 * 60, stepMinutes: 5, daylightSaving: false, gridSize: 0.25, floorOffset: 0,
+    wallOffset: 0, glassBlocks: false, target: SunTarget.Off, targetHours: 2, mode: StudyMode.SunHours, workPlane: 0.7, rays: 256,
+    directSun: true, standardReflectance: false, factorTarget: 2, luxTarget: 300, luxShare: 0.5
+  };
+}
+
+/** True when the pass / fail test is on. */
+export const passFail = (s: SunHoursSettings) => s.target !== SunTarget.Off;
+
+/** The offset horizontal faces are tested at: the floor offset (sun hours) or the work plane (daylight). */
+export const horizontalOffset = (s: SunHoursSettings) => (s.mode === StudyMode.SunHours ? s.floorOffset : s.workPlane);
+
+/** Math.Round's default (half to even), so snapped values match the desktop. */
+function roundEven(v: number): number {
+  const r = Math.round(v);
+  return Math.abs(v % 1) === 0.5 && r % 2 !== 0 ? r - 1 : r;
+}
+
+/** A finite value clamped to a range and rounded to a step (else the default). */
+function snap(value: number, min: number, max: number, step: number, fallback: number): number {
+  return Number.isFinite(value) ? Math.fround(roundEven(Math.min(Math.max(value, min), max) / step) * step) : fallback;
 }
 
 function daysInMonth(year: number, month: number): number {
@@ -56,7 +111,17 @@ export function cleanSunHoursSettings(s: SunHoursSettings, year: number): SunHou
     gridSize: nearest(SUN_HOURS_GRID_SIZES, s.gridSize),
     floorOffset: Number.isFinite(s.floorOffset) ? clamp(s.floorOffset, 0, 2) : 0,
     wallOffset: Number.isFinite(s.wallOffset) ? clamp(s.wallOffset, 0, 1) : 0,
-    glassBlocks: s.glassBlocks
+    glassBlocks: s.glassBlocks,
+    target: s.target === SunTarget.Off || !s.target ? SunTarget.Off : SunTarget.On,
+    targetHours: snap(s.targetHours, 0.5, 12, 0.25, 2),
+    mode: [StudyMode.SunHours, StudyMode.DaylightFactor, StudyMode.Illuminance].includes(s.mode) ? s.mode : StudyMode.SunHours,
+    workPlane: Number.isFinite(s.workPlane) ? clamp(s.workPlane, 0, 2) : 0.7,
+    rays: nearest(STUDY_RAY_COUNTS, s.rays),
+    directSun: s.directSun,
+    standardReflectance: s.standardReflectance,
+    factorTarget: snap(s.factorTarget, 0.5, 10, 0.5, 2),
+    luxTarget: snap(s.luxTarget, 50, 5000, 50, 300),
+    luxShare: snap(s.luxShare, 0.1, 1, 0.1, 0.5)
   };
 }
 
@@ -90,6 +155,16 @@ export const SunHours = {
       directions.push(SolarPosition.toModel(SolarPosition.direction(altitude, azimuth), north));
     }
     return { directions, samples, locationKnown: known };
+  },
+
+  /** Pass colour (green, RGB 0–1) for pass / fail colouring. */
+  PASS: [0.20, 0.72, 0.36] as [number, number, number],
+  /** Fail colour (red, RGB 0–1). */
+  FAIL: [0.86, 0.22, 0.20] as [number, number, number],
+
+  /** True when a cell's hours meet the target (with a small tolerance for sample rounding). */
+  passes(hours: number, targetHours: number): boolean {
+    return hours >= targetHours - 1e-4;
   },
 
   /** The legend colour of a number of hours (0 → blue, LEGEND_MAX and over → red), RGB 0–1. */

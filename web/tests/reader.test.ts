@@ -119,7 +119,11 @@ describe('sample model', () => {
     expect(doc.scene.rooms.map(r => r.name)).toEqual(['Lobby', 'Cafe', 'Studio']);
     expect(doc.scene.lighting.lights.length).toBe(7);
     expect(doc.scene.elements.some(e => e.movable)).toBe(true);
-    expect(doc.bookmarks.bookmarks.length).toBe(3);
+    expect(doc.bookmarks.bookmarks.length).toBe(4);
+    expect(doc.bookmarks.bookmarks[3].section?.planeOn).toBe(true);
+    expect(doc.comments.comments.every(c => /^[0-9a-f]{32}$/.test(c.id))).toBe(true);
+    expect(doc.scene.elements.find(e => e.uniqueId)?.ifcGuid).toHaveLength(22);
+    expect(doc.scene.site?.hasSharedTransform).toBe(true);
     expect(doc.sun?.enabled).toBe(true);
   });
 });

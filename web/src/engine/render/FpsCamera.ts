@@ -1,5 +1,5 @@
 import { type Matrix4x4, Mat4 } from '../../core/math/Matrix4x4';
-import { clamp, type Vec2, type Vec3, vec3 } from '../../core/math/Vector';
+import { clamp, type Vec2, type Vec3, Vec3 as V, vec3 } from '../../core/math/Vector';
 import type { Aabb } from '../../core/scene/SceneData';
 
 /**
@@ -31,6 +31,21 @@ export class FpsCamera {
   /** Frustum planes (a, b, c, d) × 6. */
   readonly planes = new Float32Array(24);
 
+  // Photo mode: a view direction / up given outright (360 panorama faces, straight up and down)
+  private customForward: Vec3 | null = null;
+  private customUp: Vec3 = vec3(0, 0, 1);
+
+  /** Looks along a direction with a given up vector until clearCustomView (yaw / pitch are ignored meanwhile). */
+  setCustomView(forward: Vec3, up: Vec3): void {
+    this.customForward = V.normalize(forward);
+    this.customUp = V.normalize(up);
+  }
+
+  /** Back to yaw / pitch. */
+  clearCustomView(): void {
+    this.customForward = null;
+  }
+
   update(): void {
     this.pitch = clamp(this.pitch, -1.553, 1.553);
     const cp = Math.cos(this.pitch), sp = Math.sin(this.pitch);
@@ -39,13 +54,22 @@ export class FpsCamera {
     this.forward = vec3(cp * cy, cp * sy, sp);
     this.flatForward = vec3(cy, sy, 0);
     this.right = vec3(sy, -cy, 0);
+    let up = vec3(0, 0, 1);
+    if (this.customForward) {
+      const f = this.customForward;
+      this.forward = f;
+      up = this.customUp;
+      this.right = V.normalize(V.cross(f, up));
+      const flat = vec3(f.x, f.y, 0);
+      this.flatForward = V.lengthSquared(flat) > 1e-6 ? V.normalize(flat) : vec3(-up.x, -up.y, 0);
+    }
 
     const hfov = this.horizontalFovDegrees * Math.PI / 180;
     this.fovY = 2 * Math.atan(Math.tan(hfov * 0.5) / Math.max(this.aspect, 0.1));
     this.pixelScale = 2 * Math.tan(this.fovY * 0.5) / Math.max(this.viewportHeight, 1);
 
     const p = this.position, f = this.forward;
-    this.view = Mat4.createLookAt(p, vec3(p.x + f.x, p.y + f.y, p.z + f.z), vec3(0, 0, 1));
+    this.view = Mat4.createLookAt(p, vec3(p.x + f.x, p.y + f.y, p.z + f.z), up);
     this.projection = FpsCamera.perspective(this.fovY, this.aspect, FpsCamera.NEAR, FpsCamera.FAR);
     this.viewProjection = Mat4.multiply(this.view, this.projection);
     this.inverseViewProjection = Mat4.invert(this.viewProjection) ?? Mat4.identity();

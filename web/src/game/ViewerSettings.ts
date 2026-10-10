@@ -1,3 +1,4 @@
+import { BcfCoordinates } from '../core/format/Bcf';
 import { clamp } from '../core/math/Vector';
 import { CoordinateReadout } from '../core/scene/SiteCoordinates';
 import { ShadowQuality } from '../engine/render/ShadowMaps';
@@ -46,6 +47,10 @@ export class ViewerSettings {
   proxyMissing = true;
   /** Realistic: proxies take the material's colour. */
   proxyMaterialColour = true;
+  /** The coordinates BCF viewpoints are written in and read with. */
+  bcfCoordinates = BcfCoordinates.Shared;
+  /** Section box cap colour, "#RRGGBB" (default dark grey). */
+  sectionCapColour = '#3D4045';
 
   get whitecard(): boolean {
     return this.colour === ColourMode.Whitecard;
@@ -75,6 +80,8 @@ export class ViewerSettings {
     if (typeof raw.reflectionThreshold === 'number') { s.reflectionThreshold = raw.reflectionThreshold <= 37 ? 25 : 50; }
     if (typeof raw.reflectionStrength === 'number' && Number.isFinite(raw.reflectionStrength)) { s.reflectionStrength = clamp(raw.reflectionStrength, 0.5, 2); }
     if (typeof raw.probeResolution === 'number') { s.probeResolution = raw.probeResolution >= 192 ? 256 : 128; }
+    if (typeof raw.bcfCoordinates === 'number' && [0, 1, 2].includes(raw.bcfCoordinates)) { s.bcfCoordinates = raw.bcfCoordinates; }
+    if (typeof raw.sectionCapColour === 'string' && /^#?[0-9a-fA-F]{6}$/.test(raw.sectionCapColour.trim())) { s.sectionCapColour = raw.sectionCapColour.trim(); }
     return s;
   }
 
@@ -99,7 +106,9 @@ export class ViewerSettings {
       reflectionProbes: this.reflectionProbes,
       probeResolution: this.probeResolution,
       proxyMissing: this.proxyMissing,
-      proxyMaterialColour: this.proxyMaterialColour
+      proxyMaterialColour: this.proxyMaterialColour,
+      bcfCoordinates: this.bcfCoordinates,
+      sectionCapColour: this.sectionCapColour
     });
   }
 }
