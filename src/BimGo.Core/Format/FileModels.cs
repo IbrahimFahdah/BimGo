@@ -218,6 +218,9 @@ namespace BimGo.Format
     {
         public long Id { get; set; }
         public string UniqueId { get; set; }
+
+        /// <summary>The IFC GUID (BCF round; optional, absent in older files).</summary>
+        public string IfcGuid { get; set; }
         public string Name { get; set; }
 
         /// <summary>Index into <see cref="ModelDto.Categories"/>.</summary>

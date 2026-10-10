@@ -346,6 +346,15 @@ namespace BimGo.Scene
         /// <summary>The walkthrough's coordinate readout (L cycles it; remembered between sessions).</summary>
         public CoordinateReadout CoordinateReadout { get; set; } = CoordinateReadout.Off;
 
+        /// <summary>Section box cap colour, "#RRGGBB" (section box round; default dark grey).</summary>
+        public string SectionCapColour { get; set; } = DEFAULT_CAP_COLOUR;
+
+        /// <summary>The default section cap colour.</summary>
+        public const string DEFAULT_CAP_COLOUR = "#3D4045";
+
+        /// <summary>The coordinates BCF viewpoints are written in and read with (BCF round; default shared).</summary>
+        public Format.BcfCoordinates BcfCoordinates { get; set; } = Format.BcfCoordinates.Shared;
+
         /// <summary>Move increments offered for gizmo snapping (mm).</summary>
         public static readonly float[] SNAP_MOVE_STEPS_MM = { 5f, 10f, 25f, 50f, 100f, 250f, 500f, 1000f };
 
@@ -487,6 +496,8 @@ namespace BimGo.Scene
             ExistingPhase = ExistingPhase?.Trim() ?? string.Empty;
             NewPhase = NewPhase?.Trim() ?? string.Empty;
             if (!Enum.IsDefined(CoordinateReadout)) { CoordinateReadout = CoordinateReadout.Off; }
+            if (!Enum.IsDefined(BcfCoordinates)) { BcfCoordinates = Format.BcfCoordinates.Shared; }
+            if (!TryParseColour(SectionCapColour, out _)) { SectionCapColour = DEFAULT_CAP_COLOUR; }
             if (!Enum.IsDefined(ShadowQuality)) { ShadowQuality = ShadowQuality.Medium; }
             if (!Enum.IsDefined(ArtificialLights)) { ArtificialLights = ArtificialLightMode.Lights; }
             if (!Enum.IsDefined(Colour)) { Colour = ColourMode.Material; }
@@ -528,5 +539,14 @@ namespace BimGo.Scene
         }
 
         #endregion
+
+        /// <summary>Reads "#RRGGBB" (the # optional) as 0xRRGGBB.</summary>
+        /// <returns>False when the text isn't a colour.</returns>
+        public static bool TryParseColour(string text, out uint rgb)
+        {
+            rgb = 0;
+            string hex = (text ?? string.Empty).Trim().TrimStart('#');
+            return hex.Length == 6 && uint.TryParse(hex, System.Globalization.NumberStyles.AllowHexSpecifier, System.Globalization.CultureInfo.InvariantCulture, out rgb);
+        }
     }
 }

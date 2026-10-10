@@ -222,6 +222,9 @@ namespace BimGo.Game
             SnapMoveMm = LaunchSettings.NearestStep(LaunchSettings.SNAP_MOVE_STEPS_MM, settings.SnapMoveMm);
             SnapAngleDeg = LaunchSettings.NearestStep(LaunchSettings.SNAP_ANGLE_STEPS_DEG, settings.SnapAngleDeg);
             InitialiseCoordinates(settings.CoordinateReadout);
+            _bcfCoordinates = settings.BcfCoordinates;
+            if (LaunchSettings.TryParseColour(settings.SectionCapColour, out uint capRgb)) { SetCapColour(capRgb); }
+            _sectionNotice = null;
             InitialiseLights(settings);
         }
 
@@ -583,6 +586,20 @@ namespace BimGo.Game
                 return;
             }
 
+            // Photo mode has the cursor: RMB-drag looks, Enter shoots
+            if (_photoOpen && !_paused)
+            {
+                UpdatePhotoMode(input);
+                return;
+            }
+
+            // The section box editor has the cursor: RMB-drag looks, handles drag the cut
+            if (_sectionOpen && !_paused)
+            {
+                UpdateSectionEditor(input);
+                return;
+            }
+
             // The sun panel has the cursor: the player stands still and its keys take over
             if (_sunPanelOpen && !_paused)
             {
@@ -637,6 +654,11 @@ namespace BimGo.Game
                 if (input.IsPressed('F') && !_paused)
                 {
                     OpenRooms();
+                    return;
+                }
+                if (input.IsPressed('P') && !_paused)
+                {
+                    ClearSection();
                     return;
                 }
 
@@ -694,6 +716,17 @@ namespace BimGo.Game
             if (input.IsPressed('J'))
             {
                 OpenSunHours();
+                return;
+            }
+            if (input.IsPressed('M'))
+            {
+                OpenPhotoMode();
+                return;
+            }
+            if (input.IsPressed('P'))
+            {
+                if (input.IsDown(Vk.VK_SHIFT)) { QuickSectionPlane(); }
+                else { OpenSectionEditor(); }
                 return;
             }
             if (input.IsPressed('K')) { CycleLightMode(); }
@@ -956,25 +989,38 @@ namespace BimGo.Game
         }
 
         /// <summary>
-        /// Picks against visible geometry: the static scene and moved / cloned elements.
+        /// Picks against visible geometry: the static scene and moved / cloned elements. Geometry the section cut
+        /// removes is passed through (tools ignore it; collision doesn't).
         /// </summary>
-        public bool Pick(Vector3 origin, Vector3 direction, float maxDistance, out RayHit hit)
-        {
-            bool hitStatic = _bvh.Raycast(origin, direction, maxDistance, _pickMask, out hit);
-            float limit = hitStatic ? hit.Distance : maxDistance;
-            if (Dynamics != null && Dynamics.Raycast(origin, direction, limit, out RayHit dynamicHit))
-            {
-                hit = dynamicHit;
-                return true;
-            }
-            return hitStatic;
-        }
+        public bool Pick(Vector3 origin, Vector3 direction, float maxDistance, out RayHit hit) =>
+            PickExcluding(origin, direction, maxDistance, null, out hit);
 
         /// <summary>
         /// Picks like <see cref="Pick"/> but ignores one moved / cloned element (drop to floor casts from inside the
         /// element's own box). A moved original's static copy is already hidden, so only the instance needs leaving out.
+        /// Hits in geometry the section cut removes are skipped (the ray carries on past them).
         /// </summary>
         public bool PickExcluding(Vector3 origin, Vector3 direction, float maxDistance, DynamicInstance exclude, out RayHit hit)
+        {
+            if (_sectionCount == 0) { return PickOnce(origin, direction, maxDistance, exclude, out hit); }
+
+            float travelled = 0f;
+            for (int attempt = 0; attempt < 16 && travelled < maxDistance; attempt++)
+            {
+                if (!PickOnce(origin + direction * travelled, direction, maxDistance - travelled, exclude, out hit)) { return false; }
+                if (!SectionCut.IsCut(_sectionPlanes, _sectionCount, hit.Point))
+                {
+                    hit.Distance += travelled;
+                    return true;
+                }
+                travelled += hit.Distance + 0.002f;
+            }
+            hit = default;
+            return false;
+        }
+
+        /// <summary>One pick against the static scene and the moved / placed elements (the cut not considered).</summary>
+        private bool PickOnce(Vector3 origin, Vector3 direction, float maxDistance, DynamicInstance exclude, out RayHit hit)
         {
             bool hitStatic = _bvh.Raycast(origin, direction, maxDistance, _pickMask, out hit);
             float limit = hitStatic ? hit.Distance : maxDistance;
@@ -1029,6 +1075,8 @@ namespace BimGo.Game
             settings.SnapMoveMm = SnapMoveMm;
             settings.SnapAngleDeg = SnapAngleDeg;
             settings.CoordinateReadout = _coordinateReadout;
+            settings.BcfCoordinates = _bcfCoordinates;
+            settings.SectionCapColour = $"#{_capRgb:X6}";
             settings.ShadowQuality = _shadowQuality;
             settings.Save();
         }
@@ -1049,6 +1097,9 @@ namespace BimGo.Game
             _renderer?.Dispose();
             _overlay.Dispose();
             _sunOverlay?.Dispose();
+            _sectionOverlay?.Dispose();
+            _photoTarget?.Dispose();
+            _photoResolve?.Dispose();
             _target.Dispose();
             _ui?.Dispose();
         }

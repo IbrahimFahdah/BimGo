@@ -17,6 +17,7 @@ namespace BimGo.Format
     /// parameters.json   optional extra parameters (pooled strings)
     /// geometry.bin      header + SceneVertex[] (28 B each) + uint[] indices, little-endian
     /// comments.json     comment markers
+    /// comments/…        comment pictures for BCF snapshots (JPEG), referenced from comments.json (optional)
     /// journal.json      ordered edits (replayed on load; never baked into the geometry)
     /// bookmarks.json    saved viewpoints and the home viewpoint (optional; only written when there are some)
     /// sun.json          sun / shadow state: on/off, date, time, intensities (optional)

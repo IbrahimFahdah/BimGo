@@ -704,6 +704,7 @@ namespace BimGo.Extraction
             {
                 ElementId = element.Id.Value,
                 UniqueId = element.UniqueId ?? string.Empty,
+                IfcGuid = IfcGuidOf(element),
                 HostId = HostIdOf(element),
                 Name = SafeName(element),
                 CategoryName = element.Category?.Name ?? def.Label,
@@ -1053,6 +1054,26 @@ namespace BimGo.Extraction
         #endregion
 
         #region Metadata
+
+        /// <summary>
+        /// The element's IFC GUID as Revit's IFC exporter writes it (BCF round): the stored "IfcGUID" parameter when
+        /// it holds a valid one (models exported with "store the IFC GUID"), else the export id compressed. Empty when
+        /// neither is available. Reads only; nothing in the model changes.
+        /// </summary>
+        private static string IfcGuidOf(Element element)
+        {
+            try
+            {
+                string stored = element.get_Parameter(BuiltInParameter.IFC_GUID)?.AsString();
+                if (IfcGuid.IsValid(stored)) { return stored; }
+                Guid exportId = ExportUtils.GetExportId(element.Document, element.Id);
+                return exportId == Guid.Empty ? string.Empty : IfcGuid.Encode(exportId);
+            }
+            catch
+            {
+                return string.Empty;
+            }
+        }
 
         private static string SafeName(Element element)
         {

@@ -7,6 +7,93 @@ namespace BimGo.Rendering
     /// </summary>
     internal static class Shaders
     {
+        #region Section cut (section box round)
+
+        /// <summary>
+        /// The section cut, shared by the scene and geometry pre-pass fragment shaders (after their #version line):
+        /// up to 7 planes (n, d) in scene-local coordinates; a point with n·p > d is cut away. uClipCount 0 = no cut
+        /// (the default for passes that ignore it: shadows, probes, the minimap).
+        /// </summary>
+        public const string CLIP_GLSL = @"
+uniform int uClipCount;
+uniform vec4 uClipPlanes[7];
+bool sectionCut(vec3 p)
+{
+    for (int i = 0; i < uClipCount; i++)
+    {
+        if (dot(uClipPlanes[i].xyz, p) > uClipPlanes[i].w) return true;
+    }
+    return false;
+}
+";
+
+        /// <summary>
+        /// Section caps, stencil pass (vertex shader: <see cref="SCENE_VS"/>): the scene cut by one plane only, written
+        /// to the stencil (INVERT) with no colour; pixels left odd look into a solid the plane cuts.
+        /// With uCapColour.a > 0 (element-colour caps, drawn on back faces) it writes the surface's own colour, darkened.
+        /// </summary>
+        public const string CAP_STENCIL_FS = @"#version 330 core
+in vec3 vWorld;
+in vec4 vColor;
+uniform vec4 uCapPlane;
+uniform float uCapShade;
+out vec4 oColor;
+void main()
+{
+    if (dot(uCapPlane.xyz, vWorld) > uCapPlane.w) discard;
+    oColor = vec4(vColor.rgb * uCapShade, 1.0);
+}";
+
+        /// <summary>Section caps, cap polygon: a face of the box or the free plane, positions in scene-local metres.</summary>
+        public const string CAP_VS = @"#version 330 core
+layout(location = 0) in vec3 aPos;
+uniform mat4 uViewProj;
+out vec3 vWorld;
+void main()
+{
+    vWorld = aPos;
+    gl_Position = uViewProj * vec4(aPos, 1.0);
+}";
+
+        /// <summary>
+        /// Section caps, cap polygon fragment shader: cut by every other plane of the cut (uSkip is its own), flat
+        /// colour.
+        /// </summary>
+        public const string CAP_FS = "#version 330 core\n" + @"
+uniform int uClipCount;
+uniform vec4 uClipPlanes[7];
+uniform int uSkip;
+uniform vec4 uColor;
+in vec3 vWorld;
+out vec4 oColor;
+void main()
+{
+    for (int i = 0; i < uClipCount; i++)
+    {
+        if (i != uSkip && dot(uClipPlanes[i].xyz, vWorld) > uClipPlanes[i].w + 0.0005) discard;
+    }
+    oColor = uColor;
+}";
+
+        #endregion
+
+        #region Photo mode
+
+        /// <summary>
+        /// Photo exposure (vertex shader: <see cref="FULLSCREEN_VS"/>): a flat colour blended over the scene with
+        /// glBlendFunc(DST_COLOR, ZERO) (darker: colour = factor) or (DST_COLOR, ONE) (brighter: colour = factor − 1).
+        /// </summary>
+        public const string EXPOSURE_FS = @"#version 330 core
+in vec2 vNdc;
+uniform vec3 uColor;
+out vec4 oColor;
+void main()
+{
+    oColor = vec4(uColor, 1.0);
+}";
+
+        #endregion
+
         #region Scene (static batches; uModel is identity except for moved / cloned elements)
 
         /// <summary>
@@ -493,7 +580,7 @@ vec3 shoulder(vec3 c)
 }
 ";
 
-        public const string SCENE_FS = "#version 330 core\n" + SUN_GLSL + AO_GLSL + LIGHTS_GLSL + MATERIALS_GLSL + @"
+        public const string SCENE_FS = "#version 330 core\n" + CLIP_GLSL + SUN_GLSL + AO_GLSL + LIGHTS_GLSL + MATERIALS_GLSL + @"
 in vec3 vWorld;
 in vec3 vNormal;
 in vec4 vColor;
@@ -515,6 +602,7 @@ void main()
     vec2 uvDx = dFdx(vUv);
     vec2 uvDy = dFdy(vUv);
     if (vWorld.z < uClipZ.x || vWorld.z > uClipZ.y) discard;
+    if (sectionCut(vWorld)) discard;
 
     vec4 base = vColor;
     float reflectivity = 0.0;
@@ -760,7 +848,7 @@ void main()
         /// view depth (metres along the camera's forward axis); cleared to 0 = nothing there (sky). 1: glow (emissive
         /// colour × uGlow, already hidden behind whatever is in front), the bloom's source; only bound when glow is on.
         /// </summary>
-        private const string GEOMETRY_GLSL = @"#version 330 core
+        private const string GEOMETRY_GLSL = "#version 330 core\n" + CLIP_GLSL + @"
 uniform vec3 uEye;
 uniform vec3 uRight;
 uniform vec3 uUp;
@@ -785,6 +873,7 @@ in vec3 vNormal;
 in vec3 vEmissive;
 void main()
 {
+    if (sectionCut(vWorld)) discard;
     writeGeometry(vWorld, vNormal);
     oGlow = vec4(vEmissive * uGlow, 1.0);
 }";

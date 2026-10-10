@@ -11,7 +11,7 @@ namespace BimGo.Game
     /// <summary>
     /// The comment list (pause menu → COMMENTS): every comment as an issue, with its thumbnail, status, priority,
     /// assignee and reply count, filtered by level and status; GO (back to the view it was made from), OPEN (the detail
-    /// view: status, priority, assignee, the reply thread, SET VIEW HERE, EDIT TEXT) and DELETE; CSV export.
+    /// view: status, priority, assignee, the reply thread, SET VIEW HERE, EDIT TEXT) and DELETE; BCF export / import.
     /// </summary>
     internal sealed partial class GameSession
     {
@@ -91,20 +91,30 @@ namespace BimGo.Game
             if (record == null || _player == null) { return; }
             if (Comments.TryGetView(record, out Vector3 viewFeet))
             {
+                if (record.View.Section != null) { ApplySection(record.View.Section, announce: false); }
                 if (record.View.Flying != _player.Flying) { _player.ToggleFly(); }
                 _player.TeleportTo(viewFeet, record.View.Yaw, Math.Clamp(record.View.Pitch, -1.5f, 1.5f));
                 return;
             }
 
-            Vector3 marker = record.Local;
+            ApproachMarker(record.Local, out Vector3 feet, out float yaw, out float pitch);
+            if (_player.Flying) { _player.ToggleFly(); }
+            _player.TeleportTo(feet, yaw, pitch);
+        }
 
+        /// <summary>
+        /// A standing spot 1.6 m from a marker on the player's side (or under it when that spot is blocked), on the
+        /// marker's level, looking at it: GO for comments without a saved view, and their BCF viewpoint.
+        /// </summary>
+        private void ApproachMarker(Vector3 marker, out Vector3 feet, out float yaw, out float pitch)
+        {
             // Approach from the player's side (so we don't end up on the far side of a wall)
             var toMarker = new Vector2(marker.X - _player.Feet.X, marker.Y - _player.Feet.Y);
             Vector2 direction = toMarker.LengthSquared() > 0.01f ? Vector2.Normalize(toMarker) : new Vector2(1f, 0f);
             Vector2 standXY = new Vector2(marker.X, marker.Y) - direction * 1.6f;
 
             float floorZ = Scene.Levels.Length > 0 ? Scene.Levels[LevelIndexAt(marker.Z)].Elevation : marker.Z - 1.2f;
-            Vector3 feet = FloorAt(standXY, floorZ);
+            feet = FloorAt(standXY, floorZ);
 
             // Blocked (inside a wall or furniture)? Stand under the marker instead
             if (_player.Controller.Overlaps(feet + new Vector3(0f, 0f, 0.01f), CharacterController.STAND_HEIGHT))
@@ -114,10 +124,8 @@ namespace BimGo.Game
 
             Vector3 eye = feet + new Vector3(0f, 0f, CharacterController.STAND_EYE);
             Vector3 look = marker - eye;
-            float yaw = MathF.Atan2(look.Y, look.X);
-            float pitch = MathF.Atan2(look.Z, MathF.Max(0.01f, new Vector2(look.X, look.Y).Length()));
-            if (_player.Flying) { _player.ToggleFly(); }
-            _player.TeleportTo(feet, yaw, Math.Clamp(pitch, -1.2f, 1.2f));
+            yaw = MathF.Atan2(look.Y, look.X);
+            pitch = Math.Clamp(MathF.Atan2(look.Z, MathF.Max(0.01f, new Vector2(look.X, look.Y).Length())), -1.2f, 1.2f);
         }
 
         /// <summary>
@@ -131,22 +139,6 @@ namespace BimGo.Game
                 feet.Z = hit.Point.Z + 0.02f;
             }
             return feet;
-        }
-
-        /// <summary>
-        /// Saves every comment to a CSV file.
-        /// </summary>
-        private void ExportComments()
-        {
-            _window.SetCaptured(false);
-            _window.Input.ReleaseAll();
-            string name = Path.GetFileNameWithoutExtension(DocumentName) + " comments.csv";
-            string path = FileDialogs.ShowSave(_window.Handle, "Export comments", "CSV file (*.csv)|*.csv|All files (*.*)|*.*", SuggestedFolder(), name, ".csv");
-            if (path == null) { return; }
-
-            string error = Comments.ExportCsv(path);
-            _commentsNotice = error == null ? $"Exported {Comments.Comments.Count} comments to {Path.GetFileName(path)}" : $"Export failed: {error}";
-            Sound.Play(error == null ? SoundId.Commit : SoundId.Error);
         }
 
         /// <summary>
@@ -218,8 +210,17 @@ namespace BimGo.Game
             if (_commentDetail != null) { return; }
 
             if (_commentsNotice != null) { _ui.TextWrapped(f.Body, ix, buttonsY - S(30), iw, _commentsNotice, UiTheme.MEASURE_TEXT, maxLines: 1); }
-            if (MenuButton(f, ix, buttonsY, S(200), "EXPORT CSV…", false, false, enabled: Comments.Comments.Count > 0)) { ExportComments(); }
-            if (MenuButton(f, ix + S(216), buttonsY, S(160), "CLOSE", false, false)) { CloseComments(); }
+            // EXPORT BCF (the comments shown) · IMPORT BCF · BCF coordinates · CLOSE
+            float gap = S(10);
+            float bw = MathF.Min(S(230), (iw - gap * 3) / 4f);
+            float bx = ix;
+            if (MenuButton(f, bx, buttonsY, bw, "EXPORT BCF…", false, false, enabled: Comments.Comments.Count > 0)) { ExportBcf(); }
+            bx += bw + gap;
+            if (MenuButton(f, bx, buttonsY, bw, "IMPORT BCF…", false, false)) { ImportBcf(); }
+            bx += bw + gap;
+            if (MenuButton(f, bx, buttonsY, bw, BcfCoordinateLabel, false, false)) { CycleBcfCoordinates(); }
+            bx += bw + gap;
+            if (MenuButton(f, bx, buttonsY, bw, "CLOSE", false, false)) { CloseComments(); }
         }
 
         /// <summary>
@@ -413,7 +414,7 @@ namespace BimGo.Game
             if (MenuButton(f, bx, buttonsY, bw, "SET VIEW HERE", false, false, height: S(44)))
             {
                 // Where the player stands now (the picture is taken from the 3D view behind the menu, next frame)
-                Comments.SetView(record, _player.Feet, _player.Yaw, _player.Pitch, _player.Flying);
+                Comments.SetView(record, _player.Feet, _player.Yaw, _player.Pitch, _player.Flying, section: _section);
                 _commentThumbnailFor = record;
                 _commentsNotice = Comments.LastError ?? "View and picture set to where you stand";
                 Sound.Play(SoundId.Commit);

@@ -79,6 +79,7 @@ namespace BimGo.Game
         public void BeginCommentEdit(Vector3 point, long elementId, string level)
         {
             _editing = true;
+            _editSunStudy = false;
             _editRecord = null;
             _editBookmark = null;
             _editReplyFor = _editAssigneeFor = null;
@@ -97,6 +98,7 @@ namespace BimGo.Game
         {
             if (record == null) { return; }
             _editing = true;
+            _editSunStudy = false;
             _editRecord = record;
             _editBookmark = null;
             _editReplyFor = _editAssigneeFor = null;
@@ -119,6 +121,7 @@ namespace BimGo.Game
         {
             if (record == null) { return; }
             _editing = true;
+            _editSunStudy = false;
             _editRecord = null;
             _editBookmark = record;
             _editReplyFor = _editAssigneeFor = null;
@@ -137,6 +140,7 @@ namespace BimGo.Game
         {
             if (record == null) { return; }
             _editing = true;
+            _editSunStudy = false;
             _editRecord = null;
             _editBookmark = null;
             _editAssigneeFor = null;
@@ -154,6 +158,7 @@ namespace BimGo.Game
         {
             if (record == null) { return; }
             _editing = true;
+            _editSunStudy = false;
             _editRecord = null;
             _editBookmark = null;
             _editReplyFor = null;
@@ -189,6 +194,10 @@ namespace BimGo.Game
                             if (_editBookmarkIsNew && _thumbnailFor == _editBookmark) { _thumbnailFor = null; }
                             Toast(_editBookmarkIsNew ? "Bookmark cancelled (nothing was saved)" : "Name not changed");
                         }
+                        else if (_editSunStudy)
+                        {
+                            Toast("Study not saved");
+                        }
                         else if (_editReplyFor != null || _editAssigneeFor != null)
                         {
                             Toast(_editReplyFor != null ? "Reply cancelled" : "Assignee not changed");
@@ -200,6 +209,7 @@ namespace BimGo.Game
                         _editRecord = null;
                         _editBookmark = null;
                         _editReplyFor = _editAssigneeFor = null;
+                        _editSunStudy = false;
                         return;
 
                     default:
@@ -216,9 +226,17 @@ namespace BimGo.Game
             CommentRecord editing = _editRecord;
             BookmarkRecord bookmark = _editBookmark;
             CommentRecord replyTo = _editReplyFor, assignFor = _editAssigneeFor;
+            bool sunStudy = _editSunStudy;
             _editRecord = null;
             _editBookmark = null;
             _editReplyFor = _editAssigneeFor = null;
+            _editSunStudy = false;
+
+            if (sunStudy)
+            {
+                SaveSunStudy(text);
+                return;
+            }
 
             if (replyTo != null)
             {
@@ -268,8 +286,9 @@ namespace BimGo.Game
 
             // The new comment remembers where it was made from, and a picture of that view (taken next frame: the
             // capture reads the 3D view before the UI is drawn, so the text box isn't in it)
-            CommentRecord added = Comments.Add(_editPoint, text, _editElement, _editLevel);
-            Comments.SetView(added, _player.Feet, _player.Yaw, _player.Pitch, _player.Flying);
+            string uniqueId = _editElement > 0 && _elementIndexById.TryGetValue(_editElement, out int elementIndex) ? Scene.Elements[elementIndex].UniqueId : null;
+            CommentRecord added = Comments.Add(_editPoint, text, _editElement, _editLevel, uniqueId);
+            Comments.SetView(added, _player.Feet, _player.Yaw, _player.Pitch, _player.Flying, section: _section);
             _commentThumbnailFor = added;
             Sound.Play(SoundId.CommentPlace);
             Toast(Comments.LastError ?? $"Comment saved to {Comments.FileName}", important: Comments.LastError != null);
@@ -287,10 +306,11 @@ namespace BimGo.Game
             float x = _window.Width * 0.5f - w * 0.5f, y = _window.Height * 0.5f + S(48);
 
             bool naming = _editBookmark != null;
-            uint frame = naming ? UiTheme.BOOKMARK : UiTheme.COMMENT;
-            uint label = naming ? UiTheme.BOOKMARK_LABEL : UiTheme.COMMENT_LABEL;
+            uint frame = _editSunStudy ? UiTheme.SUN : naming ? UiTheme.BOOKMARK : UiTheme.COMMENT;
+            uint label = _editSunStudy ? UiTheme.SUN_LABEL : naming ? UiTheme.BOOKMARK_LABEL : UiTheme.COMMENT_LABEL;
             _ui.Panel(x, y, w, h, UiTheme.PANEL_STRONG, frame);
-            Text.Clear().Append(naming ? "BOOKMARK NAME · "
+            Text.Clear().Append(_editSunStudy ? "SUN STUDY NAME (same name replaces) · "
+                : naming ? "BOOKMARK NAME · "
                 : _editReplyFor != null ? "REPLY · "
                 : _editAssigneeFor != null ? "ASSIGN TO (empty = unassigned) · "
                 : _editRecord != null ? "EDIT COMMENT · " : "NEW COMMENT · ").Append(_editLevel ?? "—");

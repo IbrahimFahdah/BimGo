@@ -77,6 +77,7 @@ namespace BimGo.Game
 
             // The ground plane as it was left (relative to the default, so it survives a re-extraction)
             if (saved.GroundOffset is float ground) { _groundZ = _groundDefault + ground; }
+            RestoreSection(saved.Section);
 
             foreach (string key in saved.HiddenCategories)
             {
@@ -143,7 +144,8 @@ namespace BimGo.Game
             float groundOffset = _groundZ - _groundDefault;
             var settings = new VisibilitySettings
             {
-                GroundOffset = MathF.Abs(groundOffset) > 0.001f ? MathF.Round(groundOffset * 1000f) / 1000f : null
+                GroundOffset = MathF.Abs(groundOffset) > 0.001f ? MathF.Round(groundOffset * 1000f) / 1000f : null,
+                Section = _section.IsActive ? _section.Clone() : null
             };
             foreach (CategoryDef def in CategoryCatalog.All)
             {
