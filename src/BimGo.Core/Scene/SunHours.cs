@@ -39,11 +39,52 @@ namespace BimGo.Scene
         /// <summary>True when glass stops direct sun (default false: sun passes through glazing).</summary>
         public bool GlassBlocks { get; set; }
 
+        /// <summary>The pass / fail test: off (values and their legend) or on (cells pass or fail the mode's target).</summary>
+        public SunTarget Target { get; set; } = SunTarget.Off;
+
+        /// <summary>True when the pass / fail test is on.</summary>
+        [System.Text.Json.Serialization.JsonIgnore]
+        public bool PassFail => Target != SunTarget.Off;
+
+        /// <summary>Sun hours: hours of direct sun a cell needs to pass (0.5–12, default 2).</summary>
+        public float TargetHours { get; set; } = 2f;
+
+        /// <summary>What the study computes (daylight round).</summary>
+        public StudyMode Mode { get; set; } = StudyMode.SunHours;
+
+        /// <summary>Daylight modes: horizontal faces are tested this high above them (m, 0–2; default 0.7 work plane).</summary>
+        public float WorkPlane { get; set; } = 0.7f;
+
+        /// <summary>Daylight modes: rays per cell towards the sky (128, 256 or 512; default 256).</summary>
+        public int Rays { get; set; } = 256;
+
+        /// <summary>Illuminance: include direct sun (off: the sky only, no sun patches).</summary>
+        public bool DirectSun { get; set; } = true;
+
+        /// <summary>Daylight modes: standard reflectances (ceiling 0.7, walls 0.5, floor 0.2) instead of the colours'.</summary>
+        public bool StandardReflectance { get; set; }
+
+        /// <summary>Daylight factor: the % a cell needs to pass (0.5–10, default 2).</summary>
+        public float FactorTarget { get; set; } = 2f;
+
+        /// <summary>Illuminance: the lux a cell must reach (50–5000, default 300) ...</summary>
+        public float LuxTarget { get; set; } = 300f;
+
+        /// <summary>... for at least this share of the time samples to pass (0.1–1, default 0.5).</summary>
+        public float LuxShare { get; set; } = 0.5f;
+
+        /// <summary>The offset horizontal faces are tested at: the floor offset (sun hours) or the work plane (daylight).</summary>
+        [System.Text.Json.Serialization.JsonIgnore]
+        public float HorizontalOffset => Mode == StudyMode.SunHours ? FloorOffset : WorkPlane;
+
         /// <summary>The grid sizes offered.</summary>
         public static readonly float[] GRID_SIZES = { 0.1f, 0.25f, 0.5f, 1f };
 
         /// <summary>The time steps offered (minutes).</summary>
         public static readonly int[] STEPS = { 5, 10, 15 };
+
+        /// <summary>The ray counts offered for daylight modes.</summary>
+        public static readonly int[] RAY_COUNTS = { 128, 256, 512 };
 
         /// <summary>A copy with every value clamped to something sensible (end after start, known grid and step).</summary>
         public SunHoursSettings Clean(int year)
@@ -61,9 +102,35 @@ namespace BimGo.Scene
                 GridSize = GRID_SIZES.OrderBy(g => MathF.Abs(g - GridSize)).First(),
                 FloorOffset = float.IsFinite(FloorOffset) ? Math.Clamp(FloorOffset, 0f, 2f) : 0f,
                 WallOffset = float.IsFinite(WallOffset) ? Math.Clamp(WallOffset, 0f, 1f) : 0f,
-                GlassBlocks = GlassBlocks
+                GlassBlocks = GlassBlocks,
+                Target = Target == SunTarget.Off ? SunTarget.Off : SunTarget.On, // older studies' presets (1, 2) read as on
+                TargetHours = Snap(TargetHours, 0.5f, 12f, 0.25f, 2f),
+                Mode = Enum.IsDefined(Mode) ? Mode : StudyMode.SunHours,
+                WorkPlane = float.IsFinite(WorkPlane) ? Math.Clamp(WorkPlane, 0f, 2f) : 0.7f,
+                Rays = RAY_COUNTS.OrderBy(r => Math.Abs(r - Rays)).First(),
+                DirectSun = DirectSun,
+                StandardReflectance = StandardReflectance,
+                FactorTarget = Snap(FactorTarget, 0.5f, 10f, 0.5f, 2f),
+                LuxTarget = Snap(LuxTarget, 50f, 5000f, 50f, 300f),
+                LuxShare = Snap(LuxShare, 0.1f, 1f, 0.1f, 0.5f)
             };
         }
+
+        /// <summary>A finite value clamped to a range and rounded to a step (else the default).</summary>
+        private static float Snap(float value, float min, float max, float step, float fallback) =>
+            float.IsFinite(value) ? MathF.Round(Math.Clamp(value, min, max) / step) * step : fallback;
+    }
+
+    /// <summary>
+    /// The study's pass / fail test. Stored as a number: 1 and 2 (presets in an earlier build) read as on.
+    /// </summary>
+    public enum SunTarget
+    {
+        /// <summary>No test: cells show their values on the legend.</summary>
+        Off = 0,
+
+        /// <summary>Cells pass or fail the mode's target.</summary>
+        On = 3
     }
 
     /// <summary>
@@ -111,6 +178,15 @@ namespace BimGo.Scene
             }
             return directions;
         }
+
+        /// <summary>Pass colour (green, RGB 0–1) for pass / fail colouring.</summary>
+        public static readonly Vector3 PASS = new(0.20f, 0.72f, 0.36f);
+
+        /// <summary>Fail colour (red, RGB 0–1) for pass / fail colouring.</summary>
+        public static readonly Vector3 FAIL = new(0.86f, 0.22f, 0.20f);
+
+        /// <summary>True when a cell's hours meet the target (with a small tolerance for sample rounding).</summary>
+        public static bool Passes(float hours, float targetHours) => hours >= targetHours - 1e-4f;
 
         /// <summary>
         /// The legend colour of a number of hours (0 → blue, <see cref="LEGEND_MAX"/> and over → red), interpolated

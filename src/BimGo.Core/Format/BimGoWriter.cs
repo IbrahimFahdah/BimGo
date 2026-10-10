@@ -60,6 +60,7 @@ namespace BimGo.Format
                     WriteGeometry(zip, scene, geometryCompression, progress);
                     progress?.ThrowIfCancelled();
                     WriteJson(zip, BimGoFormat.ENTRY_COMMENTS, document.Comments ?? new CommentDocument(), BimGoFormat.JSON_INDENTED);
+                    WriteCommentSnapshots(zip, document.Comments);
                     var journal = new JournalDto { Entries = document.Journal?.Entries.ToList() ?? new List<JournalEntry>() };
                     WriteJson(zip, BimGoFormat.ENTRY_JOURNAL, journal, BimGoFormat.JSON_INDENTED);
 
@@ -239,6 +240,7 @@ namespace BimGo.Format
                 {
                     Id = record.ElementId,
                     UniqueId = string.IsNullOrEmpty(record.UniqueId) ? null : record.UniqueId,
+                    IfcGuid = string.IsNullOrEmpty(record.IfcGuid) ? null : record.IfcGuid,
                     Name = record.Name,
                     Category = record.CategoryIndex,
                     CategoryName = record.CategoryName,
@@ -319,6 +321,24 @@ namespace BimGo.Format
                 ZipArchiveEntry image = zip.CreateEntry(name, CompressionLevel.NoCompression);
                 using Stream stream = image.Open();
                 stream.Write(bytes);
+            }
+        }
+
+        /// <summary>
+        /// The comments' BCF pictures under comments/ (stored as-is: they are JPEG). Optional entries: older readers
+        /// ignore them.
+        /// </summary>
+        private static void WriteCommentSnapshots(ZipArchive zip, CommentDocument comments)
+        {
+            if (comments?.Comments == null) { return; }
+            var written = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (CommentRecord record in comments.Comments)
+            {
+                if (record?.SnapshotData == null || record.SnapshotData.Length == 0 || !CommentSnapshots.IsValidName(record.Snapshot)) { continue; }
+                if (!written.Add(record.Snapshot)) { continue; }
+                ZipArchiveEntry image = zip.CreateEntry(record.Snapshot, CompressionLevel.NoCompression);
+                using Stream stream = image.Open();
+                stream.Write(record.SnapshotData);
             }
         }
 

@@ -87,7 +87,7 @@ namespace BimGo.Game
         /// <summary>
         /// Adds a comment at a scene-local position and saves.
         /// </summary>
-        public CommentRecord Add(Vector3 local, string text, long elementId, string level)
+        public CommentRecord Add(Vector3 local, string text, long elementId, string level, string elementUniqueId = null)
         {
             var record = new CommentRecord
             {
@@ -96,6 +96,7 @@ namespace BimGo.Game
                 Y = Math.Round(local.Y + (double)_origin.Y, 4),
                 Z = Math.Round(local.Z + (double)_origin.Z, 4),
                 ElementId = elementId,
+                ElementUniqueId = string.IsNullOrEmpty(elementUniqueId) ? null : elementUniqueId,
                 Level = level ?? string.Empty
             };
             Prepare(record);
@@ -173,7 +174,7 @@ namespace BimGo.Game
         /// Sets the viewpoint a comment is seen from (scene-local feet; stored in Revit internal metres) and saves.
         /// The thumbnail follows separately (taken the next frame: <see cref="SetThumbnail"/>).
         /// </summary>
-        public void SetView(CommentRecord record, Vector3 localFeet, float yaw, float pitch, bool flying, bool save = true)
+        public void SetView(CommentRecord record, Vector3 localFeet, float yaw, float pitch, bool flying, bool save = true, Scene.SectionCut section = null)
         {
             if (record == null) { return; }
             record.View = new CommentView
@@ -183,7 +184,8 @@ namespace BimGo.Game
                 Z = Math.Round(localFeet.Z + (double)_origin.Z, 4),
                 Yaw = yaw,
                 Pitch = pitch,
-                Flying = flying
+                Flying = flying,
+                Section = section?.Clone()
             };
             if (save && Comments.Contains(record)) { Save(); }
         }
@@ -205,6 +207,64 @@ namespace BimGo.Game
             if (record == null || string.IsNullOrEmpty(data)) { return; }
             record.Thumbnail = data;
             if (Comments.Contains(record)) { Save(); }
+        }
+
+        /// <summary>
+        /// Stores a comment's thumbnail (base64 JPEG) and, when given, the larger picture kept for BCF snapshots
+        /// (JPEG bytes, saved as comments/&lt;id&gt;.jpg), then saves once.
+        /// </summary>
+        public void SetPictures(CommentRecord record, string thumbnail, byte[] snapshot)
+        {
+            if (record == null) { return; }
+            if (!string.IsNullOrEmpty(thumbnail)) { record.Thumbnail = thumbnail; }
+            if (snapshot != null && snapshot.Length > 0)
+            {
+                record.Snapshot = CommentSnapshots.NameFor(record.Id);
+                record.SnapshotData = snapshot;
+                record.SnapshotDirty = true;
+            }
+            if (Comments.Contains(record)) { Save(); }
+        }
+
+        /// <summary>
+        /// Moves a comment's marker (scene-local) without saving: imports place markers before one save.
+        /// </summary>
+        public void SetMarker(CommentRecord record, Vector3 local)
+        {
+            if (record == null) { return; }
+            record.X = Math.Round(local.X + (double)_origin.X, 4);
+            record.Y = Math.Round(local.Y + (double)_origin.Y, 4);
+            record.Z = Math.Round(local.Z + (double)_origin.Z, 4);
+            record.Local = local;
+        }
+
+        /// <summary>
+        /// Finishes a BCF import with one save: new comments join the list, merged ones get their labels rebuilt.
+        /// </summary>
+        public void ApplyImport(IReadOnlyList<CommentRecord> added, IReadOnlyList<CommentRecord> merged)
+        {
+            foreach (CommentRecord record in added ?? Array.Empty<CommentRecord>())
+            {
+                if (record == null || string.IsNullOrWhiteSpace(record.Text) || Comments.Contains(record)) { continue; }
+                Prepare(record);
+                Comments.Add(record);
+            }
+            foreach (CommentRecord record in merged ?? Array.Empty<CommentRecord>())
+            {
+                if (record != null && Comments.Contains(record)) { Prepare(record); }
+            }
+            Save();
+        }
+
+        /// <summary>The comment with this id (case-insensitive), or null.</summary>
+        public CommentRecord Find(string id)
+        {
+            if (string.IsNullOrEmpty(id)) { return null; }
+            foreach (CommentRecord record in Comments)
+            {
+                if (string.Equals(record.Id, id, StringComparison.OrdinalIgnoreCase)) { return record; }
+            }
+            return null;
         }
 
         /// <summary>
@@ -241,67 +301,6 @@ namespace BimGo.Game
             try { Changed?.Invoke(); }
             catch (Exception ex) { Utilities.Log_Utils.Write($"Comment change handler failed: {ex.Message}"); }
             return saved;
-        }
-
-        /// <summary>
-        /// Writes every comment to a CSV file (UTF-8 with BOM so Excel reads accents). Coordinates are Revit internal
-        /// metres, as stored.
-        /// </summary>
-        /// <returns>Null on success, else a short reason.</returns>
-        public string ExportCsv(string path)
-        {
-            try
-            {
-                var lines = new List<string> { "Id,Author,Created,Edited,Edited by,Status,Priority,Assigned to,Replies,Last reply,Level,Element id,X (m),Y (m),Z (m),Text,Thread" };
-                foreach (CommentRecord record in Comments)
-                {
-                    lines.Add(string.Join(",",
-                        record.Id,
-                        Csv(record.Author),
-                        record.Created.ToLocalTime().ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture),
-                        record.Edited?.ToLocalTime().ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture) ?? string.Empty,
-                        Csv(record.EditedBy),
-                        CommentStatus.Label(record.Status),
-                        CommentPriority.Label(record.Priority),
-                        Csv(record.AssignedTo),
-                        record.ReplyCount.ToString(CultureInfo.InvariantCulture),
-                        record.ReplyCount > 0 ? record.Replies[^1].Created.ToLocalTime().ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture) : string.Empty,
-                        Csv(record.Level),
-                        record.ElementId > 0 ? record.ElementId.ToString(CultureInfo.InvariantCulture) : string.Empty,
-                        record.X.ToString("0.###", CultureInfo.InvariantCulture),
-                        record.Y.ToString("0.###", CultureInfo.InvariantCulture),
-                        record.Z.ToString("0.###", CultureInfo.InvariantCulture),
-                        Csv(record.Text),
-                        Csv(Thread(record))));
-                }
-                File.WriteAllLines(path, lines, new System.Text.UTF8Encoding(encoderShouldEmitUTF8Identifier: true));
-                return null;
-            }
-            catch (Exception ex)
-            {
-                Utilities.Log_Utils.Write($"Comment export failed: {ex}");
-                return ex.Message;
-            }
-        }
-
-        /// <summary>
-        /// The replies as one text: "author (yyyy-MM-dd HH:mm): text" per line.
-        /// </summary>
-        private static string Thread(CommentRecord record)
-        {
-            if (record.ReplyCount == 0) { return string.Empty; }
-            return string.Join("\n", record.Replies.Select(r =>
-                $"{r.Author} ({r.Created.ToLocalTime().ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture)}): {r.Text}"));
-        }
-
-        /// <summary>
-        /// Quotes a CSV field when needed.
-        /// </summary>
-        private static string Csv(string value)
-        {
-            value ??= string.Empty;
-            bool quote = value.IndexOfAny(new[] { ',', '"', '\n', '\r' }) >= 0;
-            return quote ? "\"" + value.Replace("\"", "\"\"") + "\"" : value;
         }
 
         private void Prepare(CommentRecord record)

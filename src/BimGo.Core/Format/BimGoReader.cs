@@ -88,6 +88,13 @@ namespace BimGo.Format
                     records => BuildLibrary(zip, library, records, vertices.Length));
                 comments.Comments ??= new List<CommentRecord>();
                 comments.Comments.RemoveAll(c => c == null || string.IsNullOrWhiteSpace(c.Text));
+                foreach (CommentRecord comment in comments.Comments)
+                {
+                    // BCF pictures (optional entries; a missing one leaves the comment without)
+                    if (!CommentSnapshots.IsValidName(comment.Snapshot)) { comment.Snapshot = null; continue; }
+                    comment.SnapshotData = ReadBytes(zip, comment.Snapshot);
+                    if (comment.SnapshotData == null) { comment.Snapshot = null; }
+                }
 
                 Utilities.Log_Utils.Write($"Read {path}: {scene.Elements.Length} elements, {scene.TriangleCount} triangles, " +
                     $"{comments.Comments.Count} comments, {journal.Entries?.Count ?? 0} journal entries, {bookmarks.Bookmarks.Count} bookmarks (format {manifest.FormatVersion}).");
@@ -157,6 +164,7 @@ namespace BimGo.Format
                 {
                     ElementId = dto.Id,
                     UniqueId = dto.UniqueId ?? string.Empty,
+                    IfcGuid = IfcGuid.IsValid(dto.IfcGuid) ? dto.IfcGuid : string.Empty,
                     HostId = dto.HostId,
                     Name = dto.Name ?? "(unnamed)",
                     CategoryName = dto.CategoryName ?? catalog[category].Label,

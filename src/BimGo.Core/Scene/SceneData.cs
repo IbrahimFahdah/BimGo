@@ -104,6 +104,12 @@ namespace BimGo.Scene
         public string UniqueId { get; init; } = string.Empty;
 
         /// <summary>
+        /// The element's IFC GUID (22 characters, as Revit's IFC exporter writes it; BCF round), or empty for files
+        /// written before it was captured. Used to name elements in BCF viewpoints.
+        /// </summary>
+        public string IfcGuid { get; init; } = string.Empty;
+
+        /// <summary>
         /// The ElementId value of the host (e.g. the wall a door sits in), or 0. Lets standalone demolition remove
         /// hosted inserts with their host, as Revit does.
         /// </summary>

@@ -26,13 +26,16 @@ namespace BimGo.Format
         /// </summary>
         public float? GroundOffset { get; set; }
 
+        /// <summary>The section cut (section box round), or null when nothing is cut. Older readers ignore it.</summary>
+        public Scene.SectionCut Section { get; set; }
+
         /// <summary>Most the ground plane can move from its default (m), as the pause menu slider.</summary>
         public const float MAX_GROUND_OFFSET = 10f;
 
         /// <summary>True when nothing is hidden and the ground is at its default (the file then leaves the entry out).</summary>
         [JsonIgnore]
         public bool IsEmpty => (HiddenCategories?.Count ?? 0) == 0 && (HiddenLinks?.Count ?? 0) == 0 && (HiddenElements?.Count ?? 0) == 0
-            && GroundOffset == null;
+            && GroundOffset == null && Section == null;
 
         /// <summary>
         /// Drops null and blank entries (guards against hand-edited files).
@@ -47,6 +50,7 @@ namespace BimGo.Format
             {
                 GroundOffset = float.IsFinite(ground) && MathF.Abs(ground) > 1e-4f ? Math.Clamp(ground, -MAX_GROUND_OFFSET, MAX_GROUND_OFFSET) : null;
             }
+            Section = Section?.IsActive == true ? Section.Clean() : null;
             return this;
         }
     }

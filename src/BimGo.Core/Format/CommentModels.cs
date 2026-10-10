@@ -53,6 +53,27 @@ namespace BimGo.Format
         /// <summary>A small picture of that view (base64 JPEG, 192 × 108), or null.</summary>
         public string Thumbnail { get; set; }
 
+        /// <summary>
+        /// The commented element's Revit UniqueId (BCF round: lets BCF exports name the right element even when an
+        /// ElementId repeats in a linked model), or null (older comments, or no element).
+        /// </summary>
+        public string ElementUniqueId { get; set; }
+
+        /// <summary>
+        /// The larger picture of the view used for BCF snapshots (BCF round): its name, "comments/&lt;id&gt;.jpg",
+        /// inside the .bimgo or beside comments.json in the model folder. Null when there is none (older comments use
+        /// their thumbnail).
+        /// </summary>
+        public string Snapshot { get; set; }
+
+        /// <summary>The snapshot's JPEG bytes in memory (loaded with the comments, or just taken), or null.</summary>
+        [JsonIgnore]
+        public byte[] SnapshotData { get; set; }
+
+        /// <summary>True when <see cref="SnapshotData"/> changed since it was last written beside a sidecar.</summary>
+        [JsonIgnore]
+        public bool SnapshotDirty { get; set; }
+
         /// <summary>Number of replies.</summary>
         [JsonIgnore]
         public int ReplyCount => Replies?.Count ?? 0;
@@ -77,7 +98,10 @@ namespace BimGo.Format
             {
                 View = null;
             }
+            View?.Section?.Clean();
             if (string.IsNullOrWhiteSpace(Thumbnail)) { Thumbnail = null; }
+            if (string.IsNullOrWhiteSpace(ElementUniqueId)) { ElementUniqueId = null; }
+            if (!CommentSnapshots.IsValidName(Snapshot)) { Snapshot = null; }
             return this;
         }
 
@@ -166,6 +190,12 @@ namespace BimGo.Format
         public float Pitch { get; set; }
 
         public bool Flying { get; set; }
+
+        /// <summary>
+        /// The section cut when the view was saved (section box round): GO restores it, BCF exports it as clipping
+        /// planes; a cut with nothing on clears the cut; null (older comments) leaves the current cut alone.
+        /// </summary>
+        public Scene.SectionCut Section { get; set; }
     }
 
     /// <summary>
