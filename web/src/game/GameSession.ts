@@ -9,6 +9,8 @@ import { cleanGroundOffset, setCurrentUser } from '../core/format/DocumentModels
 import { Mat4 } from '../core/math/Matrix4x4';
 import { clamp, type Vec3, Vec3 as V, vec3 } from '../core/math/Vector';
 import { CATEGORIES, findCategory, KEY_DOORS } from '../core/scene/CategoryCatalog';
+import { poseEye } from '../core/scene/TourTimeline';
+import type { UnitSystem } from '../core/scene/Units';
 import { linkLabel } from '../core/scene/LinkInfo';
 import type { SidecarKind } from '../core/live/LiveProtocol';
 import { LiveSessionSource } from '../core/sources/LiveSessionSource';
@@ -48,12 +50,17 @@ import { drawProgress, type ProgressState } from './ProgressScreen';
 import { Player } from './Player';
 import { BookmarkStore, CommentStore } from './Stores';
 import { CommentsBcf, SNAPSHOT_MAX_WIDTH } from './CommentsBcf';
-import { PhotoMode } from './PhotoMode';
+import { EyeHeightControl } from './EyeHeight';
+import { MarkupEditor } from './MarkupEditor';
+import { PhotoMode, PhotoTarget } from './PhotoMode';
 import { SectionMode } from './SectionMode';
 import { SunHoursMode } from './SunHoursMode';
 import { SunPanel } from './SunPanel';
 import { SunState } from './SunState';
 import { Textures } from './Textures';
+import { TourPlayer } from './Tour';
+import { UnitFormat } from './UnitFormat';
+import { VideoMode } from './VideoMode';
 import type { ViewerSettings } from './ViewerSettings';
 import { ColourMode } from './ViewerSettings';
 
@@ -82,11 +89,13 @@ const HELP_ROWS: [string, string][] = [
   ['PGUP / PGDN', 'Level up / down'],
   ['H · SHIFT+H', 'Go home · Set home here'],
   ['1–9 · WHEEL', 'Select tool (9 Place: family library)'],
+  ['2 AGAIN', 'Measure: distance / area / angle / clearance'],
   ['6 · 7 · 8', 'Demolish · Gizmo · Clone'],
   ['F', 'Gizmo / Clone / Place: drop onto the surface below'],
   ['I · SHIFT+I', 'Scan: hide target · isolate its category'],
   ['X', "Clear this tool's markers"],
   ['B · ALT+1–9', 'Bookmark this view · Go to bookmark'],
+  ['ESC → BOOKMARKS', 'Play the bookmark tour (eye height: pause menu)'],
   ['U', 'Hide the UI (Esc or U shows it)'],
   ['L', 'Coordinate readout'],
   ['K', 'Artificial lights: off / glow / light'],
@@ -104,6 +113,8 @@ const HELP_ROWS: [string, string][] = [
 ];
 
 const THUMB_WIDTH = 192, THUMB_HEIGHT = 108;
+/** The .bimgo's start-screen thumbnail (thumbnail.jpg): rendered at 640 × 360, stored at 384 × 216. */
+const FILE_THUMB_RENDER_W = 640, FILE_THUMB_RENDER_H = 360, FILE_THUMB_WIDTH = 384, FILE_THUMB_HEIGHT = 216, FILE_THUMB_QUALITY = 0.8;
 const SNAP_MOVE_STEPS_MM = [5, 10, 25, 50, 100, 250, 500, 1000];
 const SNAP_ANGLE_STEPS_DEG = [1, 5, 10, 15, 30, 45, 90];
 
@@ -147,6 +158,14 @@ export class GameSession implements GunHost, EditHost {
   readonly photo: PhotoMode;
   /** BCF export / import of comments. */
   readonly bcf: CommentsBcf;
+  /** Eye-height presets (standing / seated / child). */
+  readonly eye: EyeHeightControl;
+  /** The bookmark tour. */
+  readonly tour: TourPlayer;
+  /** Walkthrough video (records the tour). */
+  readonly video: VideoMode;
+  /** Snapshot markup on comment pictures. */
+  readonly markup: MarkupEditor;
   textures!: Textures;
   /** Bumped by every change that Save would write (comments, bookmarks, materials, edits…). */
   dirtyRevision = 0;
@@ -174,7 +193,8 @@ export class GameSession implements GunHost, EditHost {
   /** Static elements hidden by edits (demolished, deleted, or stood in for by their moved instance). */
   private readonly hidden: boolean[];
   userHiddenCount = 0;
-  private isolateBackup: boolean[] | null = null;
+  /** The category visibility before Shift+I isolated one (null when nothing is isolated). */
+  isolateBackup: boolean[] | null = null;
   private readonly elementIndexById = new Map<number, number>();
   private readonly elementIndexByUniqueId = new Map<string, number>();
   private elementIndexByIfcGuid: Map<string, number> | null = null;
@@ -262,7 +282,8 @@ export class GameSession implements GunHost, EditHost {
 
   constructor(
     private readonly window: GameWindow,
-    readonly ui: UiBatch,
+    /** The UI batch (swapped for the video's own while the HUD is drawn into a video frame). */
+    public ui: UiBatch,
     readonly document: BimGoDocument,
     readonly settings: ViewerSettings,
     fileHandle: FileSystemFileHandle | null = null,
@@ -305,6 +326,12 @@ export class GameSession implements GunHost, EditHost {
     this.section = new SectionMode(this);
     this.photo = new PhotoMode(this);
     this.bcf = new CommentsBcf(this);
+    this.eye = new EyeHeightControl(this);
+    this.eye.read(settings);
+    this.tour = new TourPlayer(this);
+    this.video = new VideoMode(this);
+    this.markup = new MarkupEditor(this);
+    UnitFormat.set(settings.displayUnits, settings.decimalFeet);
     this.editor = new TextEditor(this);
     this.reflections = new Reflections(this);
     setCurrentUser(settings.userName);
@@ -365,6 +392,7 @@ export class GameSession implements GunHost, EditHost {
     controller.collisionMask = this.collisionMask;
     controller.dynamics = this.dynamics;
     this.player = new Player(controller);
+    this.eye.initialise();
     this.refreshMasks();
 
     // Ground: just below the lowest level (or the model)
@@ -510,7 +538,7 @@ export class GameSession implements GunHost, EditHost {
     this.updateLive(dt);
     this.updateTitle();
     if (this.reloadRequested) { return 'reload'; }
-    this.updateFrame();
+    this.updateFrame(dt);
     if (this.ended) { return 'closed'; }
 
     if (!this.paused) {
@@ -537,6 +565,14 @@ export class GameSession implements GunHost, EditHost {
   /** Called when the browser released the mouse (Esc, focus loss). */
   onCaptureLost(): void {
     if (this.saving) { return; }
+    if (this.tour.active) {
+      // The browser's Esc ends the tour; losing focus doesn't (presenting on another screen)
+      if (!this.video.active && document.hasFocus()) {
+        this.tour.stop(false);
+        this.editCancelledAt = this.clock;
+      }
+      return;
+    }
     if (this.uiHidden) {
       // The browser's Esc: show the UI and keep everything else as it was (click to look again)
       this.showUi();
@@ -557,9 +593,23 @@ export class GameSession implements GunHost, EditHost {
     this.editCancelledAt = this.clock;
   }
 
-  private updateFrame(): void {
+  private updateFrame(dt: number): void {
     const input = this.window.input;
+
+    // A bookmark tour (or its recording) has the keys; it carries on when the page loses focus
+    if (this.tour.active) {
+      if (this.video.active) { this.video.update(input); } else { this.tour.update(input, dt); }
+      return;
+    }
+
     if (this.window.isMinimised && !this.paused && !this.editor.active) { this.setPaused(true); }
+
+    // A comment picture just taken opens the markup editor; while it is open it has the keys
+    if (this.markup.pending) { this.markup.openPending(); }
+    if (this.markup.open) {
+      this.markup.updateKeys(input);
+      return;
+    }
 
     if (this.editor.active) {
       this.editor.update(input);
@@ -695,7 +745,9 @@ export class GameSession implements GunHost, EditHost {
     if (input.isPressed(Vk.SPACE) && !this.player.flying) { this.player.queueJump(); }
 
     for (let i = 0; i < this.guns.length; i++) {
-      if (input.isPressed(0x31 + i) && !input.isDown(Vk.MENU) && !input.isDown(Vk.CONTROL)) { this.selectGun(i); }
+      if (!input.isPressed(0x31 + i) || input.isDown(Vk.MENU) || input.isDown(Vk.CONTROL)) { continue; }
+      // The selected gun's own key again: the gun may cycle a mode (Measure: distance → area → angle → clearance)
+      if (i === this.activeGun) { this.guns[i].onReselect(); } else { this.selectGun(i); }
     }
     if (input.wheel !== 0) {
       const n = this.guns.length;
@@ -723,6 +775,7 @@ export class GameSession implements GunHost, EditHost {
   }
 
   private fixedUpdate(dt: number): void {
+    if (this.tour.active) { return; } // the tour places the player itself
     this.player.controller.groundZ = this.groundZ;
     const frozen = this.editor.active || this.cursorModeOpen || this.window.isMinimised || this.guns[this.activeGun].capturesInput;
     this.player.fixedUpdate(dt, this.window.input, !frozen);
@@ -731,9 +784,17 @@ export class GameSession implements GunHost, EditHost {
 
   private updateCamera(alpha: number, dt: number): void {
     const c = this.camera;
-    c.position = this.player.getEye(clamp(alpha, 0, 1), dt);
-    c.yaw = this.player.yaw;
-    c.pitch = this.player.pitch;
+    const pose = this.tour.active ? this.tour.pose : null;
+    if (pose) {
+      // The tour's pose: exact eye height (no smoothing), swivel and glides
+      c.position = poseEye(pose);
+      c.yaw = pose.yaw;
+      c.pitch = pose.pitch;
+    } else {
+      c.position = this.player.getEye(clamp(alpha, 0, 1), dt);
+      c.yaw = this.player.yaw;
+      c.pitch = this.player.pitch;
+    }
     c.horizontalFovDegrees = this.photo.open ? this.photo.fov : this.settings.fieldOfView;
     c.viewportWidth = this.window.width;
     c.viewportHeight = this.window.height;
@@ -748,7 +809,7 @@ export class GameSession implements GunHost, EditHost {
 
   private updateGuns(dt: number): void {
     for (const gun of this.guns) { gun.tick(dt); }
-    if (this.paused || this.editor.active || this.cursorModeOpen) { return; }
+    if (this.paused || this.editor.active || this.cursorModeOpen || this.tour.active) { return; }
 
     const active = this.guns[this.activeGun];
     active.update(dt, this.aim);
@@ -789,6 +850,51 @@ export class GameSession implements GunHost, EditHost {
       this.showUi(); // e.g. focus lost while hidden: come back to a normal HUD
     }
     this.window.setCaptured(!paused);
+    this.window.input.releaseAll();
+  }
+
+  /** Captures the mouse again (a click during the tour: hides the cursor). */
+  captureMouse(): void {
+    this.window.setCaptured(true);
+  }
+
+  /** F11: fullscreen. */
+  toggleFullscreen(): void {
+    toggleFullscreen();
+  }
+
+  /** Clears the toast (the tour starts on a clean view). */
+  clearToast(): void {
+    this.toastText = null;
+  }
+
+  /** True when the toast showing is an important one (shown with the UI hidden). */
+  get toastIsImportant(): boolean {
+    return this.toastImportant;
+  }
+
+  /**
+   * Changes the display units (pause menu): labels made once (bookmark details) are rebuilt; saved with the viewer
+   * settings.
+   */
+  setDisplayUnits(system: UnitSystem, decimalFeet: boolean): void {
+    UnitFormat.set(system, decimalFeet);
+    this.bookmarks?.refreshLabels();
+    this.settingsChanged();
+  }
+
+  /** Writes the eye-height presets and the units into the viewer settings and saves them. */
+  settingsChanged(): void {
+    this.eye.write(this.settings);
+    this.settings.displayUnits = UnitFormat.current;
+    this.settings.decimalFeet = UnitFormat.decimalFeet;
+    this.settings.save();
+  }
+
+  /** Leaves the pause menu without capturing the mouse (a video recording keeps the cursor for CANCEL). */
+  resumeWithoutCapture(): void {
+    this.paused = false;
+    this.window.setCaptured(false);
     this.window.input.releaseAll();
   }
 
@@ -1148,7 +1254,8 @@ export class GameSession implements GunHost, EditHost {
 
   private addBookmarkHere(): void {
     const p = this.player;
-    const record = this.bookmarks.createPending(null, p.feet, p.yaw, p.pitch, p.flying, this.currentLevelName, this.sun.bookmarkTime(), this.section.current);
+    const record = this.bookmarks.createPending(null, p.feet, p.yaw, p.pitch, p.flying, this.currentLevelName, this.sun.bookmarkTime(), this.section.current,
+      this.eye.current, this.bookmarkVisibility());
     this.thumbnailFor = record;
     this.sound.play(SoundId.CommentPlace);
     this.editor.renameBookmark(record, true);
@@ -1156,14 +1263,16 @@ export class GameSession implements GunHost, EditHost {
 
   addBookmarkFromMenu(): BookmarkRecord {
     const p = this.player;
-    const added = this.bookmarks.add(null, p.feet, p.yaw, p.pitch, p.flying, this.currentLevelName, this.sun.bookmarkTime(), this.section.current);
+    const added = this.bookmarks.add(null, p.feet, p.yaw, p.pitch, p.flying, this.currentLevelName, this.sun.bookmarkTime(), this.section.current,
+      this.eye.current, this.bookmarkVisibility());
     this.thumbnailFor = added;
     return added;
   }
 
   setBookmarkHere(record: BookmarkRecord): void {
     const p = this.player;
-    this.bookmarks.update(record, p.feet, p.yaw, p.pitch, p.flying, this.currentLevelName, this.sun.bookmarkTime(), this.section.current);
+    this.bookmarks.update(record, p.feet, p.yaw, p.pitch, p.flying, this.currentLevelName, this.sun.bookmarkTime(), this.section.current,
+      this.eye.current, this.bookmarkVisibility());
     this.thumbnailFor = record;
     this.sound.play(SoundId.Commit);
   }
@@ -1179,9 +1288,16 @@ export class GameSession implements GunHost, EditHost {
     this.goToBookmark(list[index]);
   }
 
+  /**
+   * Puts the player at a bookmark (walk / fly mode as saved) and restores what it kept: the sun time (shadows on), the
+   * section cut, the hidden categories / links / elements and the eye height. Older bookmarks without a field leave
+   * that part as it is.
+   */
   goToBookmark(record: BookmarkRecord): void {
     if (record.sun) { this.sun.applyTime(record.sun); }
     if (record.section) { this.section.apply(record.section, false); }
+    if (record.visibility) { this.applyVisibility(record.visibility, true); }
+    if (record.eyeHeight !== null) { this.eye.apply(record.eyeHeight); }
     if (record.flying !== this.player.flying) { this.player.toggleFly(); }
     this.player.teleportTo(record.local, record.yaw, clamp(record.pitch, -1.5, 1.5));
     this.sound.play(SoundId.Teleport);
@@ -1247,7 +1363,42 @@ export class GameSession implements GunHost, EditHost {
     // The ground plane as it was left (metres from its default)
     if (saved.groundOffset !== null) { this.groundZ = this.groundDefault + saved.groundOffset; }
     this.section.restore(saved.section);
+    this.applyHiddenLists(saved);
+    this.refreshMasks();
+  }
 
+  /**
+   * Replaces what is hidden with a saved state (bookmark GO and the tour): everything is shown, then the state's
+   * categories, links and elements are hidden. The ground plane and the section are left alone.
+   * @param record True to record the change for saving (GO); false for the tour, which puts the walkthrough's own
+   * state back when it ends.
+   */
+  applyVisibility(saved: VisibilitySettings, record: boolean): void {
+    const revision = this.visibilityRevision;
+    for (let e = 0; e < this.userHidden.length && this.userHiddenCount > 0; e++) {
+      if (this.userHidden[e]) { this.setUserHidden(e, false); }
+    }
+    this.scene.categoryLoaded.forEach((loaded, c) => { this.categoryVisible[c] = loaded; });
+    this.linkVisible.fill(true);
+    this.isolateBackup = null;
+    this.applyHiddenLists(saved);
+    this.refreshMasks();
+    if (record) { this.visibilityChanged(); } else { this.visibilityRevision = revision; }
+  }
+
+  /** What a new bookmark keeps of the visibility: hidden categories, links and elements (not the ground or the section). */
+  private bookmarkVisibility(): VisibilitySettings {
+    const settings = this.toVisibilitySettings();
+    settings.groundOffset = null;
+    settings.section = null;
+    return settings;
+  }
+
+  /**
+   * Hides the categories, links and elements a saved state lists (on top of what is already hidden; the caller
+   * refreshes the masks).
+   */
+  private applyHiddenLists(saved: VisibilitySettings): void {
     for (const key of saved.hiddenCategories) {
       const def = findCategory(key);
       if (def && this.scene.categoryLoaded[def.index]) { this.categoryVisible[def.index] = false; }
@@ -1276,7 +1427,6 @@ export class GameSession implements GunHost, EditHost {
       }
       if (element >= 0) { this.setUserHidden(element, true); }
     }
-    this.refreshMasks();
   }
 
   private setUserHidden(element: number, hidden: boolean): void {
@@ -1383,7 +1533,7 @@ export class GameSession implements GunHost, EditHost {
     values.forEach((value, i) => {
       const rowY = y + this.s(32) + i * this.s(20);
       ui.text(f.body, x + this.s(14), rowY, labels[i], UiTheme.TEXT_MUTED);
-      ui.textRight(f.mono, x + w - this.s(14), rowY + this.s(1), this.text.clear().appendNumber(value, 3).append(' m').text, UiTheme.COORDS);
+      ui.textRight(f.mono, x + w - this.s(14), rowY + this.s(1), UnitFormat.appendCoordinate(this.text.clear(), value).text, UiTheme.COORDS);
     });
   }
 
@@ -1405,7 +1555,8 @@ export class GameSession implements GunHost, EditHost {
     return this.roomIndex >= 0 ? this.scene.rooms[this.roomIndex] : null;
   }
 
-  private updateRoom(): void {
+  /** Follows the room the player stands in (the tour calls it as it moves the player). */
+  updateRoom(): void {
     if (this.scene.rooms.length === 0) { return; }
     const feet = this.player.feet, last = this.roomCheckedAt;
     const dx = feet.x - last.x, dy = feet.y - last.y, dz = feet.z - last.z;
@@ -1465,6 +1616,12 @@ export class GameSession implements GunHost, EditHost {
     const width = this.window.width, height = this.window.height;
     this.trackDynamics();
 
+    // ---- Recording a walkthrough video: video frames off-screen, then the preview and progress only
+    if (this.video.active) {
+      this.video.render();
+      return;
+    }
+
     // ---- Photo mode: a pending shot renders off-screen first (camera restored afterwards)
     this.photo.renderPending();
 
@@ -1496,6 +1653,9 @@ export class GameSession implements GunHost, EditHost {
       // Photo mode: a clean frame, the grid and the photo panel only
       this.photo.buildOverlay(this.ui.atlas, this.window.input, width, height);
       this.buildToast(this.ui.atlas, width);
+    } else if (this.tour.active) {
+      // Bookmark tour: the HUD subset (UI on) or nothing, the fades and the key hint
+      this.tour.buildOverlay(width, height, mapX, mapY);
     } else if (this.uiHidden) {
       this.buildHiddenHud(width);
     } else {
@@ -1567,7 +1727,7 @@ export class GameSession implements GunHost, EditHost {
     const active = this.guns[this.activeGun];
     this.highlights.length = 0;
     // (hidden UI: only a gun holding an element keeps its tint, so the held element stays visible)
-    if (!photo && !this.photo.open && !this.paused && (!this.uiHidden || active.capturesInput)) { active.collectHighlights(this.highlights); }
+    if (!photo && !this.photo.open && !this.paused && !this.tour.active && (!this.uiHidden || active.capturesInput)) { active.collectHighlights(this.highlights); }
     if (this.highlights.length > 0) {
       gl.enable(gl.BLEND);
       gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
@@ -1618,8 +1778,13 @@ export class GameSession implements GunHost, EditHost {
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   }
 
-  private drawMinimapPlan(x: number, y: number, w: number, h: number): void {
-    const height = this.window.height;
+  /**
+   * Draws the plan view (cut at 1.2 m above the current level) into a scissored viewport.
+   * @param surfaceWidth The surface being drawn to (0 = the window): the video draws it into its frame.
+   */
+  private drawMinimapPlan(x: number, y: number, w: number, h: number, surfaceWidth = 0, surfaceHeight = 0): void {
+    const height = surfaceHeight > 0 ? surfaceHeight : this.window.height;
+    const width = surfaceWidth > 0 ? surfaceWidth : this.window.width;
     const vx = Math.trunc(x), vy = height - Math.trunc(y + h), vw = Math.max(1, Math.trunc(w)), vh = Math.max(1, Math.trunc(h));
 
     gl.enable(gl.SCISSOR_TEST);
@@ -1646,7 +1811,39 @@ export class GameSession implements GunHost, EditHost {
     this.renderer.drawDynamic(plan, this.dynamics, false);
 
     gl.disable(gl.SCISSOR_TEST);
-    gl.viewport(0, 0, this.window.width, this.window.height);
+    gl.viewport(0, 0, width, height);
+  }
+
+  /** The tour's HUD subset (UI on): status, coordinates, minimap and the room banner. */
+  buildTourHud(mapX: number, mapY: number): void {
+    const f = this.ui.atlas;
+    this.buildStatusPanel(f);
+    this.buildCoordinatePanel(f, this.s(20), this.s(20) + this.s(146) + this.s(10));
+    if (this.showMap) { this.drawMinimapOverlay(mapX, mapY); }
+    this.buildRoomBanner(f, this.window.width);
+  }
+
+  /**
+   * The tour's HUD drawn into a video frame at the video's scale (its own UI batch): status, coordinates, minimap (plan
+   * drawn into the frame) and the tour bar. No toasts, help or live readouts like FPS. The frame's framebuffer is bound.
+   */
+  buildVideoHud(videoUi: UiBatch, w: number, h: number): void {
+    const windowUi = this.ui, showFps = this.settings.showFps;
+    this.ui = videoUi;
+    this.settings.showFps = false;
+    try {
+      const f = this.ui.atlas;
+      const mapX = w - this.s(20) - this.s(220), mapY = this.s(20);
+      if (this.showMap) { this.drawMinimapPlan(mapX + this.s(8), mapY + this.s(30), this.s(204), this.s(170), w, h); }
+      this.buildStatusPanel(f);
+      this.buildCoordinatePanel(f, this.s(20), this.s(20) + this.s(146) + this.s(10));
+      if (this.showMap) { this.drawMinimapOverlay(mapX, mapY); }
+      this.tour.buildBar(f, w, h);
+      this.ui.flush(w, h);
+    } finally {
+      this.ui = windowUi;
+      this.settings.showFps = showFps;
+    }
   }
 
   private drawMinimapOverlay(x: number, y: number): void {
@@ -1787,9 +1984,52 @@ export class GameSession implements GunHost, EditHost {
           snapshot = base64Bytes(picture.toDataURL('image/jpeg', 0.82).replace(/^data:image\/jpeg;base64,/, ''));
         }
         this.comments.setPictures(comment, data, snapshot);
+
+        // Straight into the markup editor (new comment, SET VIEW HERE)
+        if (this.markup.afterCapture === comment && snapshot) { this.markup.pending = comment; }
+        this.markup.afterCapture = null;
       }
     } catch (e) {
       console.info(`Thumbnail failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  /**
+   * The file's start-screen picture: the current view rendered off-screen at 640 × 360 (no HUD, markers or menus; the
+   * photo pass) and stored as a 384 × 216 JPEG in thumbnail.jpg on every save. The camera and the canvas are put back.
+   * @returns The JPEG, or null when it could not be made (the save keeps the file's old one).
+   */
+  private captureFileThumbnail(): Uint8Array | null {
+    if (!this.renderer) { return null; }
+    const camera = this.camera;
+    const saved = { width: camera.viewportWidth, height: camera.viewportHeight, aspect: camera.aspect };
+    const target = new PhotoTarget();
+    try {
+      if (!target.ensure(FILE_THUMB_RENDER_W, FILE_THUMB_RENDER_H)) { return null; }
+      camera.viewportWidth = FILE_THUMB_RENDER_W;
+      camera.viewportHeight = FILE_THUMB_RENDER_H;
+      camera.aspect = FILE_THUMB_RENDER_W / FILE_THUMB_RENDER_H;
+      camera.update();
+      this.renderScene(FILE_THUMB_RENDER_W, FILE_THUMB_RENDER_H, target.framebuffer, true);
+      const source = pixelsCanvas(target.read(), FILE_THUMB_RENDER_W, FILE_THUMB_RENDER_H);
+      const thumb = document.createElement('canvas');
+      thumb.width = FILE_THUMB_WIDTH;
+      thumb.height = FILE_THUMB_HEIGHT;
+      const context = thumb.getContext('2d')!;
+      context.imageSmoothingQuality = 'high';
+      context.drawImage(source, 0, 0, FILE_THUMB_WIDTH, FILE_THUMB_HEIGHT);
+      return base64Bytes(thumb.toDataURL('image/jpeg', FILE_THUMB_QUALITY).replace(/^data:image\/jpeg;base64,/, ''));
+    } catch (e) {
+      console.info(`File thumbnail failed: ${e instanceof Error ? e.message : String(e)}`);
+      return null;
+    } finally {
+      camera.viewportWidth = saved.width;
+      camera.viewportHeight = saved.height;
+      camera.aspect = saved.aspect;
+      camera.update();
+      target.dispose();
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.viewport(0, 0, this.window.width, this.window.height);
     }
   }
 
@@ -1869,17 +2109,15 @@ export class GameSession implements GunHost, EditHost {
     const labelX = x + this.s(14), valueX = x + this.s(14) + this.s(70);
     let rowY = y + this.s(40);
     const row = this.s(20);
-    const c = this.player.controller;
-
     ui.text(f.body, labelX, rowY, 'MODE', UiTheme.TEXT_MUTED);
-    ui.text(f.body, valueX, rowY, this.player.flying ? 'FLY' : c.crouching ? 'CROUCH' : 'WALK', UiTheme.TEXT);
+    ui.text(f.body, valueX, rowY, this.eye.modeLabel(), UiTheme.TEXT);
     rowY += row;
 
     ui.text(f.body, labelX, rowY, 'LEVEL', UiTheme.TEXT_MUTED);
     if (this.scene.levels.length > 0) {
       const level = this.scene.levels[this.levelIndexAt(this.player.feet.z)];
       const used = ui.text(f.body, valueX, rowY, level.name, UiTheme.TEXT);
-      ui.text(f.mono, valueX + used + this.s(6), rowY + this.s(1), this.text.clear().appendNumber(level.elevation, 3, true).text, UiTheme.TEXT_SOFT);
+      ui.text(f.mono, valueX + used + this.s(6), rowY + this.s(1), UnitFormat.appendLength(this.text.clear(), level.elevation, 3, true).text, UiTheme.TEXT_SOFT);
     } else {
       ui.text(f.body, valueX, rowY, '—', UiTheme.TEXT);
     }
@@ -1896,7 +2134,7 @@ export class GameSession implements GunHost, EditHost {
     rowY += row;
 
     ui.text(f.body, labelX, rowY, 'GROUND', UiTheme.TEXT_MUTED);
-    ui.text(f.mono, valueX, rowY + this.s(1), this.text.clear().appendNumber(this.groundZ, 3).append(' m').text, UiTheme.TEXT);
+    ui.text(f.mono, valueX, rowY + this.s(1), UnitFormat.appendLength(this.text.clear(), this.groundZ, 3).text, UiTheme.TEXT);
     rowY += row;
 
     ui.text(f.body, labelX, rowY, 'VIEW', UiTheme.TEXT_MUTED);
@@ -2009,7 +2247,8 @@ export class GameSession implements GunHost, EditHost {
     if (this.toastImportant) { this.buildToast(f, width); }
   }
 
-  private buildToast(f: FontAtlas, width: number): void {
+  /** The toast at the top of the screen. */
+  buildToast(f: FontAtlas, width: number): void {
     if (this.toastText === null || this.clock >= this.toastUntil) { return; }
     const ui = this.ui;
     const alpha = clamp((this.toastUntil - this.clock) / 0.4, 0, 1);
@@ -2386,7 +2625,7 @@ export class GameSession implements GunHost, EditHost {
 
     // Reload where the player stands, once nothing is in flight
     if (live.snapshotReady && !this.reloadRequested) {
-      const busy = live.pending > 0 || this.guns[this.activeGun].capturesInput || this.editor.active;
+      const busy = live.pending > 0 || this.guns[this.activeGun].capturesInput || this.editor.active || this.tour.active || this.markup.open;
       if (!busy) {
         this.flushSidecars();
         this.reloadRequested = true;
@@ -2554,7 +2793,7 @@ export class GameSession implements GunHost, EditHost {
   }
 
   /** Hidden categories, links and elements, by stable keys (port of ToVisibilitySettings). */
-  private toVisibilitySettings(): VisibilitySettings {
+  toVisibilitySettings(): VisibilitySettings {
     const settings: VisibilitySettings = {
       hiddenCategories: [], hiddenLinks: [], hiddenElements: [], groundOffset: cleanGroundOffset(this.groundZ - this.groundDefault),
       section: this.section.current.isActive ? this.section.current.clone() : null
@@ -2608,12 +2847,17 @@ export class GameSession implements GunHost, EditHost {
       handle = null;
     }
 
+    // The start screen's picture of this view (before the progress screen draws over the canvas)
+    const thumbnail = this.captureFileThumbnail() ?? this.document.thumbnail;
+    this.lastThumbnail = thumbnail;
+
     const saving = {
       title: `Saving ${name}`,
       progress: { stage: 'Writing the .bimgo file', detail: '', fraction: 0, canCancel: true, cancelRequested: false } as ProgressState,
       abort: new AbortController()
     };
     this.saving = saving;
+    let size: number;
     try {
       const blob = await writeBimGo(this.document, {
         comments: this.comments.toDocument(),
@@ -2622,9 +2866,11 @@ export class GameSession implements GunHost, EditHost {
         sun: { ...this.sun.settings, time: { ...this.sun.settings.time } },
         visibility: this.toVisibilitySettings(),
         materials: this.textures.current,
-        savedBy: this.settings.userName
+        savedBy: this.settings.userName,
+        thumbnail
       }, { generator: 'BimGo Web', version: __BIMGO_VERSION__ }, this.isFileMode ? FileKinds.SAVE : FileKinds.SESSION_SAVE,
       f => { saving.progress.fraction = f; }, saving.abort.signal);
+      size = blob.size;
 
       if (handle) {
         saving.progress.stage = 'Writing to disk';
@@ -2656,14 +2902,25 @@ export class GameSession implements GunHost, EditHost {
       this.source.displayName = name;
       this.markSaved();
     }
+    this.document.thumbnail = thumbnail;
+    this.onSaved?.(name, size, thumbnail);
     this.sound.play(SoundId.Commit);
     const pending = this.source.pending > 0 ? ` (${this.source.pending} edit${this.source.pending === 1 ? ' was' : 's were'} still waiting for Revit and not included)` : '';
     this.toast((handle ? `Saved ${name}` : `Saved ${name} to your Downloads folder`) + pending, handle && !pending ? 2.6 : 5);
     return true;
   }
 
+  /** The picture written with the last save (the start screen's card), or null. */
+  lastThumbnail: Uint8Array | null = null;
+
+  /** Called after a save with the file's name and its thumbnail (the start screen's recent card). */
+  onSaved: ((name: string, size: number, thumbnail: Uint8Array | null) => void) | null = null;
+
   /** CLOSE MODEL: asks first when there are unsaved changes. */
   requestClose(): void {
+    // A tour puts the walkthrough back first
+    this.video.abort();
+    if (this.tour.active) { this.tour.stop(false, true); }
     if (this.isDirty) {
       const summary = `${this.journal.count} edit(s), ${this.comments.comments.length} comment(s), ${this.bookmarks.bookmarks.length} bookmark(s)`;
       if (!confirm(`${this.documentName} has unsaved changes (${summary}).\n\nClose without saving? (Cancel, then SAVE, to keep them.)`)) { return; }
@@ -2677,6 +2934,10 @@ export class GameSession implements GunHost, EditHost {
   /** Releases GPU resources, sound and the mouse. */
   dispose(): void {
     globalThis.removeEventListener('beforeunload', this.unloadGuard);
+    this.video.abort();
+    if (this.tour.active) { this.tour.stop(false, true); }
+    this.markup.release();
+    if (this.player) { this.eye.write(this.settings); }
     if (this.comments) { this.flushSidecars(); }
     this.saving?.abort.abort();
     this.window.setCaptured(false);
@@ -2695,6 +2956,20 @@ export class GameSession implements GunHost, EditHost {
   s(value: number): number {
     return value * this.ui.scale;
   }
+}
+
+/** Bottom-up RGBA pixels as a top-down canvas (opaque). */
+function pixelsCanvas(pixels: Uint8Array, width: number, height: number): HTMLCanvasElement {
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext('2d')!;
+  const image = context.createImageData(width, height);
+  const stride = width * 4;
+  for (let y = 0; y < height; y++) { image.data.set(pixels.subarray((height - 1 - y) * stride, (height - y) * stride), y * stride); }
+  for (let i = 3; i < image.data.length; i += 4) { image.data[i] = 255; }
+  context.putImageData(image, 0, 0);
+  return canvas;
 }
 
 /** Base64 text as bytes. */

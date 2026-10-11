@@ -330,7 +330,8 @@ const comments = {
     { id: '5a3c1e2b7d4f4c8e9a1b2c3d4e5f6003', author: 'BimGo', created, text: 'Realistic colour mode (Esc → Display) shows the polished floor, the mirror upstairs and the pool reflecting.', x: 7, y: -3.4, z: 0.8, elementId: 0, level: 'Level 1',
       status: 'closed' },
     { id: '5a3c1e2b7d4f4c8e9a1b2c3d4e5f6004', author: 'BimGo', created,
-      text: 'P opens the section box (Shift+P cuts at the wall you aim at, Ctrl+P clears), M is photo mode (stills and 360°), J the sun and daylight study. Esc → COMMENTS exports these issues to BCF.',
+      text: 'P opens the section box (Shift+P cuts at the wall you aim at, Ctrl+P clears), M is photo mode (stills and 360°), J the sun and daylight study. Esc → COMMENTS exports these issues to BCF. ' +
+        'Press 2 again to measure areas, angles and clearances; Esc → BOOKMARKS → PLAY TOUR plays the viewpoints (RECORD VIDEO makes an MP4); eye height and units are in the pause menu.',
       x: 7, y: 0.4, z: 2.2, elementId: 0, level: 'Level 1',
       view: { x: 7, y: -7, z: 0, yaw: Math.PI / 2, pitch: 0.02, flying: false, section: CAFE_CUT } }
   ]
@@ -339,11 +340,13 @@ const bookmarks = {
   version: 1, model: 'BimGo Sample Pavilion',
   bookmarks: [
     { id: 'sample-b1', name: 'Street view', author: 'BimGo', created, x: 7, y: -13, z: 0, yaw: Math.PI / 2, pitch: 0.06, flying: false, level: 'Level 1' },
-    { id: 'sample-b2', name: 'Cafe', author: 'BimGo', created, x: 9.2, y: 2.2, z: 0, yaw: 0.9, pitch: -0.1, flying: false, level: 'Level 1' },
+    { id: 'sample-b2', name: 'Cafe (seated)', author: 'BimGo', created, x: 9.2, y: 2.2, z: 0, yaw: 0.9, pitch: -0.1, flying: false, level: 'Level 1', eyeHeight: 1.2 },
     { id: 'sample-b3', name: 'Studio', author: 'BimGo', created, x: 12.8, y: 1.2, z: L2, yaw: 2.6, pitch: -0.1, flying: false, level: 'Level 2' },
     { id: 'sample-b4', name: 'Section through the ground floor', author: 'BimGo', created, x: 7, y: -7, z: 0, yaw: Math.PI / 2, pitch: 0.02, flying: false,
-      level: 'Level 1', section: CAFE_CUT }
-  ]
+      level: 'Level 1', section: CAFE_CUT, tourHold: 6 }
+  ],
+  // The bookmark tour (Esc → BOOKMARKS → PLAY TOUR): a fade between stops and a slow 20° pan at each
+  tour: { transition: 'fade', holdSeconds: 4, fadeSeconds: 0.6, glideSeconds: 3, swivel: true, swivelDegrees: 20, swivelDirection: 'left', showUi: false, loop: false }
 };
 const sun = { version: 1, enabled: true, time: { month: 6, day: 21, minutes: 870, daylightSaving: false }, sunIntensity: 1, skyIntensity: 1, shadowIntensity: 0.85, glassTransmission: 1 };
 const lighting = { emissive, lights };

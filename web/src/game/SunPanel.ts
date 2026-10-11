@@ -6,8 +6,10 @@ import { SoundId } from '../platform/audio';
 import { type InputState, Vk } from '../platform/input';
 import type { GameSession } from './GameSession';
 import { LightMode } from './Lights';
+import { LocationPicker } from './LocationPicker';
 import { Widgets } from './Menus';
 import { MONTHS, TIME_STEP, two } from './SunState';
+import { UnitFormat } from './UnitFormat';
 
 const QUALITY_OPTIONS = ['Low', 'Medium', 'High'];
 const LIGHT_MODE_OPTIONS = ['Off', 'Glow', 'Glow + light'];
@@ -20,6 +22,8 @@ const SLIDER = { time: 10, sun: 11, sky: 12, shadow: 13, glass: 14, lights: 15, 
  */
 export class SunPanel {
   open = false;
+  /** The location picker (CHANGE…), drawn in the panel's place while open. */
+  readonly location: LocationPicker;
   private readonly w: Widgets;
   /** Month / day text boxes: 0 = none focused, 1 = month, 2 = day. */
   private field = 0;
@@ -27,6 +31,7 @@ export class SunPanel {
 
   constructor(private readonly session: GameSession) {
     this.w = new Widgets(session);
+    this.location = new LocationPicker(session);
   }
 
   private s(v: number): number { return this.session.s(v); }
@@ -44,6 +49,7 @@ export class SunPanel {
   close(): void {
     if (!this.open) { return; }
     this.commitField();
+    this.location.open = false;
     this.open = false;
     this.w.activeSlider = -1;
     this.session.input.releaseAll();
@@ -54,6 +60,10 @@ export class SunPanel {
   /** Keys while the panel is open (it has the keyboard). */
   updateKeys(input: InputState): void {
     const sun = this.session.sun;
+    if (this.location.open) {
+      this.location.updateKeys(input);
+      return;
+    }
     if (this.field !== 0) {
       for (const c of input.typed) {
         if (c >= '0' && c <= '9') { this.fieldText = (this.fieldText.length >= 2 ? '' : this.fieldText) + c; }
@@ -165,6 +175,12 @@ export class SunPanel {
     const y = Math.max(this.s(20), icon.y - this.s(10) - ph);
     ui.panel(x, y, pw, ph, UiTheme.PANEL_STRONG, Rgba.withAlpha(UiTheme.SUN, 0.5));
 
+    // The location picker (CHANGE…) takes the panel's place while open
+    if (this.location.open) {
+      this.location.build(f, w, input, x, y, pw, ph);
+      return;
+    }
+
     // A click anywhere outside a month / day box leaves it
     if (input.leftPressed && this.field !== 0) { this.commitField(); }
 
@@ -175,8 +191,15 @@ export class SunPanel {
     ui.text(f.small, ix, cy, 'SUN, SHADOWS & LIGHTS', UiTheme.SUN_LABEL, this.s(2));
     ui.textRight(f.small, ix + iw, cy, 'ESC · O CLOSE', UiTheme.TEXT_FAINT, this.s(0.6));
     cy += this.s(22);
-    ui.textWrapped(f.small, ix, cy, iw, sun.placeLabel, sun.locationKnown ? UiTheme.TEXT_MUTED : UiTheme.MEASURE_LABEL, 1);
-    cy += this.s(24);
+    const changeW = this.s(78);
+    const placeColour = sun.hasOverride ? UiTheme.SUN : sun.locationKnown ? UiTheme.TEXT_MUTED : UiTheme.MEASURE_LABEL;
+    ui.textWrapped(f.small, ix, cy + this.s(3), iw - changeW - this.s(8), sun.placeLabel, placeColour, 1);
+    if (w.smallButton(f, ix + iw - changeW, cy - this.s(2), changeW, this.s(22), 'CHANGE…')) {
+      this.commitField();
+      this.location.show();
+      return;
+    }
+    cy += this.s(26);
 
     // Shadows on / off + quality
     const enabled = w.checkbox(f, ix, cy + this.s(6), this.s(110), 'Shadows', settings.enabled);
@@ -187,7 +210,7 @@ export class SunPanel {
       viewer.save();
       session.qualityChosenByUser = true;
       const preset = shadowPresetFor(quality);
-      session.toast(`Shadow quality: ${QUALITY_OPTIONS[quality]} (${preset.cascades} × ${preset.size} px, ${preset.distance} m)`);
+      session.toast(`Shadow quality: ${QUALITY_OPTIONS[quality]} (${preset.cascades} × ${preset.size} px, ${UnitFormat.length(preset.distance, 0)})`);
     }
     cy += this.s(46);
 
@@ -213,10 +236,20 @@ export class SunPanel {
     if (this.numberBox(f, input, ix + this.s(52), cy, this.s(48), 1, settings.time.month)) { this.focusField(1); }
     ui.text(f.small, ix + this.s(106), cy + this.s(8), MONTHS_UPPER[Math.min(Math.max(settings.time.month, 1), 12) - 1], UiTheme.TEXT_MUTED);
     if (this.numberBox(f, input, ix + this.s(142), cy, this.s(48), 2, settings.time.day)) { this.focusField(2); }
-    const dst = w.checkbox(f, ix + this.s(204), cy + this.s(6), iw - this.s(204), '+1 h DST', settings.time.daylightSaving);
-    if (dst !== settings.time.daylightSaving) {
-      settings.time.daylightSaving = dst;
-      sun.changed();
+    if (sun.location.autoDaylightSaving) {
+      // The chosen place's time zone decides (per date); a click switches to the manual tick
+      if (w.smallButton(f, ix + this.s(204), cy, iw - this.s(204), this.s(30), sun.daylightSavingNow ? 'DST AUTO: ON' : 'DST AUTO: OFF')) {
+        sun.setAutoDaylightSaving(false);
+      }
+    } else {
+      const zoned = sun.canAutoDaylightSaving;
+      const tickW = iw - this.s(204) - (zoned ? this.s(50) : 0);
+      const dst = w.checkbox(f, ix + this.s(204), cy + this.s(6), tickW, '+1 h DST', settings.time.daylightSaving);
+      if (dst !== settings.time.daylightSaving) {
+        settings.time.daylightSaving = dst;
+        sun.changed();
+      }
+      if (zoned && w.smallButton(f, ix + iw - this.s(46), cy, this.s(46), this.s(30), 'AUTO')) { sun.setAutoDaylightSaving(true); }
     }
     cy += this.s(40);
 

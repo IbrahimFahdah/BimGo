@@ -68,7 +68,7 @@ export class Player {
       this.visualZ = fz;
     }
 
-    const targetEye = this.controller.crouching && !this.flying ? CharacterController.CROUCH_EYE : CharacterController.STAND_EYE;
+    const targetEye = this.controller.crouching && !this.flying ? this.controller.crouchEye : this.controller.standEye;
     this.eyeHeight += (targetEye - this.eyeHeight) * (1 - Math.exp(-12 * dt));
 
     return vec3(fx, fy, this.visualZ + this.eyeHeight);

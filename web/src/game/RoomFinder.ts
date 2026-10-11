@@ -7,6 +7,7 @@ import { SoundId } from '../platform/audio';
 import { Vk } from '../platform/input';
 import type { GameSession } from './GameSession';
 import type { Widgets } from './Menus';
+import { UnitFormat } from './UnitFormat';
 
 /** One row of the list (labels made once per session). */
 interface RoomRow {
@@ -29,6 +30,7 @@ export class RoomFinder {
   private scroll = 0;
   private search = '';
   private rows: RoomRow[] | null = null;
+  private rowsUnits = -1;
   private matches: RoomRow[] = [];
   private matchesDirty = true;
 
@@ -207,6 +209,12 @@ export class RoomFinder {
 
   /** The rows (built once), then the matches for the current search (every word in the number, name or level). */
   private refreshMatches(): void {
+    // The rows carry areas: rebuilt when the display units change
+    if (this.rowsUnits !== UnitFormat.revision) {
+      this.rows = null;
+      this.rowsUnits = UnitFormat.revision;
+      this.matchesDirty = true;
+    }
     this.rows ??= this.buildRowList();
     if (!this.matchesDirty) { return; }
     this.matchesDirty = false;
@@ -232,7 +240,7 @@ export class RoomFinder {
       return {
         room: i,
         title,
-        detail: `${level} · ${planArea(room).toFixed(1)} m²${link}`,
+        detail: `${level} · ${UnitFormat.area(planArea(room))}${link}`,
         search: `${room.number} ${room.name} ${level}${link}`.toLowerCase(),
         elevation: room.bottomZ
       };

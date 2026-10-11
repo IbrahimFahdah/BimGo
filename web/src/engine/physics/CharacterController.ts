@@ -40,6 +40,14 @@ export class CharacterController {
   grounded = false;
   height = CharacterController.STAND_HEIGHT;
   crouching = false;
+  /** Standing eye height for the current eye-height preset (m; setStandingEye). */
+  standEye = CharacterController.STAND_EYE;
+  /** Standing capsule height: the eye plus the same allowance over it as a standing adult. */
+  standHeight = CharacterController.STAND_HEIGHT;
+  /** Crouched eye height (scaled with the standing eye). */
+  crouchEye = CharacterController.CROUCH_EYE;
+  /** Crouched capsule height (scaled with the standing eye). */
+  crouchHeight = CharacterController.CROUCH_HEIGHT;
   stepHeight = 0.2;
   groundZ = 0;
   steppedThisTick = false;
@@ -150,11 +158,36 @@ export class CharacterController {
   private updateCrouch(crouch: boolean): void {
     if (crouch) {
       this.crouching = true;
-      this.height = CharacterController.CROUCH_HEIGHT;
-    } else if (this.crouching && !this.overlaps(this.feet, CharacterController.STAND_HEIGHT)) {
+      this.height = this.crouchHeight;
+    } else if (this.crouching && !this.overlaps(this.feet, this.standHeight)) {
       this.crouching = false;
-      this.height = CharacterController.STAND_HEIGHT;
+      this.height = this.standHeight;
     }
+  }
+
+  /**
+   * Changes the standing eye height (eye-height presets, tour round). The capsule follows: standing height = eye
+   * + 0.13 m (as a standing adult), crouch scaled in proportion; the step-up height is unchanged. Growing taller is
+   * refused under a low ceiling unless forced (a bookmark saved at that height, or flying).
+   * @param eye Standing eye height (m), clamped to 0.9–2.0.
+   * @returns False if there was no headroom (nothing changed).
+   */
+  setStandingEye(eye: number, force: boolean): boolean {
+    const C = CharacterController;
+    eye = Math.fround(Math.min(Math.max(Number.isFinite(eye) ? eye : C.STAND_EYE, 0.9), 2.0));
+    const standHeight = eye + (C.STAND_HEIGHT - C.STAND_EYE);
+    const scale = eye / C.STAND_EYE;
+    const crouchHeight = Math.max(C.RADIUS * 2 + 0.05, C.CROUCH_HEIGHT * scale);
+    const newHeight = this.crouching ? crouchHeight : standHeight;
+
+    if (!force && newHeight > this.height + 1e-4 && this.overlaps(vec3(this.feet.x, this.feet.y, this.feet.z + 0.01), newHeight)) { return false; }
+
+    this.standEye = eye;
+    this.standHeight = standHeight;
+    this.crouchEye = C.CROUCH_EYE * scale;
+    this.crouchHeight = crouchHeight;
+    this.height = newHeight;
+    return true;
   }
 
   private clipVelocity(nx: number, ny: number): void {

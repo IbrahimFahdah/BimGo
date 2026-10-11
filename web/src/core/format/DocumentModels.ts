@@ -1,6 +1,7 @@
 import { clamp, f32, type Vec3, vec3 } from '../math/Vector';
 import type { SiteInfo } from '../scene/ModelInfo';
 import { SectionCut } from '../scene/SectionCut';
+import type { TourTransition } from '../scene/TourTimeline';
 import { arr, bool, float, int, isBlank, type Json, newId, num, objOrNull, str } from './Json';
 
 // Ports of CommentModels.cs, BookmarkModels.cs, SunModels.cs and VisibilityModels.cs: the optional document
@@ -49,6 +50,14 @@ export interface CommentRecord {
   snapshot: string | null;
   /** Runtime only: the snapshot's JPEG bytes (loaded with the comments, or just taken), or null. */
   snapshotData: Uint8Array | null;
+  /**
+   * The picture before markup (review tools round): "comments/<id>_original.jpg", kept beside the marked-up snapshot
+   * so MARKUP… starts from the clean view. Null when the picture has no markup. The markup itself is burned into the
+   * snapshot and the thumbnail (so BCF carries it).
+   */
+  snapshotOriginal: string | null;
+  /** Runtime only: the unmarked picture's JPEG bytes, or null. */
+  snapshotOriginalData: Uint8Array | null;
   /** Runtime only: scene-local position. */
   local: Vec3;
   /** Runtime only: the list header. */
@@ -134,7 +143,13 @@ export function cleanComment(c: CommentRecord): CommentRecord {
   if (isBlank(c.thumbnail)) { c.thumbnail = null; }
   if (isBlank(c.elementUniqueId)) { c.elementUniqueId = null; }
   if (!CommentSnapshots.isValidName(c.snapshot)) { c.snapshot = null; }
+  if (!CommentSnapshots.isValidName(c.snapshotOriginal) || c.snapshot === null) { c.snapshotOriginal = null; }
   return c;
+}
+
+/** True when a comment's picture carries markup (an unmarked original is kept). */
+export function hasMarkup(c: CommentRecord): boolean {
+  return c.snapshotOriginal !== null;
 }
 
 export interface CommentDocument {
@@ -170,6 +185,8 @@ export function readComment(j: Json): CommentRecord {
     elementUniqueId: str(j.elementUniqueId, null),
     snapshot: str(j.snapshot, null),
     snapshotData: null,
+    snapshotOriginal: str(j.snapshotOriginal, null),
+    snapshotOriginalData: null,
     local: vec3(),
     header: ''
   };
@@ -193,6 +210,11 @@ export const CommentSnapshots = {
     let file = (commentId ?? '').replace(/[^A-Za-z0-9-]/g, '_');
     if (!file) { file = newId(); }
     return `comments/${file}.jpg`;
+  },
+
+  /** The name of a comment's unmarked picture (review tools round): "comments/<id>_original.jpg". */
+  originalNameFor(commentId: string): string {
+    return CommentSnapshots.nameFor(commentId).slice(0, -4) + '_original.jpg';
   },
 
   /** True for "comments/<safe name>.jpg" (no sub-folders, no ".."). */
@@ -239,6 +261,50 @@ export interface SunSettings {
   skyIntensity: number;
   shadowIntensity: number;
   glassTransmission: number;
+  /**
+   * A location chosen in BimGo instead of the model's (location override), or null to use the Revit site's. Older
+   * readers ignore it; Revit is never changed.
+   */
+  location: LocationOverride | null;
+}
+
+/**
+ * A site location chosen in BimGo (searched from the bundled place list, or typed as latitude / longitude) that
+ * replaces the Revit site's for the sun, shadows and the daylight studies (port of LocationOverride). True north stays
+ * the model's.
+ */
+export interface LocationOverride {
+  /** Degrees, north positive. */
+  latitude: number;
+  /** Degrees, east positive. */
+  longitude: number;
+  /** Standard time zone (hours from UTC, without daylight saving). */
+  timeZone: number;
+  /** The IANA time zone (e.g. "Australia/Sydney"), or null when only the offset is known. */
+  zoneId: string | null;
+  /** Daylight saving follows zoneId's rules for the date (default); off: the manual +1 h tick decides. */
+  autoDaylightSaving: boolean;
+  /** What to call the place ("Sydney, New South Wales, Australia" or "−33.86°, 151.21°"). */
+  name: string;
+}
+
+/** LocationOverride.Clean: clamps the offset, trims the texts. Returns the same object. */
+export function cleanLocation(l: LocationOverride): LocationOverride {
+  if (Number.isFinite(l.timeZone)) { l.timeZone = clamp(l.timeZone, -14, 14); }
+  l.zoneId = isBlank(l.zoneId) ? null : l.zoneId!.trim();
+  l.name = (l.name ?? '').trim().slice(0, 120);
+  return l;
+}
+
+/** Reads a location override (null when missing or not usable). */
+export function readLocation(j: Json | null): LocationOverride | null {
+  if (!j) { return null; }
+  const l = cleanLocation({
+    latitude: num(j.latitude, NaN), longitude: num(j.longitude, NaN), timeZone: num(j.timeZone, 0),
+    zoneId: str(j.zoneId, null), autoDaylightSaving: bool(j.autoDaylightSaving, true), name: str(j.name, '')
+  });
+  const valid = Number.isFinite(l.latitude) && Number.isFinite(l.longitude) && Number.isFinite(l.timeZone) && Math.abs(l.latitude) <= 90 && Math.abs(l.longitude) <= 180;
+  return valid ? l : null;
 }
 
 export const SUN_MIN_INTENSITY = 0;
@@ -290,12 +356,13 @@ export function readSunSettings(j: Json): SunSettings {
     sunIntensity: clampOr(j.sunIntensity, SUN_MIN_INTENSITY, SUN_MAX_INTENSITY, 1),
     skyIntensity: clampOr(j.skyIntensity, SUN_MIN_INTENSITY, SUN_MAX_INTENSITY, 1),
     shadowIntensity: clampOr(j.shadowIntensity, 0, 1, 1),
-    glassTransmission: clampOr(j.glassTransmission, 0, 2, 1)
+    glassTransmission: clampOr(j.glassTransmission, 0, 2, 1),
+    location: readLocation(objOrNull(j.location))
   };
 }
 
 export function sunDefaultsFor(site: SiteInfo | null): SunSettings {
-  return { version: 1, enabled: false, time: sunStartFor(site), sunIntensity: 1, skyIntensity: 1, shadowIntensity: 1, glassTransmission: 1 };
+  return { version: 1, enabled: false, time: sunStartFor(site), sunIntensity: 1, skyIntensity: 1, shadowIntensity: 1, glassTransmission: 1, location: null };
 }
 
 // #endregion
@@ -321,6 +388,20 @@ export interface BookmarkRecord {
    * bookmarks) leaves the current cut alone.
    */
   section: SectionCut | null;
+  /**
+   * What was hidden when the bookmark was set (tour round): hidden categories, links and elements. GO and the tour
+   * restore it (an empty set shows everything); null (older bookmarks) leaves visibility alone. Never the ground
+   * offset or the section (the section has its own field).
+   */
+  visibility: VisibilitySettings | null;
+  /** The standing eye height when the bookmark was set (m): GO and the tour use it. Null keeps the current one. */
+  eyeHeight: number | null;
+  /** Tour: seconds to hold at this stop, or null for the tour's hold time. */
+  tourHold: number | null;
+  /** Tour: this stop's swivel in degrees (positive left, negative right, 0 none), or null for the tour's. */
+  tourSwivel: number | null;
+  /** Tour: leave this bookmark out of the tour (it stays in the list). */
+  tourSkip: boolean;
   /** PNG as base64, or null. */
   thumbnail: string | null;
   /** Runtime only. */
@@ -334,6 +415,104 @@ export interface BookmarkDocument {
   units: string;
   bookmarks: BookmarkRecord[];
   home: BookmarkRecord | null;
+  /** The bookmark tour's settings (tour round), or null for the defaults. Older readers ignore it. */
+  tour: TourSettings | null;
+}
+
+/** Which way the tour's swivel turns. */
+export type TourSwivelDirection = 'left' | 'right';
+
+/**
+ * The bookmark tour's settings (port of TourSettings), saved with the bookmarks. Each bookmark can override the hold
+ * and swivel (tourHold, tourSwivel) or be left out (tourSkip).
+ */
+export interface TourSettings {
+  transition: TourTransition;
+  /** Seconds at each stop (between the fades), unless a bookmark overrides it. */
+  holdSeconds: number;
+  /** Seconds to fade out, and again to fade in (0 = cut). */
+  fadeSeconds: number;
+  /** Seconds to glide from one stop to the next (glide transition). */
+  glideSeconds: number;
+  /** Pan slowly at each stop. */
+  swivel: boolean;
+  /** How far the swivel pans over a stop (degrees). */
+  swivelDegrees: number;
+  swivelDirection: TourSwivelDirection;
+  /** Show the HUD (minimap, status, room) during the tour; off = a clean view. */
+  showUi: boolean;
+  /** Start again from the first stop after the last. */
+  loop: boolean;
+}
+
+/** TourSettings' limits. */
+export const TourLimits = {
+  MIN_HOLD: 1, MAX_HOLD: 60, MAX_FADE: 2, MIN_GLIDE: 1, MAX_GLIDE: 15, MAX_SWIVEL: 180, MIN_EYE_HEIGHT: 0.9, MAX_EYE_HEIGHT: 2.0
+} as const;
+
+export function defaultTourSettings(): TourSettings {
+  return {
+    transition: 'fade', holdSeconds: 4, fadeSeconds: f32(0.6), glideSeconds: 3, swivel: true, swivelDegrees: 30, swivelDirection: 'left',
+    showUi: false, loop: false
+  };
+}
+
+/** TourSettings.Clean: every value into range (hand-edited files). Returns the same object. */
+export function cleanTourSettings(t: TourSettings): TourSettings {
+  const L = TourLimits;
+  if (t.transition !== 'fade' && t.transition !== 'glide') { t.transition = 'fade'; }
+  if (t.swivelDirection !== 'left' && t.swivelDirection !== 'right') { t.swivelDirection = 'left'; }
+  t.holdSeconds = Number.isFinite(t.holdSeconds) ? f32(clamp(t.holdSeconds, L.MIN_HOLD, L.MAX_HOLD)) : 4;
+  t.fadeSeconds = Number.isFinite(t.fadeSeconds) ? f32(clamp(t.fadeSeconds, 0, L.MAX_FADE)) : f32(0.6);
+  t.glideSeconds = Number.isFinite(t.glideSeconds) ? f32(clamp(t.glideSeconds, L.MIN_GLIDE, L.MAX_GLIDE)) : 3;
+  t.swivelDegrees = Number.isFinite(t.swivelDegrees) ? f32(clamp(t.swivelDegrees, 0, L.MAX_SWIVEL)) : 30;
+  return t;
+}
+
+/** The tour-wide swivel in degrees, signed like tourSwivel (positive left). */
+export function signedSwivelDegrees(t: TourSettings): number {
+  return !t.swivel ? 0 : t.swivelDirection === 'right' ? -t.swivelDegrees : t.swivelDegrees;
+}
+
+/** A stop's hold: the bookmark's own, else the tour's (s). */
+export function tourHoldFor(t: TourSettings, b: BookmarkRecord | null): number {
+  return b?.tourHold ?? t.holdSeconds;
+}
+
+/** A stop's swivel: the bookmark's own, else the tour's (degrees, positive left). */
+export function tourSwivelFor(t: TourSettings, b: BookmarkRecord | null): number {
+  return b?.tourSwivel ?? signedSwivelDegrees(t);
+}
+
+/** Reads tour settings (enum names case-insensitive, as the desktop's string enum converter). */
+export function readTourSettings(j: Json | null): TourSettings | null {
+  if (!j) { return null; }
+  const d = defaultTourSettings();
+  const lower = (v: unknown, fallback: string) => (typeof v === 'string' ? v.toLowerCase() : fallback);
+  return cleanTourSettings({
+    transition: lower(j.transition, d.transition) as TourTransition,
+    holdSeconds: float(j.holdSeconds, d.holdSeconds),
+    fadeSeconds: float(j.fadeSeconds, d.fadeSeconds),
+    glideSeconds: float(j.glideSeconds, d.glideSeconds),
+    swivel: bool(j.swivel, d.swivel),
+    swivelDegrees: float(j.swivelDegrees, d.swivelDegrees),
+    swivelDirection: lower(j.swivelDirection, d.swivelDirection) as TourSwivelDirection,
+    showUi: bool(j.showUi, d.showUi),
+    loop: bool(j.loop, d.loop)
+  });
+}
+
+/** Clamps a bookmark's tour-round fields (hand-edited files). */
+function cleanTourFields(b: BookmarkRecord): void {
+  const L = TourLimits;
+  if (b.visibility) {
+    b.visibility.groundOffset = null;
+    b.visibility.section = null;
+  }
+  const clampOrNull = (v: number | null, min: number, max: number) => (v === null ? null : Number.isFinite(v) ? f32(clamp(v, min, max)) : null);
+  b.eyeHeight = clampOrNull(b.eyeHeight, L.MIN_EYE_HEIGHT, L.MAX_EYE_HEIGHT);
+  b.tourHold = clampOrNull(b.tourHold, L.MIN_HOLD, L.MAX_HOLD);
+  b.tourSwivel = clampOrNull(b.tourSwivel, -L.MAX_SWIVEL, L.MAX_SWIVEL);
 }
 
 export function readBookmark(j: Json): BookmarkRecord {
@@ -349,6 +528,11 @@ export function readBookmark(j: Json): BookmarkRecord {
     level: str(j.level, ''),
     sun: sun ? readSunTime(sun) : null,
     section: SectionCut.read(j.section),
+    visibility: objOrNull(j.visibility) ? readVisibility(objOrNull(j.visibility)!) : null,
+    eyeHeight: nullableFloat(j.eyeHeight),
+    tourHold: nullableFloat(j.tourHold),
+    tourSwivel: nullableFloat(j.tourSwivel),
+    tourSkip: bool(j.tourSkip),
     thumbnail: str(j.thumbnail, null),
     local: vec3(),
     detail: ''
@@ -356,7 +540,12 @@ export function readBookmark(j: Json): BookmarkRecord {
 }
 
 export function emptyBookmarks(): BookmarkDocument {
-  return { version: 1, model: '', units: 'metres, Revit internal coordinates; angles in radians', bookmarks: [], home: null };
+  return { version: 1, model: '', units: 'metres, Revit internal coordinates; angles in radians', bookmarks: [], home: null, tour: null };
+}
+
+/** A float32 member that may be null / missing (float? on the desktop). */
+function nullableFloat(v: unknown): number | null {
+  return v === null || v === undefined ? null : float(v, NaN);
 }
 
 const finiteBookmark = (b: BookmarkRecord) =>
@@ -376,7 +565,9 @@ export function readBookmarkDocument(j: Json | null): BookmarkDocument {
   for (const b of doc.bookmarks) {
     if (isBlank(b.name)) { b.name = 'Viewpoint'; }
     if (isBlank(b.id)) { b.id = newId(); }
+    cleanTourFields(b);
   }
+  doc.tour = readTourSettings(objOrNull(j.tour));
   return doc;
 }
 

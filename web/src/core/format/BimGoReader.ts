@@ -35,6 +35,11 @@ export interface BimGoDocument {
   readFormatVersion: number;
   /** The manifest as read (the writer keeps its extraction settings and provenance). */
   manifest: Json;
+  /**
+   * A JPEG of the view at the last save (review tools round: thumbnail.jpg, shown on the start screen), or null.
+   * Optional: older readers ignore it.
+   */
+  thumbnail: Uint8Array | null;
 }
 
 /** Progress and cancellation for a read (replaces OperationProgress). */
@@ -60,6 +65,16 @@ export const BimGoReader = {
       return (await readJson(zip, BimGoFormat.ENTRY_MANIFEST, true))!;
     } catch (e) {
       throw new BimGoReadError(describe(e));
+    }
+  },
+
+  /** Reads only a file's thumbnail.jpg (review tools round; cheap: one entry), or null when it has none. */
+  async readThumbnail(file: Blob): Promise<Uint8Array | null> {
+    try {
+      return await readThumbnail(await ZipReader.open(file));
+    } catch (e) {
+      console.info(`Thumbnail unreadable: ${e instanceof Error ? e.message : String(e)}`);
+      return null;
     }
   },
 
@@ -93,7 +108,14 @@ async function readDocument(file: Blob, name: string, progress?: ReadProgress): 
   for (const comment of comments.comments) {
     // BCF pictures (optional entries; a missing one leaves the comment without)
     comment.snapshotData = comment.snapshot ? await readBytes(zip, comment.snapshot) : null;
-    if (!comment.snapshotData) { comment.snapshot = null; }
+    if (!comment.snapshotData) {
+      comment.snapshot = null;
+      comment.snapshotOriginal = null;
+      continue;
+    }
+    // The picture before markup (review tools round; optional)
+    comment.snapshotOriginalData = comment.snapshotOriginal ? await readBytes(zip, comment.snapshotOriginal) : null;
+    if (!comment.snapshotOriginalData) { comment.snapshotOriginal = null; }
   }
   const journal = await readJson(zip, BimGoFormat.ENTRY_JOURNAL, false);
   const bookmarks = readBookmarkDocument(await readJson(zip, BimGoFormat.ENTRY_BOOKMARKS, false));
@@ -127,8 +149,15 @@ async function readDocument(file: Blob, name: string, progress?: ReadProgress): 
     kind: str(manifest.kind, FileKinds.EXPORT),
     name,
     readFormatVersion: formatVersion,
-    manifest
+    manifest,
+    thumbnail: await readThumbnail(zip)
   };
+}
+
+async function readThumbnail(zip: ZipReaderType): Promise<Uint8Array | null> {
+  const entry = zip.get(BimGoFormat.ENTRY_THUMBNAIL);
+  if (!entry || entry.size <= 0 || entry.size > BimGoFormat.MAX_THUMBNAIL_BYTES) { return null; }
+  return readBytes(zip, BimGoFormat.ENTRY_THUMBNAIL);
 }
 
 // #region Scene

@@ -10,7 +10,8 @@ import { isLibraryEmpty, type LibraryEntry } from '../scene/FamilyLibrary';
 import { BimGoFormat, FileKinds, formatPhaseRole } from './BimGoFormat';
 import type { BimGoDocument } from './BimGoReader';
 import {
-  type BookmarkDocument, type BookmarkRecord, type CommentDocument, CommentSnapshots, isVisibilityEmpty, type SunSettings, type SunTime, type VisibilitySettings
+  type BookmarkDocument, type BookmarkRecord, type CommentDocument, CommentSnapshots, isVisibilityEmpty, type LocationOverride, type SunSettings,
+  type SunTime, type TourSettings, type VisibilitySettings
 } from './DocumentModels';
 import { obj, type Json } from './Json';
 import { ZipWriter } from './ZipWriter';
@@ -32,6 +33,8 @@ export interface SaveContent {
   /** The material set to write (the Textures panel's, else the file's). */
   materials: MaterialData;
   savedBy: string;
+  /** The start screen's picture of the view (thumbnail.jpg), or null for none. */
+  thumbnail?: Uint8Array | null;
 }
 
 /**
@@ -72,6 +75,10 @@ export async function writeBimGo(document: BimGoDocument, content: SaveContent, 
   await zip.addText(BimGoFormat.ENTRY_JOURNAL, json({ entries: content.journal.entries.map(journalEntry) }, true), signal);
 
   // Optional parts: older readers ignore entries they don't know, so no format bump is needed
+  const thumbnail = content.thumbnail;
+  if (thumbnail && thumbnail.length > 0 && thumbnail.length <= BimGoFormat.MAX_THUMBNAIL_BYTES) {
+    await zip.add(BimGoFormat.ENTRY_THUMBNAIL, thumbnail, false, signal);
+  }
   if (content.bookmarks.bookmarks.length > 0 || content.bookmarks.home) {
     await zip.addText(BimGoFormat.ENTRY_BOOKMARKS, json(bookmarkDocument(content.bookmarks), true), signal);
   }
@@ -222,7 +229,7 @@ function commentDocument(d: CommentDocument): Json {
       view: c.view
         ? { x: c.view.x, y: c.view.y, z: c.view.z, yaw: f(c.view.yaw), pitch: f(c.view.pitch), flying: c.view.flying, section: section(c.view.section) }
         : null,
-      thumbnail: c.thumbnail, elementUniqueId: c.elementUniqueId, snapshot: c.snapshot
+      thumbnail: c.thumbnail, elementUniqueId: c.elementUniqueId, snapshot: c.snapshot, snapshotOriginal: c.snapshotOriginal
     }))
   };
 }
@@ -253,6 +260,13 @@ async function writeCommentSnapshots(zip: ZipWriter, comments: CommentDocument, 
     if (written.has(key)) { continue; }
     written.add(key);
     await zip.add(c.snapshot!, c.snapshotData, false, signal);
+
+    // The unmarked original of a marked-up picture (review tools round)
+    if (!c.snapshotOriginalData || c.snapshotOriginalData.length === 0 || !CommentSnapshots.isValidName(c.snapshotOriginal)) { continue; }
+    const originalKey = c.snapshotOriginal!.toLowerCase();
+    if (written.has(originalKey)) { continue; }
+    written.add(originalKey);
+    await zip.add(c.snapshotOriginal!, c.snapshotOriginalData, false, signal);
   }
 }
 
@@ -284,19 +298,41 @@ function sunTime(t: SunTime): Json {
 function sunSettings(s: SunSettings): Json {
   return {
     version: s.version, enabled: s.enabled, time: sunTime(s.time), sunIntensity: f(s.sunIntensity), skyIntensity: f(s.skyIntensity),
-    shadowIntensity: f(s.shadowIntensity), glassTransmission: f(s.glassTransmission)
+    shadowIntensity: f(s.shadowIntensity), glassTransmission: f(s.glassTransmission), location: s.location ? location(s.location) : null
   };
+}
+
+function location(l: LocationOverride): Json {
+  return { latitude: l.latitude, longitude: l.longitude, timeZone: l.timeZone, zoneId: l.zoneId, autoDaylightSaving: l.autoDaylightSaving, name: l.name };
+}
+
+function tourSettings(t: TourSettings): Json {
+  return {
+    transition: t.transition, holdSeconds: f(t.holdSeconds), fadeSeconds: f(t.fadeSeconds), glideSeconds: f(t.glideSeconds), swivel: t.swivel,
+    swivelDegrees: f(t.swivelDegrees), swivelDirection: t.swivelDirection, showUi: t.showUi, loop: t.loop
+  };
+}
+
+/** Hidden categories, links and elements as visibility.json writes them (bookmarks: no ground or section). */
+function hiddenLists(v: VisibilitySettings): Json {
+  return { hiddenCategories: v.hiddenCategories, hiddenLinks: v.hiddenLinks, hiddenElements: v.hiddenElements };
 }
 
 function bookmark(b: BookmarkRecord): Json {
   return {
     id: b.id, name: b.name, author: b.author, created: b.created, x: b.x, y: b.y, z: b.z, yaw: f(b.yaw), pitch: f(b.pitch),
-    flying: b.flying, level: b.level, sun: b.sun ? sunTime(b.sun) : null, section: section(b.section), thumbnail: b.thumbnail
+    flying: b.flying, level: b.level, sun: b.sun ? sunTime(b.sun) : null, section: section(b.section),
+    visibility: b.visibility ? hiddenLists(b.visibility) : null, eyeHeight: b.eyeHeight === null ? null : f(b.eyeHeight),
+    tourHold: b.tourHold === null ? null : f(b.tourHold), tourSwivel: b.tourSwivel === null ? null : f(b.tourSwivel), tourSkip: b.tourSkip,
+    thumbnail: b.thumbnail
   };
 }
 
 function bookmarkDocument(d: BookmarkDocument): Json {
-  return { version: d.version, model: d.model, units: d.units, bookmarks: d.bookmarks.map(bookmark), home: d.home ? bookmark(d.home) : null };
+  return {
+    version: d.version, model: d.model, units: d.units, bookmarks: d.bookmarks.map(bookmark), home: d.home ? bookmark(d.home) : null,
+    tour: d.tour ? tourSettings(d.tour) : null
+  };
 }
 
 function journalEntry(e: JournalEntry): Json {

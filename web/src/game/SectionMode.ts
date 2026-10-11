@@ -90,6 +90,12 @@ export class SectionMode {
     this.updatePlanes();
   }
 
+  /** Sets the cut without recording a change (the tour; a cut with nothing on clears it). */
+  setQuiet(cut: SectionCut | null): void {
+    this.cut = (cut ?? new SectionCut()).clone().clean();
+    this.updatePlanes();
+  }
+
   /** Recomputes the planes after any change and records it for saving. */
   private changed(): void {
     this.updatePlanes();

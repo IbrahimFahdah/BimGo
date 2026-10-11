@@ -7,6 +7,7 @@ import { UiTheme } from '../../engine/ui/UiTheme';
 import { SoundId } from '../../platform/audio';
 import { type AimInfo, Gun } from './Gun';
 import { GunIcons } from './GunIcons';
+import { UnitFormat } from '../UnitFormat';
 
 /** Aim-and-blink travel with a landing check and a back stack (port of TeleportGun.cs). */
 export class TeleportGun extends Gun {
@@ -172,7 +173,7 @@ export class TeleportGun extends Gun {
     y += this.s(20);
 
     if (this.valid) {
-      const text = this.session.text.clear().appendNumber(this.distance, 1).append(' m · ').append(this.session.levelNameAt(this.feet.z)).text;
+      const text = UnitFormat.appendLength(this.session.text.clear(), this.distance, 1).append(' · ').append(this.session.levelNameAt(this.feet.z)).text;
       ui.text(f.bold, x, y, text, UiTheme.TEXT);
     } else {
       ui.text(f.body, x, y, this.reason ?? 'Aim at a floor or wall', UiTheme.DANGER);

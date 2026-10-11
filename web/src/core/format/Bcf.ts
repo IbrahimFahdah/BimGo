@@ -802,6 +802,6 @@ export function blankComment(): CommentRecord {
     id: newId(), author: '', created: new Date().toISOString(), text: '', x: 0, y: 0, z: 0, elementId: -1, level: '',
     edited: null, editedBy: null, status: CommentStatus.OPEN, assignedTo: null, priority: CommentPriority.NORMAL,
     updated: null, updatedBy: null, replies: null, view: null, thumbnail: null, elementUniqueId: null, snapshot: null,
-    snapshotData: null, local: vec3(), header: ''
+    snapshotData: null, snapshotOriginal: null, snapshotOriginalData: null, local: vec3(), header: ''
   };
 }

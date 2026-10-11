@@ -10,6 +10,7 @@ export class InputState {
   private readonly pressed = new Array<boolean>(256).fill(false);
   private readonly repeated = new Array<boolean>(256).fill(false);
   private chars = '';
+  private pastedText = '';
 
   /** Raw mouse movement this frame (device pixels, Pointer Lock). */
   mouseDeltaX = 0;
@@ -29,6 +30,11 @@ export class InputState {
   /** Characters typed this frame (text entry). */
   get typed(): string {
     return this.chars;
+  }
+
+  /** Text pasted this frame (Ctrl+V), or empty. */
+  get pasted(): string {
+    return this.pastedText;
   }
 
   isDown(vk: number): boolean {
@@ -56,6 +62,10 @@ export class InputState {
 
   onChar(c: string): void {
     if (this.chars.length < 64) { this.chars += c; }
+  }
+
+  onPaste(text: string): void {
+    this.pastedText = text.slice(0, 1024);
   }
 
   onRawMouse(dx: number, dy: number): void {
@@ -93,6 +103,7 @@ export class InputState {
     this.wheel = 0;
     this.leftPressed = this.rightPressed = this.leftReleased = false;
     this.chars = '';
+    this.pastedText = '';
   }
 
   /** Releases everything (focus lost, dialogs). */

@@ -2,6 +2,7 @@ import { type SunStudyDocument, type SunStudyFace, type SunStudyInfo, SunStudyFi
 import { type Vec3, Vec3 as V, vec3 } from '../core/math/Vector';
 import { findCategory } from '../core/scene/CategoryCatalog';
 import { Daylight } from '../core/scene/Daylight';
+import { SolarPosition } from '../core/scene/SolarPosition';
 import { Aabb, roomContains, roomDistanceToBoundary } from '../core/scene/SceneData';
 import {
   cleanSunHoursSettings, defaultSunHoursSettings, passFail, STUDY_RAY_COUNTS, StudyMode, SUN_HOURS_GRID_SIZES, SUN_HOURS_STEPS, SunHours,
@@ -17,9 +18,12 @@ import { type InputState, Vk } from '../platform/input';
 import type { GameSession } from './GameSession';
 import { Widgets } from './Menus';
 import { MONTHS } from './SunState';
+import { UnitFormat } from './UnitFormat';
 import { type DaylightInputs, NO_ROOM_LIGHT, RayOutcome, type RoomLight, SunHoursFace, SunHoursStudy } from './SunHoursStudy';
 
 const GRID_OPTIONS = ['0.1', '0.25', '0.5', '1 m'];
+/** The same grid sizes in imperial (the grid itself stays metric). */
+const GRID_OPTIONS_IMPERIAL = ['≈4"', '≈10"', "≈1'8\"", "≈3'3\""];
 const STEP_OPTIONS = ['5 min', '10 min', '15 min'];
 const MODE_OPTIONS = ['Sun hours', 'Daylight %', 'Lux'];
 const RAY_OPTIONS = ['128', '256', '512'];
@@ -215,7 +219,7 @@ export class SunHoursMode {
     const name = studyName ? ' · ' + studyName.toUpperCase() : '';
     const times = `${settings.day} ${MONTHS[settings.month - 1]} ${clock(settings.startMinutes)}–${clock(settings.endMinutes)} · ${settings.stepMinutes} min`;
     switch (settings.mode) {
-      case StudyMode.DaylightFactor: return `DAYLIGHT FACTOR · CIE OVERCAST SKY · WORK PLANE ${settings.workPlane.toFixed(2)} m${name}`;
+      case StudyMode.DaylightFactor: return `DAYLIGHT FACTOR · CIE OVERCAST SKY · WORK PLANE ${UnitFormat.length(settings.workPlane, 2)}${name}`;
       case StudyMode.Illuminance: return `ILLUMINANCE · CLEAR SKY${settings.directSun ? ' + SUN' : ''} · ${times}${name}`;
       default: return `DIRECT SUN HOURS · ${times}${settings.glassBlocks ? ' · glass blocks' : ''}${name}`;
     }
@@ -360,7 +364,7 @@ export class SunHoursMode {
     }
     this.roomNote = null;
     this.roomLight = null;
-    const { directions, samples, locationKnown } = SunHours.sunDirections(session.scene.site, year, settings);
+    const { directions, samples, locationKnown } = SunHours.sunDirections(session.sun.site, year, settings);
     this.opaqueOnly = !settings.glassBlocks;
     this.study.start(directions, samples, settings);
     this.summary = null;
@@ -390,7 +394,7 @@ export class SunHoursMode {
       inputs.overcast = new Float32Array(Daylight.PATCHES);
       Daylight.overcastPatches(inputs.overcast);
     } else {
-      const sun = SunHours.sunDirections(scene.site, new Date().getFullYear(), settings);
+      const sun = SunHours.sunDirections(this.session.sun.site, new Date().getFullYear(), settings);
       known = sun.locationKnown;
       inputs.totalSamples = sun.samples;
       inputs.suns = sun.directions;
@@ -965,8 +969,15 @@ export class SunHoursMode {
       if (newStep !== stepIndex && !locked) { s.stepMinutes = SUN_HOURS_STEPS[newStep]; this.changed(false); }
       cy += this.s(40);
 
-      const dst = w.checkbox(f, ix, cy + this.s(4), iw, 'Daylight saving (+1 h)', s.daylightSaving);
-      if (dst !== s.daylightSaving && !locked) { s.daylightSaving = dst; this.changed(false); }
+      const location = this.session.sun.location;
+      if (location.autoDaylightSaving) {
+        // A location chosen in BimGo: its time zone decides daylight saving for the study's date
+        const on = SolarPosition.isDaylightSaving(location, new Date().getFullYear(), s.month, s.day, s.daylightSaving);
+        ui.text(f.body, ix, cy + this.s(3), on ? 'Daylight saving: auto (on for this date)' : 'Daylight saving: auto (off for this date)', UiTheme.TEXT_SOFT);
+      } else {
+        const dst = w.checkbox(f, ix, cy + this.s(4), iw, 'Daylight saving (+1 h)', s.daylightSaving);
+        if (dst !== s.daylightSaving && !locked) { s.daylightSaving = dst; this.changed(false); }
+      }
       cy += this.s(28);
     }
 
@@ -1016,7 +1027,7 @@ export class SunHoursMode {
     // Grid and offsets (these rebuild the grid)
     ui.text(f.body, ix, cy + this.s(7), 'Grid', UiTheme.TEXT_SOFT);
     const gridIndex = Math.max(0, SUN_HOURS_GRID_SIZES.indexOf(s.gridSize));
-    const newGrid = w.segmented(f, ix + this.s(110), cy, iw - this.s(110), GRID_OPTIONS, gridIndex);
+    const newGrid = w.segmented(f, ix + this.s(110), cy, iw - this.s(110), UnitFormat.isImperial ? GRID_OPTIONS_IMPERIAL : GRID_OPTIONS, gridIndex);
     if (newGrid !== gridIndex && !locked) { s.gridSize = SUN_HOURS_GRID_SIZES[newGrid]; this.changed(true); }
     cy += this.s(40);
     const daylight = s.mode !== StudyMode.SunHours;
@@ -1106,9 +1117,14 @@ export class SunHoursMode {
     const fx = x + this.s(110);
     let changed = value;
     if (w.smallButton(f, fx, y, this.s(40), this.s(30), '−')) { changed = value - 0.05; }
-    ui.textCentred(f.bold, fx + this.s(99), y + this.s(6), `${value.toFixed(2)} m`, UiTheme.TEXT);
+    ui.textCentred(f.bold, fx + this.s(99), y + this.s(6), UnitFormat.length(value, 2), UiTheme.TEXT);
     if (w.smallButton(f, fx + this.s(158), y, this.s(40), this.s(30), '+')) { changed = value + 0.05; }
     return changed === value ? value : Math.round(Math.min(Math.max(changed, 0), max) * 20) / 20;
+  }
+
+  /** The location changed: finished results are out of date (RUN reads "settings changed"). */
+  markStale(): void {
+    if (this.study.hours) { this.stale = true; }
   }
 
   /** A setting changed: grid settings rebuild the grid (results go); time settings only mark results stale. */
@@ -1148,7 +1164,7 @@ function triangle(a: Vec3, b: Vec3, c: Vec3): { centre: Vec3; normal: Vec3; area
 function roomNote(rooms: RoomLight[], count: number): string | null {
   if (count !== 1) { return count === 0 ? null : `${count} rooms`; }
   const light = rooms.find(l => l.valid);
-  return light ? `glazing ${light.windowArea.toFixed(1)} m² · R ${light.averageReflectance.toFixed(2)} · IRC ${light.ircPercent.toFixed(1)} %` : null;
+  return light ? `glazing ${UnitFormat.area(light.windowArea)} · R ${light.averageReflectance.toFixed(2)} · IRC ${light.ircPercent.toFixed(1)} %` : null;
 }
 
 /** "dd MMM yyyy HH:mm" in local time. */

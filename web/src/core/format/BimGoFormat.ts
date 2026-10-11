@@ -27,6 +27,10 @@ export const BimGoFormat = {
   ENTRY_MATERIALS: 'materials.json',
   ENTRY_MATERIAL_STREAMS: 'material.bin',
   ENTRY_LIBRARY: 'library.json',
+  /** Optional picture of the view at the last save (review tools round: the start screen's card). */
+  ENTRY_THUMBNAIL: 'thumbnail.jpg',
+  /** Largest thumbnail read back (bytes). */
+  MAX_THUMBNAIL_BYTES: 2 * 1024 * 1024,
   TEXTURE_FOLDER: 'textures/',
   /** The folder family library previews live under. */
   LIBRARY_FOLDER: 'library/',

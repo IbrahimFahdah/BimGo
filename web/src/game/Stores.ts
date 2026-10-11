@@ -1,10 +1,12 @@
 import {
-  type BookmarkDocument, type BookmarkRecord, cleanComment, type CommentDocument, CommentPriority, type CommentRecord, type CommentReply,
-  CommentSnapshots, CommentStatus, currentUser, type SunTime
+  type BookmarkDocument, type BookmarkRecord, cleanComment, cleanTourSettings, type CommentDocument, CommentPriority, type CommentRecord,
+  type CommentReply, CommentSnapshots, CommentStatus, currentUser, defaultTourSettings, type SunTime, TourLimits, type TourSettings,
+  type VisibilitySettings
 } from '../core/format/DocumentModels';
 import type { SectionCut } from '../core/scene/SectionCut';
 import { newId } from '../core/format/Json';
-import { type Vec3, vec3 } from '../core/math/Vector';
+import { clamp, f32, type Vec3, vec3 } from '../core/math/Vector';
+import { UnitFormat } from './UnitFormat';
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const two = (n: number) => n.toString().padStart(2, '0');
@@ -16,6 +18,9 @@ export function shortDate(iso: string): string {
 }
 
 const round4 = (v: number) => Math.round(v * 10000) / 10000;
+
+/** The default standing eye height (m): bookmarks at another height say so in their detail line. */
+const DEFAULT_EYE_STANDING = 1.62;
 
 /**
  * The comments of a walkthrough (port of BimGo.App/Game/CommentStore.cs, file mode). Records keep Revit internal
@@ -68,6 +73,8 @@ export class CommentStore {
       elementUniqueId: elementUniqueId || null,
       snapshot: null,
       snapshotData: null,
+      snapshotOriginal: null,
+      snapshotOriginalData: null,
       local: vec3(),
       header: ''
     };
@@ -155,7 +162,32 @@ export class CommentStore {
     if (snapshot && snapshot.length > 0) {
       record.snapshot = CommentSnapshots.nameFor(record.id);
       record.snapshotData = snapshot;
+      // A new picture has no markup yet
+      record.snapshotOriginal = null;
+      record.snapshotOriginalData = null;
     }
+    if (this.comments.includes(record)) { this.save(); }
+  }
+
+  /**
+   * Stores a marked-up picture (review tools round): the thumbnail and BCF picture with the markup burned in, and the
+   * unmarked original kept beside them (null original = the markup was removed: the picture is the original again).
+   * Records who and when, and saves.
+   */
+  setMarkup(record: CommentRecord, thumbnail: string | null, snapshot: Uint8Array, original: Uint8Array | null): void {
+    if (snapshot.length === 0) { return; }
+    if (thumbnail) { record.thumbnail = thumbnail; }
+    record.snapshot = CommentSnapshots.nameFor(record.id);
+    record.snapshotData = snapshot;
+    if (original && original.length > 0) {
+      record.snapshotOriginal = CommentSnapshots.originalNameFor(record.id);
+      record.snapshotOriginalData = original;
+    } else {
+      record.snapshotOriginal = null;
+      record.snapshotOriginalData = null;
+    }
+    record.updated = new Date().toISOString();
+    record.updatedBy = currentUser;
     if (this.comments.includes(record)) { this.save(); }
   }
 
@@ -237,6 +269,8 @@ export class BookmarkStore {
 
   readonly bookmarks: BookmarkRecord[] = [];
   home: BookmarkRecord | null = null;
+  /** The bookmark tour's settings (tour round; never null). */
+  tour: TourSettings = defaultTourSettings();
   revision = 0;
   lastError: string | null = null;
   readonly fileName = 'this file';
@@ -249,6 +283,7 @@ export class BookmarkStore {
       this.home = document.home;
       this.prepare(this.home);
     }
+    if (document?.tour) { this.tour = cleanTourSettings({ ...document.tour }); }
     for (const record of document?.bookmarks ?? []) {
       this.prepare(record);
       this.bookmarks.push(record);
@@ -256,7 +291,36 @@ export class BookmarkStore {
   }
 
   toDocument(): BookmarkDocument {
-    return { version: 1, model: this.model, units: 'metres, Revit internal coordinates; angles in radians', bookmarks: [...this.bookmarks], home: this.home };
+    return {
+      version: 1, model: this.model, units: 'metres, Revit internal coordinates; angles in radians', bookmarks: [...this.bookmarks], home: this.home,
+      tour: { ...this.tour }
+    };
+  }
+
+  /** Rebuilds every bookmark's detail line (after the display units change). Not a change. */
+  refreshLabels(): void {
+    if (this.home) { this.prepare(this.home); }
+    for (const record of this.bookmarks) { this.prepare(record); }
+  }
+
+  /** Replaces the tour settings and saves (the panel calls this when a change is finished, not while dragging). */
+  setTour(settings: TourSettings): void {
+    this.tour = cleanTourSettings({ ...settings });
+    this.save();
+  }
+
+  /**
+   * Sets a bookmark's tour overrides (null = the tour's own value) and saves.
+   * @returns False if the bookmark is not in this store.
+   */
+  setTourOverrides(record: BookmarkRecord, hold: number | null, swivel: number | null, skip: boolean): boolean {
+    if (!this.bookmarks.includes(record)) { return false; }
+    record.tourHold = hold === null ? null : f32(clamp(hold, TourLimits.MIN_HOLD, TourLimits.MAX_HOLD));
+    record.tourSwivel = swivel === null ? null : f32(clamp(swivel, -TourLimits.MAX_SWIVEL, TourLimits.MAX_SWIVEL));
+    record.tourSkip = skip;
+    this.prepare(record);
+    this.save();
+    return true;
   }
 
   setHome(localFeet: Vec3, yaw: number, pitch: number, flying: boolean, level: string): void {
@@ -283,8 +347,8 @@ export class BookmarkStore {
   }
 
   add(name: string | null, localFeet: Vec3, yaw: number, pitch: number, flying: boolean, level: string, sun: SunTime | null = null,
-    section: SectionCut | null = null): BookmarkRecord {
-    const record = this.createPending(name, localFeet, yaw, pitch, flying, level, sun, section);
+    section: SectionCut | null = null, eyeHeight: number | null = null, visibility: VisibilitySettings | null = null): BookmarkRecord {
+    const record = this.createPending(name, localFeet, yaw, pitch, flying, level, sun, section, eyeHeight, visibility);
     this.bookmarks.push(record);
     this.save();
     return record;
@@ -292,9 +356,12 @@ export class BookmarkStore {
 
   /** A bookmark that joins the list only once its name is confirmed (B). */
   createPending(name: string | null, localFeet: Vec3, yaw: number, pitch: number, flying: boolean, level: string, sun: SunTime | null = null,
-    section: SectionCut | null = null): BookmarkRecord {
+    section: SectionCut | null = null, eyeHeight: number | null = null, visibility: VisibilitySettings | null = null): BookmarkRecord {
     const record = this.blank(BookmarkStore.cleanName(name) ?? this.nextDefaultName());
-    Object.assign(record, { yaw, pitch, flying, level: level ?? '', sun: sun ? { ...sun } : null, section: section?.clone() ?? null });
+    Object.assign(record, {
+      yaw, pitch, flying, level: level ?? '', sun: sun ? { ...sun } : null, section: section?.clone() ?? null,
+      eyeHeight: eyeHeight === null ? null : f32(eyeHeight), visibility
+    });
     this.setPosition(record, localFeet);
     this.prepare(record);
     return record;
@@ -318,10 +385,13 @@ export class BookmarkStore {
   }
 
   update(record: BookmarkRecord, localFeet: Vec3, yaw: number, pitch: number, flying: boolean, level: string, sun: SunTime | null = null,
-    section: SectionCut | null = null): boolean {
+    section: SectionCut | null = null, eyeHeight: number | null = null, visibility: VisibilitySettings | null = null): boolean {
     if (!this.bookmarks.includes(record)) { return false; }
     this.setPosition(record, localFeet);
-    Object.assign(record, { yaw, pitch, flying, level: level ?? '', sun: sun ? { ...sun } : null, section: section?.clone() ?? null });
+    Object.assign(record, {
+      yaw, pitch, flying, level: level ?? '', sun: sun ? { ...sun } : null, section: section?.clone() ?? null,
+      eyeHeight: eyeHeight === null ? null : f32(eyeHeight), visibility
+    });
     this.prepare(record);
     this.save();
     return true;
@@ -359,7 +429,8 @@ export class BookmarkStore {
   private blank(name: string): BookmarkRecord {
     return {
       id: newId(), name, author: currentUser, created: new Date().toISOString(), x: 0, y: 0, z: 0, yaw: 0, pitch: 0,
-      flying: false, level: '', sun: null, section: null, thumbnail: null, local: vec3(), detail: ''
+      flying: false, level: '', sun: null, section: null, visibility: null, eyeHeight: null, tourHold: null, tourSwivel: null, tourSkip: false,
+      thumbnail: null, local: vec3(), detail: ''
     };
   }
 
@@ -375,6 +446,8 @@ export class BookmarkStore {
     const fly = record.flying ? ' · FLY' : '';
     const s = record.sun;
     const sun = s ? ` · SUN ${s.day}/${s.month} ${two(Math.trunc(s.minutes / 60))}:${two(s.minutes % 60)}` : '';
-    record.detail = `${level} · ${record.author} · ${shortDate(record.created)}${fly}${sun}`;
+    const eye = record.eyeHeight !== null && Math.abs(record.eyeHeight - DEFAULT_EYE_STANDING) > 0.005 ? ` · EYE ${UnitFormat.length(record.eyeHeight, 2)}` : '';
+    const skip = record.tourSkip ? ' · NOT IN TOUR' : '';
+    record.detail = `${level} · ${record.author} · ${shortDate(record.created)}${fly}${sun}${eye}${skip}`;
   }
 }

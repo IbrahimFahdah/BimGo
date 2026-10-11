@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "description": "BimGo walkthrough viewer for the browser (WebGL2).",
-  "license": "MIT",
+  "license": "MIT-0",
   "type": "module",
   "scripts": {
     "dev": "vite",

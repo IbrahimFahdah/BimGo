@@ -109,6 +109,10 @@ export class GameWindow {
       }
     });
     window.addEventListener('blur', () => input.releaseAll());
+    window.addEventListener('paste', e => {
+      const text = e.clipboardData?.getData('text/plain') ?? '';
+      if (text) { input.onPaste(text); }
+    });
 
     const toCanvas = (e: MouseEvent): [number, number] => {
       const r = this.canvas.getBoundingClientRect();

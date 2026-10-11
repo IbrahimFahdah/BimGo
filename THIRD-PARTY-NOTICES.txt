@@ -56,7 +56,8 @@ textures are included in BimGo.
   fabric             Fabric030         https://ambientcg.com/a/Fabric030
 
 --------------------------------------------------------------------------------
-Place list (Resources\places.tsv, shipped beside BimGo.exe)
+Place list (Resources\places.tsv, shipped beside BimGo.exe; the BimGo Web fork
+serves the same file as web/public/places.tsv)
 
 Made with Natural Earth. Free vector and raster map data @ naturalearthdata.com.
 

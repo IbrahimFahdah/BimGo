@@ -43,6 +43,8 @@ export interface GunHost {
   readonly editPoint: Vec3;
   /** True while a live Revit session is connected. */
   readonly isLiveConnected: boolean;
+  /** The ground plane's height (scene-local metres): the Measure gun's clearance lands on it outside. */
+  readonly groundZ: number;
   /** Important toasts (errors) show even while the UI is hidden (U). */
   toast(message: string, seconds?: number, important?: boolean): void;
   flash(colour: number, seconds: number): void;
@@ -92,6 +94,8 @@ export abstract class Gun {
   onPrimary(_aim: AimInfo): void { /* optional */ }
   onSecondary(_aim: AimInfo): void { /* optional */ }
   onKeys(_input: InputState): void { /* optional */ }
+  /** The gun's number key pressed while it is already selected (the Measure gun cycles its modes). */
+  onReselect(): void { /* optional */ }
   onDeselect(): void { /* optional */ }
   abstract clearMarkers(): void;
   drawWorld(_overlay: Overlay3D, _selected: boolean): void { /* optional */ }

@@ -15,11 +15,15 @@ export function readJson<T>(key: string, fallback: T): T {
   }
 }
 
-/** Writes a JSON value; failures are ignored (the app keeps working without storage). */
-export function writeJson(key: string, value: unknown): void {
+/**
+ * Writes a JSON value; failures are ignored (the app keeps working without storage).
+ * @returns False when storage is blocked or full.
+ */
+export function writeJson(key: string, value: unknown): boolean {
   try {
     localStorage.setItem(PREFIX + key, JSON.stringify(value));
+    return true;
   } catch {
-    // Storage blocked or full
+    return false; // Storage blocked or full
   }
 }

@@ -1,9 +1,43 @@
 import { BcfCoordinates } from '../core/format/Bcf';
 import { clamp } from '../core/math/Vector';
 import { CoordinateReadout } from '../core/scene/SiteCoordinates';
+import { UnitSystem } from '../core/scene/Units';
 import { ShadowQuality } from '../engine/render/ShadowMaps';
 import { LightMode } from './Lights';
 import { readJson, writeJson } from '../platform/settings';
+
+/** The player's eye-height preset (port of EyePreset). */
+export enum EyePreset {
+  /** A standing adult (the default, 1.62 m). */
+  Standing = 0,
+  /** Seated, or a wheelchair user (1.20 m). */
+  Seated = 1,
+  /** A child (1.10 m). */
+  Child = 2
+}
+
+/** The walkthrough video's frame size (port of VideoSize). */
+export enum VideoSize {
+  /** The window's size (rounded down to even numbers). */
+  Window = 0,
+  /** 1920 × 1080 (the default). */
+  FullHd = 1,
+  /** 3840 × 2160. */
+  Uhd4K = 2
+}
+
+/** Eye-height defaults and limits (m). */
+export const EyeHeights = {
+  DEFAULT_STANDING: 1.62,
+  DEFAULT_SEATED: 1.2,
+  DEFAULT_CHILD: 1.1,
+  MIN: 0.9,
+  MAX: 2.0,
+  /** A height clamped and rounded to the centimetre, or the fallback when not a number. */
+  clean(metres: unknown, fallback: number): number {
+    return typeof metres === 'number' && Number.isFinite(metres) ? Math.round(clamp(metres, EyeHeights.MIN, EyeHeights.MAX) * 100) / 100 : fallback;
+  }
+};
 
 /** Colour mode (port of ColourMode). */
 export enum ColourMode {
@@ -51,6 +85,32 @@ export class ViewerSettings {
   bcfCoordinates = BcfCoordinates.Shared;
   /** Section box cap colour, "#RRGGBB" (default dark grey). */
   sectionCapColour = '#3D4045';
+  /** Units for lengths and areas on screen (review tools round). */
+  displayUnits = UnitSystem.Metric;
+  /** Imperial lengths as decimal feet (5.33') instead of feet-inches to 1/8" (5' 4"). */
+  decimalFeet = false;
+  /** The eye-height preset in use (tour round; the pause menu changes it). */
+  eyePreset = EyePreset.Standing;
+  eyeHeightStanding = EyeHeights.DEFAULT_STANDING;
+  eyeHeightSeated = EyeHeights.DEFAULT_SEATED;
+  eyeHeightChild = EyeHeights.DEFAULT_CHILD;
+  /** Walkthrough video frame size. */
+  videoSize = VideoSize.FullHd;
+  /** Walkthrough video frames per second: 30 or 60. */
+  videoFps = 30;
+
+  /** The eye height of a preset (m). */
+  eyeHeightFor(preset: EyePreset): number {
+    return preset === EyePreset.Seated ? this.eyeHeightSeated : preset === EyePreset.Child ? this.eyeHeightChild : this.eyeHeightStanding;
+  }
+
+  /** Sets a preset's eye height (clamped, rounded to the centimetre). */
+  setEyeHeight(preset: EyePreset, metres: number): void {
+    const value = EyeHeights.clean(metres, this.eyeHeightFor(preset));
+    if (preset === EyePreset.Seated) { this.eyeHeightSeated = value; }
+    else if (preset === EyePreset.Child) { this.eyeHeightChild = value; }
+    else { this.eyeHeightStanding = value; }
+  }
 
   get whitecard(): boolean {
     return this.colour === ColourMode.Whitecard;
@@ -82,6 +142,14 @@ export class ViewerSettings {
     if (typeof raw.probeResolution === 'number') { s.probeResolution = raw.probeResolution >= 192 ? 256 : 128; }
     if (typeof raw.bcfCoordinates === 'number' && [0, 1, 2].includes(raw.bcfCoordinates)) { s.bcfCoordinates = raw.bcfCoordinates; }
     if (typeof raw.sectionCapColour === 'string' && /^#?[0-9a-fA-F]{6}$/.test(raw.sectionCapColour.trim())) { s.sectionCapColour = raw.sectionCapColour.trim(); }
+    if (raw.displayUnits === UnitSystem.Imperial) { s.displayUnits = UnitSystem.Imperial; }
+    if (typeof raw.decimalFeet === 'boolean') { s.decimalFeet = raw.decimalFeet; }
+    if (typeof raw.eyePreset === 'number' && [0, 1, 2].includes(raw.eyePreset)) { s.eyePreset = raw.eyePreset; }
+    s.eyeHeightStanding = EyeHeights.clean(raw.eyeHeightStanding, EyeHeights.DEFAULT_STANDING);
+    s.eyeHeightSeated = EyeHeights.clean(raw.eyeHeightSeated, EyeHeights.DEFAULT_SEATED);
+    s.eyeHeightChild = EyeHeights.clean(raw.eyeHeightChild, EyeHeights.DEFAULT_CHILD);
+    if (typeof raw.videoSize === 'number' && [0, 1, 2].includes(raw.videoSize)) { s.videoSize = raw.videoSize; }
+    if (typeof raw.videoFps === 'number') { s.videoFps = raw.videoFps >= 45 ? 60 : 30; }
     return s;
   }
 
@@ -108,7 +176,15 @@ export class ViewerSettings {
       proxyMissing: this.proxyMissing,
       proxyMaterialColour: this.proxyMaterialColour,
       bcfCoordinates: this.bcfCoordinates,
-      sectionCapColour: this.sectionCapColour
+      sectionCapColour: this.sectionCapColour,
+      displayUnits: this.displayUnits,
+      decimalFeet: this.decimalFeet,
+      eyePreset: this.eyePreset,
+      eyeHeightStanding: this.eyeHeightStanding,
+      eyeHeightSeated: this.eyeHeightSeated,
+      eyeHeightChild: this.eyeHeightChild,
+      videoSize: this.videoSize,
+      videoFps: this.videoFps
     });
   }
 }

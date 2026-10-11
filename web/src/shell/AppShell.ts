@@ -11,7 +11,7 @@ import { Vk } from '../platform/input';
 import { hasBimGoExtension, pickBimGoFile, type PickedFile } from '../platform/files';
 import { GameWindow } from '../platform/window';
 import { HomeScreen } from './HomeScreen';
-import { RecentFiles } from './RecentFiles';
+import { LastLive, RecentFiles } from './RecentFiles';
 
 /** A long operation shown on the progress screen. */
 interface Loading {
@@ -165,8 +165,8 @@ export class AppShell {
         session = new GameSession(this.window, this.ui, document, this.settings, null, source);
         await session.prepare((stage, f) => report(stage, 0.7 + 0.3 * f), signal);
         if (reload) { session.applyPose(reload.pose); }
-        this.session = session;
-        this.home.setMessage('', false);
+        else { LastLive.save(source.displayName, source.hello.revitVersion); } // the start screen's "last live session" card
+        this.startSession(session);
       } catch (e) {
         session?.dispose();
         source?.close();
@@ -262,12 +262,11 @@ export class AppShell {
       let session: GameSession | null = null;
       try {
         const document = await BimGoReader.read(file, file.name, { step: f => report('Reading the model', f), signal });
-        this.recent.touch(file.name, file.size);
+        this.recent.touch(file.name, file.size, document.thumbnail);
         loading.title = `Preparing ${document.scene.modelTitle}`;
         session = new GameSession(this.window, this.ui, document, this.settings, picked.handle);
         await session.prepare(report, signal);
-        this.session = session;
-        this.home.setMessage('', false);
+        this.startSession(session);
       } catch (e) {
         session?.dispose();
         const cancelled = signal.aborted || (e instanceof DOMException && e.name === 'AbortError');
@@ -278,6 +277,14 @@ export class AppShell {
         this.loading = null;
       }
     })();
+  }
+
+  /** A walkthrough is ready: it takes over the canvas (the start screen's thumbnails are freed). */
+  private startSession(session: GameSession): void {
+    session.onSaved = (name, size, thumbnail) => this.recent.touch(name, size, thumbnail);
+    this.session = session;
+    this.home.setMessage('', false);
+    this.home.release();
   }
 
   /** A newer Revit snapshot is ready: reload it on the same connection, where the player stands. */

@@ -1,7 +1,8 @@
-import { clampSunTime, readSunSettings, type SunSettings, type SunTime, sunDefaultsFor } from '../core/format/DocumentModels';
+import { clampSunTime, cleanLocation, type LocationOverride, readSunSettings, type SunSettings, type SunTime, sunDefaultsFor } from '../core/format/DocumentModels';
 import { type Vec3, vec3 } from '../core/math/Vector';
 import type { SiteInfo } from '../core/scene/ModelInfo';
-import { type GeoLocation, SolarPosition } from '../core/scene/SolarPosition';
+import { TimeZones } from '../core/scene/Places';
+import { type GeoLocation, isLocationValid, SolarPosition } from '../core/scene/SolarPosition';
 import { createSunLighting, NO_SUN, type SunLighting } from '../engine/render/SunLighting';
 
 export const TIME_STEP = 5;           // minutes per slider / [ ] step
@@ -11,12 +12,15 @@ export const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', '
 
 /**
  * The sun of a walkthrough: settings (from the file's sun.json, else the site's start), location, direction and the
- * day-cycle player (port of the state half of BimGo.App/Game/GameSession.Sun.cs; the panel is in SunPanel.ts).
+ * day-cycle player (port of the state half of BimGo.App/Game/GameSession.Sun.cs and the effective-site half of
+ * GameSession.Location.cs; the panel is in SunPanel.ts).
  */
 export class SunState {
   settings: SunSettings;
-  readonly location: GeoLocation;
-  readonly locationKnown: boolean;
+  /** The site the sun, shadows and studies use: the model's, or a copy with the location override. */
+  site: SiteInfo;
+  location!: GeoLocation;
+  locationKnown = false;
   private readonly northAngle: number;
   direction: Vec3 = vec3(0, 0, 1);
   /** Degrees. */
@@ -26,21 +30,89 @@ export class SunState {
   playing = false;
   playMinutes = 0;
   revision = 0;
-  readonly placeLabel: string;
+  placeLabel = '';
+  /** The model's own location ("Sydney · UTC+10"), for the location picker. */
+  modelPlaceLabel = '';
+  /** The override's UTC offset ("UTC+10", "UTC+5:30 (manual)"), or null without an override. */
+  offsetLabel: string | null = null;
 
-  constructor(site: SiteInfo, saved: SunSettings | null) {
-    const { location, known } = SolarPosition.locationOf(site);
-    this.location = location;
-    this.locationKnown = known;
-    this.northAngle = SolarPosition.northAngle(site);
-    this.settings = saved ? readSunSettings({ ...saved, time: { ...saved.time } }) : sunDefaultsFor(site);
-    this.placeLabel = known
-      ? `${location.name} · UTC${formatZone(location.timeZone)}`
-      : 'No site location in this file: Sydney is assumed (export again from Revit to use the model\'s location)';
-    this.recompute();
+  constructor(private readonly modelSite: SiteInfo, saved: SunSettings | null) {
+    this.northAngle = SolarPosition.northAngle(modelSite);
+    this.settings = saved ? readSunSettings({ ...saved, time: { ...saved.time }, location: saved.location ? { ...saved.location } : null }) : sunDefaultsFor(modelSite);
+    this.site = modelSite;
+    this.refreshLocation();
   }
 
   get enabled(): boolean { return this.settings.enabled; }
+
+  /** True when a BimGo location replaces the model's. */
+  get hasOverride(): boolean { return this.settings.location !== null; }
+
+  /** Rebuilds the effective site, the location and the labels from the model and the override, then the sun. */
+  refreshLocation(): void {
+    this.site = SolarPosition.effectiveSite(this.modelSite, this.settings.location);
+    const { location, known } = SolarPosition.locationOf(this.site);
+    this.location = location;
+    this.locationKnown = known;
+
+    const model = SolarPosition.locationOf(this.modelSite);
+    this.modelPlaceLabel = model.known ? `${model.location.name} · UTC${formatZone(model.location.timeZone)}` : 'none in this file (Sydney assumed)';
+    const override = this.settings.location;
+    this.offsetLabel = override ? `UTC${formatZone(location.timeZone)}${override.zoneId === null ? ' (manual)' : ''}` : null;
+    if (override) {
+      this.placeLabel = `${location.name} · UTC${formatZone(location.timeZone)}${location.autoDaylightSaving ? ' · DST auto' : ''} (set in BimGo)`;
+    } else {
+      this.placeLabel = known ? `${location.name} · UTC${formatZone(location.timeZone)}` : 'No site location in this file: Sydney is assumed (CHANGE… picks one)';
+    }
+    this.recompute();
+  }
+
+  /**
+   * Sets (or with null clears) the override and records it for saving. Revit is never changed; true north stays the
+   * model's.
+   */
+  setLocation(location: LocationOverride | null): void {
+    this.settings.location = location && isLocationValid(cleanLocation(location)) ? location : null;
+    this.playing = false;
+    this.changed();
+    this.refreshLocation();
+  }
+
+  /** − / + on the override's UTC offset (half hours): the offset becomes manual (no zone, the DST tick decides). */
+  stepOffset(direction: number): void {
+    const current = this.settings.location;
+    if (!current) { return; }
+    const location = { ...current };
+    location.timeZone = Math.min(Math.max(Math.round((location.timeZone + direction * 0.5) * 2) / 2, -12), 14);
+    if (location.autoDaylightSaving) { this.settings.time.daylightSaving = this.daylightSavingNow; }
+    location.zoneId = null;
+    location.autoDaylightSaving = false;
+    this.settings.location = cleanLocation(location);
+    this.changed();
+    this.refreshLocation();
+  }
+
+  /** The sun panel's DST control when the location decides daylight saving: switch to (or back from) the manual tick. */
+  setAutoDaylightSaving(auto: boolean): void {
+    const current = this.settings.location;
+    if (!current || current.zoneId === null) { return; }
+    if (!auto) { this.settings.time.daylightSaving = this.daylightSavingNow; }
+    this.settings.location = { ...current, autoDaylightSaving: auto && TimeZones.isKnown(current.zoneId) };
+    this.changed();
+    this.refreshLocation();
+  }
+
+  /** True when the override has a zone the browser knows (the manual tick can go back to AUTO). */
+  get canAutoDaylightSaving(): boolean {
+    const zone = this.settings.location?.zoneId;
+    return !!zone && TimeZones.isKnown(zone);
+  }
+
+  /** The effective daylight saving for the panel's date (the zone's when automatic, else the tick). */
+  get daylightSavingNow(): boolean {
+    const t = this.settings.time;
+    return SolarPosition.isDaylightSaving(this.location, new Date().getFullYear(), t.month, t.day, t.daylightSaving);
+  }
 
   recompute(): void {
     const t = this.settings.time;
@@ -61,6 +133,14 @@ export class SunState {
     s.shadowIntensity = clamp(s.shadowIntensity, 0, 1);
     s.glassTransmission = clamp(s.glassTransmission, 0, 2);
     this.revision++;
+    this.recompute();
+  }
+
+  /** The sun time and shadows on / off, without recording a change (the tour). */
+  setQuiet(time: SunTime, shadows: boolean): void {
+    this.playing = false;
+    this.settings.time = { ...time };
+    this.settings.enabled = shadows;
     this.recompute();
   }
 
@@ -122,7 +202,7 @@ export class SunState {
 
   describeTime(): string {
     const t = this.settings.time;
-    return `${t.day} ${MONTHS[Math.min(Math.max(t.month, 1), 12) - 1]} ${two(Math.trunc(t.minutes / 60))}:${two(t.minutes % 60)}${t.daylightSaving ? ' DST' : ''}`;
+    return `${t.day} ${MONTHS[Math.min(Math.max(t.month, 1), 12) - 1]} ${two(Math.trunc(t.minutes / 60))}:${two(t.minutes % 60)}${this.daylightSavingNow ? ' DST' : ''}`;
   }
 
   heightText(): string {
@@ -141,7 +221,8 @@ export function two(n: number): string {
   return Math.min(Math.max(Math.trunc(n), 0), 99).toString().padStart(2, '0');
 }
 
-function formatZone(hours: number): string {
+/** "+10", "−3:30". */
+export function formatZone(hours: number): string {
   const sign = hours < 0 ? '−' : '+';
   const abs = Math.abs(hours);
   const h = Math.trunc(abs), m = Math.round((abs - h) * 60);

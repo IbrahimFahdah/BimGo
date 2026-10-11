@@ -1,5 +1,7 @@
 import { f32, type Vec3, vec3 } from '../math/Vector';
 import type { SiteInfo } from './ModelInfo';
+import type { LocationOverride } from '../format/DocumentModels';
+import { TimeZones } from './Places';
 import { SiteCoordinates } from './SiteCoordinates';
 
 /** Where the sun is computed for (port of GeoLocation). */
@@ -9,6 +11,10 @@ export interface GeoLocation {
   /** Hours from UTC (standard time). */
   timeZone: number;
   name: string;
+  /** The IANA time zone (location override), or null. With autoDaylightSaving, DST follows its rules per date. */
+  zoneId?: string | null;
+  /** Daylight saving from zoneId (when the browser knows the zone). */
+  autoDaylightSaving?: boolean;
 }
 
 export const FALLBACK_LOCATION: GeoLocation = Object.freeze({ latitude: -33.8688, longitude: 151.2093, timeZone: 10, name: 'Sydney (assumed)' });
@@ -41,6 +47,7 @@ export const SolarPosition = {
     month = Math.min(Math.max(Math.trunc(month), 1), 12);
     day = Math.min(Math.max(Math.trunc(day), 1), daysInMonth(year, month));
     minutes = Math.min(Math.max(minutes, 0), 1440);
+    daylightSaving = SolarPosition.isDaylightSaving(location, year, month, day, daylightSaving);
 
     const n = dayOfYear(year, month, day);
     const daysInYear = isLeap(year) ? 366 : 365;
@@ -75,6 +82,36 @@ export const SolarPosition = {
     return { altitude, azimuth };
   },
 
+  /**
+   * Whether the clock is on daylight saving on a date: from the location's IANA zone when it has one and
+   * autoDaylightSaving is on (and the browser knows the zone), else the caller's tick.
+   */
+  isDaylightSaving(location: GeoLocation, year: number, month: number, day: number, manual: boolean): boolean {
+    if (!location.autoDaylightSaving) { return manual; }
+    year = Math.min(Math.max(Math.trunc(year), 1), 9999);
+    month = Math.min(Math.max(Math.trunc(month), 1), 12);
+    day = Math.min(Math.max(Math.trunc(day), 1), daysInMonth(year, month));
+    return TimeZones.isDaylightSaving(location.zoneId, year, month, day) ?? manual;
+  },
+
+  /**
+   * The site the sun and the studies should use: the model's, or a copy carrying the location override (latitude,
+   * longitude, standard offset, IANA zone, name). True north and the coordinates stay the model's.
+   */
+  effectiveSite(site: SiteInfo, location: LocationOverride | null | undefined): SiteInfo {
+    if (!location || !isLocationValid(location)) { return site; }
+    return {
+      ...site,
+      hasLocation: true,
+      latitude: location.latitude,
+      longitude: location.longitude,
+      timeZone: location.timeZone,
+      placeName: location.name ?? '',
+      zoneId: location.zoneId,
+      autoDaylightSaving: location.autoDaylightSaving && location.zoneId !== null
+    };
+  },
+
   /** Unit vector towards the sun: X east, Y (true) north, Z up. */
   direction(altitude: number, azimuth: number): Vec3 {
     const cosAlt = Math.cos(altitude);
@@ -101,9 +138,20 @@ export const SolarPosition = {
       && Math.abs(site.latitude) <= 90 && Math.abs(site.longitude) <= 180;
     if (!known || !site) { return { location: FALLBACK_LOCATION, known: false }; }
     const name = site.placeName.trim() || `${round3(site.latitude)}°, ${round3(site.longitude)}°`;
-    return { location: { latitude: site.latitude, longitude: site.longitude, timeZone: Math.min(Math.max(site.timeZone, -14), 14), name }, known: true };
+    return {
+      location: {
+        latitude: site.latitude, longitude: site.longitude, timeZone: Math.min(Math.max(site.timeZone, -14), 14), name,
+        zoneId: site.zoneId ?? null, autoDaylightSaving: !!site.autoDaylightSaving && !!site.zoneId
+      },
+      known: true
+    };
   }
 };
+
+/** LocationOverride.IsValid. */
+export function isLocationValid(l: LocationOverride): boolean {
+  return Number.isFinite(l.latitude) && Number.isFinite(l.longitude) && Number.isFinite(l.timeZone) && Math.abs(l.latitude) <= 90 && Math.abs(l.longitude) <= 180;
+}
 
 function round3(v: number): string {
   return String(Math.round(v * 1000) / 1000);

@@ -19,7 +19,7 @@ const PANO_SIZES = ['4K', '8K'];
 const PANO_FACE_FOV = 96;
 
 /** An off-screen target the photo renders into: RGBA8 colour, depth + stencil (section caps). */
-class PhotoTarget {
+export class PhotoTarget {
   framebuffer: WebGLFramebuffer | null = null;
   private colour: WebGLRenderbuffer | null = null;
   private depth: WebGLRenderbuffer | null = null;

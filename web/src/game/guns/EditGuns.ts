@@ -13,6 +13,7 @@ import { SoundId } from '../../platform/audio';
 import { type InputState, Vk } from '../../platform/input';
 import { type AimInfo, Gun, type GunHost, type Highlight } from './Gun';
 import { GunIcons } from './GunIcons';
+import { UnitFormat } from '../UnitFormat';
 
 /** What the editing tools need on top of GunHost (the desktop passes GameSession). */
 export interface EditHost extends GunHost {
@@ -376,7 +377,7 @@ export class GizmoController {
     this.rawOffset = V.add(target.offset, vec3(0, 0, change));
     this.zFree = true;
     this.host.dynamics.setTransform(target, this.rawOffset, target.angle);
-    return { moved: true, message: change < 0 ? `Dropped ${(-change).toFixed(3)} m onto the surface below` : `Lifted ${change.toFixed(3)} m onto the surface` };
+    return { moved: true, message: change < 0 ? `Dropped ${UnitFormat.length(-change)} onto the surface below` : `Lifted ${UnitFormat.length(change)} onto the surface` };
   }
 
   draw(overlay: Overlay3D, colour: number): void {
@@ -428,8 +429,8 @@ export class GizmoController {
   describeDelta(text: TextBuffer): string {
     const degrees = this.deltaAngle * 180 / Math.PI;
     const d = this.deltaOffset;
-    text.clear().append('Δ ').appendNumber(Math.hypot(d.x, d.y), 3).append(' m');
-    if (Math.abs(d.z) > 5e-4) { text.append(' · Z ').appendNumber(d.z, 3, true).append(' m'); }
+    UnitFormat.appendLength(text.clear().append('Δ '), Math.hypot(d.x, d.y));
+    if (Math.abs(d.z) > 5e-4) { UnitFormat.appendLength(text.append(' · Z '), d.z, 3, true); }
     return text.append(' · ').appendNumber(degrees, 1).append('°').text;
   }
 }

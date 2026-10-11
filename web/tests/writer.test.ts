@@ -28,7 +28,7 @@ function content(doc: Awaited<ReturnType<typeof BimGoReader.read>>) {
       offset: vec3(0.25, 0, 0), angle: 0.5, label: 'Move Wall', utc: '2026-01-01T00:00:00Z', user: 'Ann', appliedToRevit: false, revitElementId: 0
     }]),
     bookmarks: readBookmarkDocument({ bookmarks: [{ id: 'b1', name: 'Door', x: 100, y: 200, z: 0.3, yaw: 1.5, pitch: -0.2, sun: { month: 3, day: 4, minutes: 600 } }] }),
-    sun: { version: 1, enabled: true, time: { month: 6, day: 21, minutes: 780, daylightSaving: false }, sunIntensity: 1.2, skyIntensity: 1, shadowIntensity: 0.8, glassTransmission: 1 },
+    sun: { version: 1, enabled: true, time: { month: 6, day: 21, minutes: 780, daylightSaving: false }, sunIntensity: 1.2, skyIntensity: 1, shadowIntensity: 0.8, glassTransmission: 1, location: null },
     visibility: { hiddenCategories: ['walls'], hiddenLinks: [], hiddenElements: [{ link: null, uniqueId: 'u7', id: 7 }], groundOffset: 0.35, section: null },
     materials: doc.scene.materials,
     savedBy: 'Ann'

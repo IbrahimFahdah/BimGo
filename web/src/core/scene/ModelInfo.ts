@@ -38,6 +38,13 @@ export interface SiteInfo {
   timeZone: number;
   placeName: string;
   sunStart: string;
+  /**
+   * The IANA time zone of a location chosen in BimGo (location override), else absent. Never saved in model.json: only
+   * on the session's effective copy (SolarPosition.effectiveSite).
+   */
+  zoneId?: string | null;
+  /** With zoneId: daylight saving follows the zone's rules for each date (not saved in model.json). */
+  autoDaylightSaving?: boolean;
 }
 
 /**
