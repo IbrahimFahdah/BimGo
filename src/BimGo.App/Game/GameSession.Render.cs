@@ -31,10 +31,12 @@ namespace BimGo.Game
             ("PGUP / PGDN", "Level up / down"),
             ("H · SHIFT+H", "Go home · Set home here"),
             ("1–9 · WHEEL", "Select gun (9 Place: family library)"),
+            ("2 AGAIN", "Measure: distance / area / angle / clearance"),
             ("F", "Gizmo / Clone / Place: drop onto the surface below"),
             ("I · SHIFT+I", "Scan gun: hide target · isolate its category"),
             ("X", "Clear this gun's markers"),
             ("B · CTRL+1–9", "Bookmark this view · Go to bookmark"),
+            ("ESC → BOOKMARKS", "Play the bookmark tour (eye height: pause menu)"),
             ("L", "Coordinate readout"),
             ("K", "Artificial lights: off / glow / light"),
             ("O · SHIFT+O", "Shadows on/off · Sun panel"),
@@ -59,6 +61,13 @@ namespace BimGo.Game
         private void Render()
         {
             int width = _window.Width, height = _window.Height;
+
+            // ---- Recording a walkthrough video: video frames off-screen, then the preview and progress only
+            if (_video != null)
+            {
+                RenderVideo();
+                return;
+            }
 
             // ---- Photo mode: a pending shot renders off-screen first (camera and targets restored afterwards)
             if (_photoShotIn > 0 && --_photoShotIn == 0) { TakePhoto(); }
@@ -94,6 +103,11 @@ namespace BimGo.Game
             {
                 // Photo mode: a clean frame, the grid and the photo panel only
                 BuildPhotoOverlay(_ui.Atlas, _window.Input, width, height);
+            }
+            else if (_tourActive)
+            {
+                // Bookmark tour: the HUD subset (UI on) or nothing, the fades and the key hint
+                BuildTourOverlay(width, height, mapX, mapY);
             }
             else
             {
@@ -188,7 +202,7 @@ namespace BimGo.Game
             Gun active = _guns[_activeGun];
             _highlights.Clear();
             // Hidden UI: no tints either, unless a gun is in the middle of something (Gizmo / Clone holding an element)
-            if (!photo && !_photoOpen && !_paused && (!_uiHidden || active.CapturesInput)) { active.CollectHighlights(_highlights); }
+            if (!photo && !_photoOpen && !_paused && !_tourActive && (!_uiHidden || active.CapturesInput)) { active.CollectHighlights(_highlights); }
             if (_highlights.Count > 0)
             {
                 Gl.Enable(Gl.BLEND);
@@ -270,9 +284,12 @@ namespace BimGo.Game
         /// <summary>
         /// Draws the plan view (cut at 1.2 m above the current level) into a scissored viewport.
         /// </summary>
-        private void DrawMinimapPlan(float x, float y, float w, float h)
+        /// <param name="surfaceWidth">The surface being drawn to (0 = the window): the video draws it into its frame.</param>
+        /// <param name="surfaceHeight">Its height (0 = the window).</param>
+        private void DrawMinimapPlan(float x, float y, float w, float h, int surfaceWidth = 0, int surfaceHeight = 0)
         {
-            int height = _window.Height;
+            int height = surfaceHeight > 0 ? surfaceHeight : _window.Height;
+            int width = surfaceWidth > 0 ? surfaceWidth : _window.Width;
             int vx = (int)x, vy = height - (int)(y + h), vw = Math.Max(1, (int)w), vh = Math.Max(1, (int)h);
 
             Gl.Enable(Gl.SCISSOR_TEST);
@@ -309,7 +326,7 @@ namespace BimGo.Game
             _renderer.DrawDynamic(p, Dynamics, transparent: false);
 
             Gl.Disable(Gl.SCISSOR_TEST);
-            Gl.Viewport(0, 0, _window.Width, _window.Height);
+            Gl.Viewport(0, 0, width, height);
         }
 
         private const float MapMetresAcross = 34f;
@@ -498,7 +515,7 @@ namespace BimGo.Game
             float row = S(20);
 
             _ui.Text(f.Body, labelX, rowY, "MODE", UiTheme.TEXT_MUTED);
-            _ui.Text(f.Body, valueX, rowY, _player.Flying ? "FLY" : _player.Controller.Crouching ? "CROUCH" : "WALK", UiTheme.TEXT);
+            _ui.Text(f.Body, valueX, rowY, ModeLabel(), UiTheme.TEXT);
             rowY += row;
 
             _ui.Text(f.Body, labelX, rowY, "LEVEL", UiTheme.TEXT_MUTED);
@@ -506,7 +523,7 @@ namespace BimGo.Game
             {
                 LevelInfo level = Scene.Levels[LevelIndexAt(_player.Feet.Z)];
                 float used = _ui.Text(f.Body, valueX, rowY, level.Name, UiTheme.TEXT);
-                Text.Clear().Append(level.Elevation, 3, plusSign: true);
+                Text.Clear().AppendLength(level.Elevation, 3, plusSign: true);
                 _ui.Text(f.Mono, valueX + used + S(6), rowY + S(1), Text.Span, UiTheme.TEXT_SOFT);
             }
             else
@@ -528,7 +545,7 @@ namespace BimGo.Game
             rowY += row;
 
             _ui.Text(f.Body, labelX, rowY, "GROUND", UiTheme.TEXT_MUTED);
-            Text.Clear().Append(_groundZ, 3).Append(" m");
+            Text.Clear().AppendLength(_groundZ, 3);
             _ui.Text(f.Mono, valueX, rowY + S(1), Text.Span, UiTheme.TEXT);
             rowY += row;
 

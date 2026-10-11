@@ -222,7 +222,42 @@ namespace BimGo.Game
                 record.Snapshot = CommentSnapshots.NameFor(record.Id);
                 record.SnapshotData = snapshot;
                 record.SnapshotDirty = true;
+
+                // A new picture has no markup yet
+                record.SnapshotOriginal = null;
+                record.SnapshotOriginalData = null;
+                record.SnapshotOriginalDirty = false;
             }
+            if (Comments.Contains(record)) { Save(); }
+        }
+
+        /// <summary>
+        /// Stores a marked-up picture (review tools round): the thumbnail and BCF picture with the markup burned in,
+        /// and the unmarked original kept beside them (null original = the markup was removed: the picture is the
+        /// original again). Records who and when, and saves.
+        /// </summary>
+        public void SetMarkup(CommentRecord record, string thumbnail, byte[] snapshot, byte[] original)
+        {
+            if (record == null || snapshot == null || snapshot.Length == 0) { return; }
+            if (!string.IsNullOrEmpty(thumbnail)) { record.Thumbnail = thumbnail; }
+            record.Snapshot = CommentSnapshots.NameFor(record.Id);
+            record.SnapshotData = snapshot;
+            record.SnapshotDirty = true;
+            if (original != null && original.Length > 0)
+            {
+                record.SnapshotOriginal = CommentSnapshots.OriginalNameFor(record.Id);
+                record.SnapshotOriginalData = original;
+                record.SnapshotOriginalDirty = true;
+            }
+            else
+            {
+                record.SnapshotOriginal = null;
+                record.SnapshotOriginalData = null;
+                record.SnapshotOriginalDirty = false;
+            }
+            record.Updated = DateTimeOffset.Now;
+            record.UpdatedBy = Environment.UserName;
+            record.UpdatedLabel = null;
             if (Comments.Contains(record)) { Save(); }
         }
 

@@ -118,7 +118,7 @@ namespace BimGo.Game
                 _visualZ = feet.Z;
             }
 
-            float targetEye = Controller.Crouching && !Flying ? CharacterController.CROUCH_EYE : CharacterController.STAND_EYE;
+            float targetEye = Controller.Crouching && !Flying ? Controller.CrouchEye : Controller.StandEye;
             _eyeHeight += (targetEye - _eyeHeight) * (1f - MathF.Exp(-12f * dt));
 
             return new Vector3(feet.X, feet.Y, _visualZ + _eyeHeight);

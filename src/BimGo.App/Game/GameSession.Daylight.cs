@@ -42,7 +42,7 @@ namespace BimGo.Game
             }
             else
             {
-                List<Vector3> suns = SunHours.SunDirections(Scene.Site, DateTime.Today.Year, settings, out int total, out known);
+                List<Vector3> suns = SunHours.SunDirections(SunSite, DateTime.Today.Year, settings, out int total, out known);
                 inputs.TotalSamples = total;
                 inputs.Suns = suns.ToArray();
                 inputs.Clear = new float[suns.Count][];
@@ -93,7 +93,7 @@ namespace BimGo.Game
             if (count != 1) { return count == 0 ? null : $"{count} rooms"; }
             foreach (RoomLight light in rooms)
             {
-                if (light.Valid) { return $"glazing {light.WindowArea:0.0} m² · R {light.AverageReflectance:0.00} · IRC {light.IrcPercent:0.0} %"; }
+                if (light.Valid) { return $"glazing {UnitFormat.Area(light.WindowArea)} · R {light.AverageReflectance:0.00} · IRC {light.IrcPercent:0.0} %"; }
             }
             return null;
         }

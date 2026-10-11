@@ -94,6 +94,26 @@ namespace BimGo.Rendering
         }
 
         /// <summary>
+        /// Draws this target's colour into the window, scaled to fit and centred, with black bars (video preview).
+        /// Single-sample targets only.
+        /// </summary>
+        public void BlitToWindowFit(int windowWidth, int windowHeight)
+        {
+            Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0);
+            Gl.Viewport(0, 0, windowWidth, windowHeight);
+            Gl.ClearColor(0f, 0f, 0f, 1f);
+            Gl.Clear(Gl.COLOR_BUFFER_BIT | Gl.DEPTH_BUFFER_BIT);
+            if (Width <= 0 || Height <= 0) { return; }
+            float scale = MathF.Min((float)windowWidth / Width, (float)windowHeight / Height);
+            int w = Math.Max(1, (int)(Width * scale)), h = Math.Max(1, (int)(Height * scale));
+            int x = (windowWidth - w) / 2, y = (windowHeight - h) / 2;
+            Gl.BindFramebuffer(Gl.READ_FRAMEBUFFER, _framebuffer);
+            Gl.BindFramebuffer(Gl.DRAW_FRAMEBUFFER, 0);
+            Gl.BlitFramebuffer(0, 0, Width, Height, x, y, x + w, y + h, Gl.COLOR_BUFFER_BIT, Gl.LINEAR);
+            Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0);
+        }
+
+        /// <summary>
         /// Copies (resolving MSAA) this target's colour into another target of the same size (photo mode).
         /// </summary>
         public void ResolveTo(RenderTarget destination)

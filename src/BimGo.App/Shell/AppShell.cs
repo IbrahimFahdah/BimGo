@@ -196,6 +196,7 @@ namespace BimGo.Shell
                 return SessionEndReason.EndedByUser;
             }
             _home.SetMessage(null, error: false);
+            if (target.Pose == null) { LastLiveSession.Save(info); } // the start screen's "last live session" card
 
             var options = new SessionOptions
             {

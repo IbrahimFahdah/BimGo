@@ -315,7 +315,7 @@ namespace BimGo.Game
                 {
                     Room = i,
                     Title = title,
-                    Detail = $"{level} · {PlanArea(room):0.0} m²{link}",
+                    Detail = $"{level} · {UnitFormat.Area(PlanArea(room))}{link}",
                     Search = $"{room.Number} {room.Name} {level}{link}",
                     Elevation = room.BottomZ
                 });

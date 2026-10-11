@@ -81,6 +81,18 @@ namespace BimGo.Physics
         /// <summary>Currently crouched.</summary>
         public bool Crouching;
 
+        /// <summary>Standing eye height for the current eye-height preset (m; <see cref="SetStandingEye"/>).</summary>
+        public float StandEye { get; private set; } = STAND_EYE;
+
+        /// <summary>Standing capsule height: the eye plus the same allowance over it as a standing adult.</summary>
+        public float StandHeight { get; private set; } = STAND_HEIGHT;
+
+        /// <summary>Crouched eye height (scaled with the standing eye).</summary>
+        public float CrouchEye { get; private set; } = CROUCH_EYE;
+
+        /// <summary>Crouched capsule height (scaled with the standing eye).</summary>
+        public float CrouchHeight { get; private set; } = CROUCH_HEIGHT;
+
         /// <summary>Maximum step-up height (m).</summary>
         public float StepHeight = 0.2f;
 
@@ -237,13 +249,39 @@ namespace BimGo.Physics
             if (crouch)
             {
                 Crouching = true;
-                Height = CROUCH_HEIGHT;
+                Height = CrouchHeight;
             }
-            else if (Crouching && !Overlaps(Feet, STAND_HEIGHT))
+            else if (Crouching && !Overlaps(Feet, StandHeight))
             {
                 Crouching = false;
-                Height = STAND_HEIGHT;
+                Height = StandHeight;
             }
+        }
+
+        /// <summary>
+        /// Changes the standing eye height (eye-height presets, tour round). The capsule follows: standing height = eye
+        /// + 0.13 m (as a standing adult), crouch scaled in proportion; the step-up height is unchanged. Growing taller
+        /// is refused under a low ceiling unless forced (a bookmark saved at that height, or flying).
+        /// </summary>
+        /// <param name="eye">Standing eye height (m), clamped to 0.9–2.0.</param>
+        /// <param name="force">Change even if the taller capsule would overlap something.</param>
+        /// <returns>False if there was no headroom (nothing changed).</returns>
+        public bool SetStandingEye(float eye, bool force)
+        {
+            eye = Math.Clamp(float.IsFinite(eye) ? eye : STAND_EYE, 0.9f, 2.0f);
+            float standHeight = eye + (STAND_HEIGHT - STAND_EYE);
+            float scale = eye / STAND_EYE;
+            float crouchHeight = MathF.Max(RADIUS * 2f + 0.05f, CROUCH_HEIGHT * scale);
+            float newHeight = Crouching ? crouchHeight : standHeight;
+
+            if (!force && newHeight > Height + 1e-4f && Overlaps(Feet + new Vector3(0f, 0f, 0.01f), newHeight)) { return false; }
+
+            StandEye = eye;
+            StandHeight = standHeight;
+            CrouchEye = CROUCH_EYE * scale;
+            CrouchHeight = crouchHeight;
+            Height = newHeight;
+            return true;
         }
 
         /// <summary>

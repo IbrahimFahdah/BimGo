@@ -115,6 +115,12 @@ namespace BimGo.Game.Guns
         /// <summary>Gun-specific keys while selected.</summary>
         public virtual void OnKeys(Platform.InputState input) { }
 
+        /// <summary>
+        /// The gun's number key pressed while it is already selected (review tools round: the Measure gun cycles its
+        /// modes). Does nothing by default.
+        /// </summary>
+        public virtual void OnReselect() { }
+
         /// <summary>Called when deselected.</summary>
         public virtual void OnDeselect() { }
 

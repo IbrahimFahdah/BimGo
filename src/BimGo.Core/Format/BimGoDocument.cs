@@ -34,6 +34,12 @@ namespace BimGo.Format
         /// </summary>
         public MaterialData Materials { get; set; }
 
+        /// <summary>
+        /// A JPEG of the view at the last save (review tools round: thumbnail.jpg, shown on the start screen), or null.
+        /// Optional: older readers ignore it.
+        /// </summary>
+        public byte[] Thumbnail { get; set; }
+
         /// <summary>When the geometry was extracted (UTC); kept across saves.</summary>
         public DateTime CreatedUtc { get; init; }
 

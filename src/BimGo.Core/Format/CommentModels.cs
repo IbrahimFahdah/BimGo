@@ -74,6 +74,25 @@ namespace BimGo.Format
         [JsonIgnore]
         public bool SnapshotDirty { get; set; }
 
+        /// <summary>
+        /// The picture before markup (review tools round): "comments/&lt;id&gt;_original.jpg", kept beside the marked-up
+        /// <see cref="Snapshot"/> so EDIT MARKUP starts from the clean view. Null when the picture has no markup.
+        /// The markup itself is burned into <see cref="Snapshot"/> and <see cref="Thumbnail"/> (so BCF carries it).
+        /// </summary>
+        public string SnapshotOriginal { get; set; }
+
+        /// <summary>The unmarked picture's JPEG bytes in memory, or null.</summary>
+        [JsonIgnore]
+        public byte[] SnapshotOriginalData { get; set; }
+
+        /// <summary>True when <see cref="SnapshotOriginalData"/> changed since it was last written beside a sidecar.</summary>
+        [JsonIgnore]
+        public bool SnapshotOriginalDirty { get; set; }
+
+        /// <summary>True when the picture carries markup (an unmarked original is kept).</summary>
+        [JsonIgnore]
+        public bool HasMarkup => SnapshotOriginal != null;
+
         /// <summary>Number of replies.</summary>
         [JsonIgnore]
         public int ReplyCount => Replies?.Count ?? 0;
@@ -102,6 +121,7 @@ namespace BimGo.Format
             if (string.IsNullOrWhiteSpace(Thumbnail)) { Thumbnail = null; }
             if (string.IsNullOrWhiteSpace(ElementUniqueId)) { ElementUniqueId = null; }
             if (!CommentSnapshots.IsValidName(Snapshot)) { Snapshot = null; }
+            if (!CommentSnapshots.IsValidName(SnapshotOriginal) || Snapshot == null) { SnapshotOriginal = null; }
             return this;
         }
 

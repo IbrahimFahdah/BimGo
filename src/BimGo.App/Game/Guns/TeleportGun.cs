@@ -221,7 +221,7 @@ namespace BimGo.Game.Guns
 
             if (_valid)
             {
-                TextBuffer text = Session.Text.Clear().Append(_distance, 1).Append(" m · ").Append(Session.LevelNameAt(_feet.Z));
+                TextBuffer text = Session.Text.Clear().AppendLength(_distance, 1).Append(" · ").Append(Session.LevelNameAt(_feet.Z));
                 ui.Text(f.Bold, x, y, text.Span, UiTheme.TEXT);
             }
             else

@@ -88,7 +88,6 @@ namespace BimGo.Game
         private void InitialiseSun()
         {
             _shadowQuality = Scene.Settings?.ShadowQuality ?? ShadowQuality.Medium;
-            _location = SolarPosition.LocationOf(Scene.Site, out _locationKnown);
             _northAngle = SolarPosition.NorthAngle(Scene.Site);
 
             if (IsFileMode)
@@ -102,11 +101,7 @@ namespace BimGo.Game
                 if (error != null) { Utilities.Log_Utils.Write(error); }
             }
             _sun ??= SunSettings.DefaultsFor(Scene.Site).Clean();
-
-            _sunPlaceLabel = _locationKnown
-                ? $"{_location.Name} · UTC{FormatZone(_location.TimeZone)}"
-                : "No site location in this file: Sydney is assumed (export again from Revit to use the model's location)";
-            RecomputeSun();
+            RefreshSunLocation();
         }
 
         private static string FormatZone(double hours)
@@ -205,7 +200,8 @@ namespace BimGo.Game
         private string DescribeSunTime()
         {
             SunTime t = _sun.Time;
-            return $"{t.Day} {MONTHS[Math.Clamp(t.Month, 1, 12) - 1]} {t.Minutes / 60:00}:{t.Minutes % 60:00}{(t.DaylightSaving ? " DST" : string.Empty)}";
+            bool dst = SolarPosition.IsDaylightSaving(_location, DateTime.Today.Year, t.Month, t.Day, t.DaylightSaving);
+            return $"{t.Day} {MONTHS[Math.Clamp(t.Month, 1, 12) - 1]} {t.Minutes / 60:00}:{t.Minutes % 60:00}{(dst ? " DST" : string.Empty)}";
         }
 
         /// <summary>
@@ -302,6 +298,7 @@ namespace BimGo.Game
         {
             if (!_sunPanelOpen) { return; }
             CommitSunField();
+            _locationOpen = false;
             _sunPanelOpen = false;
             _activeSlider = -1;
             _window.Input.ReleaseAll();
@@ -314,6 +311,11 @@ namespace BimGo.Game
         /// </summary>
         private void UpdateSunPanelKeys(InputState input)
         {
+            if (_locationOpen)
+            {
+                UpdateLocationKeys(input);
+                return;
+            }
             if (_sunField != 0)
             {
                 foreach (char c in input.Chars)
@@ -469,6 +471,13 @@ namespace BimGo.Game
             float y = MathF.Max(S(20), iconY - S(10) - h);
             _ui.Panel(x, y, w, h, UiTheme.PANEL_STRONG, Rgba.WithAlpha(UiTheme.SUN, 0.5f));
 
+            // The location picker (CHANGE…) takes the panel's place while open
+            if (_locationOpen)
+            {
+                BuildLocationPanel(f, input, x, y, w, h);
+                return;
+            }
+
             // A click anywhere outside a month / day box leaves it
             if (input.LeftPressed && _sunField != 0) { CommitSunField(); }
 
@@ -479,8 +488,15 @@ namespace BimGo.Game
             _ui.Text(f.Small, ix, cy, "SUN, SHADOWS & LIGHTS", UiTheme.SUN_LABEL, S(2f));
             _ui.TextRight(f.Small, ix + iw, cy, "ESC · O CLOSE", UiTheme.TEXT_FAINT, S(0.6f));
             cy += S(22);
-            _ui.TextWrapped(f.Small, ix, cy, iw, _sunPlaceLabel, _locationKnown ? UiTheme.TEXT_MUTED : UiTheme.MEASURE_LABEL, maxLines: 1);
-            cy += S(24);
+            float changeW = S(78);
+            uint placeColour = HasLocationOverride ? UiTheme.SUN : _locationKnown ? UiTheme.TEXT_MUTED : UiTheme.MEASURE_LABEL;
+            _ui.TextWrapped(f.Small, ix, cy + S(3), iw - changeW - S(8), _sunPlaceLabel, placeColour, maxLines: 1);
+            if (SmallButton(f, input, ix + iw - changeW, cy - S(2), changeW, S(22), "CHANGE…"))
+            {
+                OpenLocationPicker();
+                return;
+            }
+            cy += S(26);
 
             // Shadows on / off + quality
             bool enabled = Checkbox(f, input, ix, cy + S(6), S(110), "Shadows", _sun.Enabled);
@@ -490,7 +506,7 @@ namespace BimGo.Game
             {
                 _shadowQuality = (ShadowQuality)quality;
                 ShadowMaps.Preset preset = ShadowMaps.PresetFor(_shadowQuality);
-                Toast($"Shadow quality: {QUALITY_OPTIONS[quality]} ({preset.Cascades} × {preset.Size} px, {preset.Distance:0} m)");
+                Toast($"Shadow quality: {QUALITY_OPTIONS[quality]} ({preset.Cascades} × {preset.Size} px, {UnitFormat.Length(preset.Distance, 0)})");
             }
             cy += S(46);
 
@@ -521,11 +537,25 @@ namespace BimGo.Game
             if (NumberBox(f, input, ix + S(52), cy, S(48), 1, _sun.Time.Month)) { FocusSunField(1); }
             _ui.Text(f.Small, ix + S(106), cy + S(8), MONTHS_UPPER[Math.Clamp(_sun.Time.Month, 1, 12) - 1], UiTheme.TEXT_MUTED);
             if (NumberBox(f, input, ix + S(142), cy, S(48), 2, _sun.Time.Day)) { FocusSunField(2); }
-            bool dst = Checkbox(f, input, ix + S(204), cy + S(6), iw - S(204), "+1 h DST", _sun.Time.DaylightSaving);
-            if (dst != _sun.Time.DaylightSaving)
+            if (_location.AutoDaylightSaving)
             {
-                _sun.Time.DaylightSaving = dst;
-                SunChanged();
+                // The chosen place's time zone decides (per date); a click switches to the manual tick
+                if (SmallButton(f, input, ix + S(204), cy, iw - S(204), S(30), SunDaylightSaving ? "DST AUTO: ON" : "DST AUTO: OFF"))
+                {
+                    SetLocationDaylightSavingAuto(false);
+                }
+            }
+            else
+            {
+                bool zoned = _sun.Location?.ZoneId != null && TimeZones.TryFind(_sun.Location.ZoneId, out _);
+                float tickW = iw - S(204) - (zoned ? S(50) : 0f);
+                bool dst = Checkbox(f, input, ix + S(204), cy + S(6), tickW, "+1 h DST", _sun.Time.DaylightSaving);
+                if (dst != _sun.Time.DaylightSaving)
+                {
+                    _sun.Time.DaylightSaving = dst;
+                    SunChanged();
+                }
+                if (zoned && SmallButton(f, input, ix + iw - S(46), cy, S(46), S(30), "AUTO")) { SetLocationDaylightSavingAuto(true); }
             }
             cy += S(40);
 

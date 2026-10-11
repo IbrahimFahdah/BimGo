@@ -36,6 +36,30 @@ namespace BimGo.Format
         }
 
         /// <summary>
+        /// Reads only a file's thumbnail.jpg (review tools round; cheap: one entry), or null when it has none.
+        /// </summary>
+        public static byte[] ReadThumbnail(string path)
+        {
+            try
+            {
+                using ZipArchive zip = ZipFile.OpenRead(path);
+                return ReadThumbnail(zip);
+            }
+            catch (Exception ex)
+            {
+                Utilities.Log_Utils.Write($"Thumbnail of {path} unreadable: {ex.Message}");
+                return null;
+            }
+        }
+
+        private static byte[] ReadThumbnail(ZipArchive zip)
+        {
+            ZipArchiveEntry entry = zip.GetEntry(BimGoFormat.ENTRY_THUMBNAIL);
+            if (entry == null || entry.Length <= 0 || entry.Length > BimGoFormat.MAX_THUMBNAIL_BYTES) { return null; }
+            return ReadBytes(zip, BimGoFormat.ENTRY_THUMBNAIL);
+        }
+
+        /// <summary>
         /// Reads a whole file.
         /// </summary>
         /// <param name="path">The file.</param>
@@ -91,9 +115,14 @@ namespace BimGo.Format
                 foreach (CommentRecord comment in comments.Comments)
                 {
                     // BCF pictures (optional entries; a missing one leaves the comment without)
-                    if (!CommentSnapshots.IsValidName(comment.Snapshot)) { comment.Snapshot = null; continue; }
+                    if (!CommentSnapshots.IsValidName(comment.Snapshot)) { comment.Snapshot = null; comment.SnapshotOriginal = null; continue; }
                     comment.SnapshotData = ReadBytes(zip, comment.Snapshot);
-                    if (comment.SnapshotData == null) { comment.Snapshot = null; }
+                    if (comment.SnapshotData == null) { comment.Snapshot = null; comment.SnapshotOriginal = null; continue; }
+
+                    // The picture before markup (review tools round; optional)
+                    if (!CommentSnapshots.IsValidName(comment.SnapshotOriginal)) { comment.SnapshotOriginal = null; continue; }
+                    comment.SnapshotOriginalData = ReadBytes(zip, comment.SnapshotOriginal);
+                    if (comment.SnapshotOriginalData == null) { comment.SnapshotOriginal = null; }
                 }
 
                 Utilities.Log_Utils.Write($"Read {path}: {scene.Elements.Length} elements, {scene.TriangleCount} triangles, " +
@@ -110,7 +139,8 @@ namespace BimGo.Format
                     CreatedUtc = manifest.CreatedUtc,
                     Kind = manifest.Kind,
                     Path = path,
-                    ReadFormatVersion = manifest.FormatVersion
+                    ReadFormatVersion = manifest.FormatVersion,
+                    Thumbnail = ReadThumbnail(zip)
                 };
             }
             catch (Exception ex)

@@ -25,6 +25,9 @@ namespace BimGo.Game
         #region Fields
 
         private static readonly string[] GRID_OPTIONS = { "0.1", "0.25", "0.5", "1 m" };
+
+        /// <summary>The same grid sizes in imperial (review tools round; the grid itself stays metric).</summary>
+        private static readonly string[] GRID_OPTIONS_IMPERIAL = { "≈4\"", "≈10\"", "≈1'8\"", "≈3'3\"" };
         private static readonly string[] STEP_OPTIONS = { "5 min", "10 min", "15 min" };
         private static readonly string[] MODE_OPTIONS = { "Sun hours", "Daylight %", "Lux" };
         private static readonly string[] RAY_OPTIONS = { "128", "256", "512" };
@@ -240,7 +243,7 @@ namespace BimGo.Game
             string times = $"{settings.Day} {MONTHS[settings.Month - 1]} {Clock(settings.StartMinutes)}–{Clock(settings.EndMinutes)} · {settings.StepMinutes} min";
             return settings.Mode switch
             {
-                StudyMode.DaylightFactor => $"DAYLIGHT FACTOR · CIE OVERCAST SKY · WORK PLANE {settings.WorkPlane:0.00} m{name}",
+                StudyMode.DaylightFactor => $"DAYLIGHT FACTOR · CIE OVERCAST SKY · WORK PLANE {UnitFormat.Length(settings.WorkPlane, 2)}{name}",
                 StudyMode.Illuminance => $"ILLUMINANCE · CLEAR SKY{(settings.DirectSun ? " + SUN" : string.Empty)} · {times}{name}",
                 _ => $"DIRECT SUN HOURS · {times}{(settings.GlassBlocks ? " · glass blocks" : string.Empty)}{name}"
             };
@@ -432,7 +435,7 @@ namespace BimGo.Game
             }
             _sunRoomNote = null;
             _sunRoomLight = null;
-            List<Vector3> directions = SunHours.SunDirections(Scene.Site, DateTime.Today.Year, settings, out int total, out bool known);
+            List<Vector3> directions = SunHours.SunDirections(SunSite, DateTime.Today.Year, settings, out int total, out bool known);
             _sunOpaqueOnly = !settings.GlassBlocks;
             _sunStudy.Start(directions, total, settings);
             _sunSummary = null;
@@ -1045,8 +1048,17 @@ namespace BimGo.Game
                 if (newStep != stepIndex && !locked) { s.StepMinutes = SunHoursSettings.STEPS[newStep]; SunSettingChanged(false); }
                 cy += S(40);
 
-                bool dst = Checkbox(f, input, ix, cy + S(4), iw, "Daylight saving (+1 h)", s.DaylightSaving);
-                if (dst != s.DaylightSaving && !locked) { s.DaylightSaving = dst; SunSettingChanged(false); }
+                if (_location.AutoDaylightSaving)
+                {
+                    // A location chosen in BimGo: its time zone decides daylight saving for the study's date
+                    bool on = SolarPosition.IsDaylightSaving(_location, DateTime.Today.Year, s.Month, s.Day, s.DaylightSaving);
+                    _ui.Text(f.Body, ix, cy + S(3), on ? "Daylight saving: auto (on for this date)" : "Daylight saving: auto (off for this date)", UiTheme.TEXT_SOFT);
+                }
+                else
+                {
+                    bool dst = Checkbox(f, input, ix, cy + S(4), iw, "Daylight saving (+1 h)", s.DaylightSaving);
+                    if (dst != s.DaylightSaving && !locked) { s.DaylightSaving = dst; SunSettingChanged(false); }
+                }
                 cy += S(28);
             }
 
@@ -1106,7 +1118,7 @@ namespace BimGo.Game
             // Grid and offsets (these rebuild the grid)
             _ui.Text(f.Body, ix, cy + S(7), "Grid", UiTheme.TEXT_SOFT);
             int gridIndex = Math.Max(0, Array.IndexOf(SunHoursSettings.GRID_SIZES, s.GridSize));
-            int newGrid = Segmented(f, input, ix + S(110), cy, iw - S(110), GRID_OPTIONS, gridIndex);
+            int newGrid = Segmented(f, input, ix + S(110), cy, iw - S(110), UnitFormat.IsImperial ? GRID_OPTIONS_IMPERIAL : GRID_OPTIONS, gridIndex);
             if (newGrid != gridIndex && !locked) { s.GridSize = SunHoursSettings.GRID_SIZES[newGrid]; SunSettingChanged(true); }
             cy += S(40);
             bool daylight = s.Mode != StudyMode.SunHours;
@@ -1226,7 +1238,7 @@ namespace BimGo.Game
             float fx = x + S(110);
             float changed = value;
             if (SmallButton(f, input, fx, y, S(40), S(30), "−")) { changed = value - 0.05f; }
-            Text.Clear().Append(value, 2).Append(" m");
+            Text.Clear().AppendLength(value, 2);
             _ui.TextCentred(f.Bold, fx + S(44) + S(55), y + S(6), Text.Span, UiTheme.TEXT);
             if (SmallButton(f, input, fx + S(158), y, S(40), S(30), "+")) { changed = value + 0.05f; }
             return changed == value ? value : MathF.Round(Math.Clamp(changed, 0f, max) * 20f) / 20f;

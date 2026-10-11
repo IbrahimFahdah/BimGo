@@ -124,6 +124,15 @@ namespace BimGo.Format
             return builder.Append(".jpg").ToString();
         }
 
+        /// <summary>
+        /// The name of a comment's unmarked picture (review tools round): "comments/&lt;id&gt;_original.jpg".
+        /// </summary>
+        public static string OriginalNameFor(string commentId)
+        {
+            string name = NameFor(commentId);
+            return name[..^4] + "_original.jpg";
+        }
+
         /// <summary>True for "comments/&lt;safe name&gt;.jpg" (no sub-folders, no "..").</summary>
         public static bool IsValidName(string name)
         {
@@ -154,6 +163,19 @@ namespace BimGo.Format
                     if (!file.Exists || file.Length > MAX_BYTES) { continue; }
                     record.SnapshotData = File.ReadAllBytes(file.FullName);
                     record.SnapshotDirty = false;
+
+                    // The unmarked original (review tools round); missing → the markup can't be redone from clean
+                    if (!IsValidName(record.SnapshotOriginal)) { continue; }
+                    var original = new FileInfo(Path.Combine(folder, record.SnapshotOriginal.Replace('/', Path.DirectorySeparatorChar)));
+                    if (original.Exists && original.Length <= MAX_BYTES)
+                    {
+                        record.SnapshotOriginalData = File.ReadAllBytes(original.FullName);
+                        record.SnapshotOriginalDirty = false;
+                    }
+                    else
+                    {
+                        record.SnapshotOriginal = null;
+                    }
                 }
             }
             catch (Exception ex)
@@ -178,12 +200,21 @@ namespace BimGo.Format
                     if (record == null || !IsValidName(record.Snapshot)) { continue; }
                     string file = Path.Combine(folder, record.Snapshot[FOLDER.Length..]);
                     used.Add(Path.GetFileName(file));
-                    if (record.SnapshotData == null || (!record.SnapshotDirty && File.Exists(file))) { continue; }
-                    Directory.CreateDirectory(folder);
-                    string temp = file + ".tmp";
-                    File.WriteAllBytes(temp, record.SnapshotData);
-                    File.Move(temp, file, overwrite: true);
-                    record.SnapshotDirty = false;
+                    if (record.SnapshotData != null && (record.SnapshotDirty || !File.Exists(file)))
+                    {
+                        WriteAtomic(folder, file, record.SnapshotData);
+                        record.SnapshotDirty = false;
+                    }
+
+                    // The unmarked original beside it (review tools round)
+                    if (!IsValidName(record.SnapshotOriginal) || record.SnapshotOriginalData == null) { continue; }
+                    string original = Path.Combine(folder, record.SnapshotOriginal[FOLDER.Length..]);
+                    used.Add(Path.GetFileName(original));
+                    if (record.SnapshotOriginalDirty || !File.Exists(original))
+                    {
+                        WriteAtomic(folder, original, record.SnapshotOriginalData);
+                        record.SnapshotOriginalDirty = false;
+                    }
                 }
 
                 if (!Directory.Exists(folder)) { return; }
@@ -196,6 +227,15 @@ namespace BimGo.Format
             {
                 Utilities.Log_Utils.Write($"Comment pictures not saved: {ex.Message}");
             }
+        }
+
+        /// <summary>Writes a picture through a temporary file (the folder is created first).</summary>
+        private static void WriteAtomic(string folder, string file, byte[] data)
+        {
+            Directory.CreateDirectory(folder);
+            string temp = file + ".tmp";
+            File.WriteAllBytes(temp, data);
+            File.Move(temp, file, overwrite: true);
         }
     }
 }

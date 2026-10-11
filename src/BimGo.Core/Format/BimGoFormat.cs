@@ -79,6 +79,12 @@ namespace BimGo.Format
         internal const string ENTRY_MATERIAL_STREAMS = "material.bin";
         internal const string ENTRY_LIBRARY = "library.json";
 
+        /// <summary>Optional picture of the view at the last save (review tools round: the start screen's card).</summary>
+        internal const string ENTRY_THUMBNAIL = "thumbnail.jpg";
+
+        /// <summary>Largest thumbnail read back (bytes).</summary>
+        internal const long MAX_THUMBNAIL_BYTES = 2L * 1024 * 1024;
+
         /// <summary>The folder (entry name prefix) family library previews live under.</summary>
         public const string LIBRARY_FOLDER = "library/";
 

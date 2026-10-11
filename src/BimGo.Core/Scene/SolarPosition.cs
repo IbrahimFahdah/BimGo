@@ -10,6 +10,15 @@ namespace BimGo.Scene
     public readonly record struct GeoLocation(double Latitude, double Longitude, double TimeZone, string Name)
     {
         /// <summary>
+        /// The IANA time zone (location override), or null. With <see cref="AutoDaylightSaving"/>, daylight saving
+        /// follows its rules for each date instead of the caller's tick.
+        /// </summary>
+        public string ZoneId { get; init; }
+
+        /// <summary>Daylight saving from <see cref="ZoneId"/> (when the zone is known to Windows).</summary>
+        public bool AutoDaylightSaving { get; init; }
+
+        /// <summary>
         /// Used when a model carries no site location (files exported before v6): Sydney.
         /// </summary>
         public static GeoLocation Fallback { get; } = new(-33.8688, 151.2093, 10.0, "Sydney (assumed)");
@@ -44,6 +53,7 @@ namespace BimGo.Scene
             month = Math.Clamp(month, 1, 12);
             day = Math.Clamp(day, 1, DateTime.DaysInMonth(year, month));
             minutes = Math.Clamp(minutes, 0.0, 1440.0);
+            daylightSaving = IsDaylightSaving(location, year, month, day, daylightSaving);
 
             int dayOfYear = new DateTime(year, month, day).DayOfYear;
             int daysInYear = DateTime.IsLeapYear(year) ? 366 : 365;
@@ -81,6 +91,39 @@ namespace BimGo.Scene
             double cosAz = (Math.Sin(decl) - Math.Sin(lat) * sinAlt) / (cosLat * cosAlt);
             azimuth = Math.Atan2(sinAz, cosAz);
             if (azimuth < 0) { azimuth += 2.0 * Math.PI; }
+        }
+
+        /// <summary>
+        /// Whether the clock is on daylight saving on a date: from the location's IANA zone when it has one and
+        /// <see cref="GeoLocation.AutoDaylightSaving"/> is on (and Windows knows the zone), else the caller's tick.
+        /// </summary>
+        /// <param name="manual">The tick (used when the zone doesn't decide).</param>
+        public static bool IsDaylightSaving(GeoLocation location, int year, int month, int day, bool manual)
+        {
+            if (!location.AutoDaylightSaving || !TimeZones.TryFind(location.ZoneId, out TimeZoneInfo zone)) { return manual; }
+            year = Math.Clamp(year, 1, 9999);
+            month = Math.Clamp(month, 1, 12);
+            day = Math.Clamp(day, 1, DateTime.DaysInMonth(year, month));
+            try { return zone.IsDaylightSavingTime(new DateTime(year, month, day, 12, 0, 0, DateTimeKind.Unspecified)); }
+            catch (ArgumentException) { return manual; }
+        }
+
+        /// <summary>
+        /// The site the sun and the studies should use: the model's, or a copy carrying the location override
+        /// (latitude, longitude, standard offset, IANA zone, name). True north and the coordinates stay the model's.
+        /// </summary>
+        public static SiteInfo EffectiveSite(SiteInfo site, Format.LocationOverride location)
+        {
+            if (location == null || !location.IsValid) { return site; }
+            SiteInfo copy = site?.Copy() ?? new SiteInfo();
+            copy.HasLocation = true;
+            copy.Latitude = location.Latitude;
+            copy.Longitude = location.Longitude;
+            copy.TimeZone = location.TimeZone;
+            copy.PlaceName = location.Name ?? string.Empty;
+            copy.ZoneId = location.ZoneId;
+            copy.AutoDaylightSaving = location.AutoDaylightSaving && location.ZoneId != null;
+            return copy;
         }
 
         /// <summary>
@@ -124,7 +167,11 @@ namespace BimGo.Scene
                 && Math.Abs(site.Latitude) <= 90.0 && Math.Abs(site.Longitude) <= 180.0;
             if (!known) { return GeoLocation.Fallback; }
             string name = string.IsNullOrWhiteSpace(site.PlaceName) ? $"{site.Latitude:0.###}°, {site.Longitude:0.###}°" : site.PlaceName.Trim();
-            return new GeoLocation(site.Latitude, site.Longitude, Math.Clamp(site.TimeZone, -14.0, 14.0), name);
+            return new GeoLocation(site.Latitude, site.Longitude, Math.Clamp(site.TimeZone, -14.0, 14.0), name)
+            {
+                ZoneId = site.ZoneId,
+                AutoDaylightSaving = site.AutoDaylightSaving && site.ZoneId != null
+            };
         }
     }
 }

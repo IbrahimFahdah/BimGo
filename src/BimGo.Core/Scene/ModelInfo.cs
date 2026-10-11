@@ -117,6 +117,22 @@ namespace BimGo.Scene
         /// The walkthrough's sun starts there (else today, 12:00).
         /// </summary>
         public string SunStart { get; set; } = string.Empty;
+
+        /// <summary>
+        /// The IANA time zone of a location chosen in BimGo (tour round, build A2: location override), else null.
+        /// Never saved in model.json: only on the session's effective copy (<see cref="SolarPosition.EffectiveSite"/>).
+        /// </summary>
+        [System.Text.Json.Serialization.JsonIgnore]
+        public string ZoneId { get; set; }
+
+        /// <summary>
+        /// With <see cref="ZoneId"/>: daylight saving follows the zone's rules for each date (not saved in model.json).
+        /// </summary>
+        [System.Text.Json.Serialization.JsonIgnore]
+        public bool AutoDaylightSaving { get; set; }
+
+        /// <summary>A shallow copy (the reference points are shared, never changed after loading).</summary>
+        public SiteInfo Copy() => (SiteInfo)MemberwiseClone();
     }
 
     /// <summary>

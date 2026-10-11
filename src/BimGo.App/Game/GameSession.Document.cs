@@ -401,8 +401,12 @@ namespace BimGo.Game
                 if (!BimGoFormat.HasExtension(path)) { path += BimGoFormat.EXTENSION; }
             }
 
+            // The start screen's picture of this view (before the progress screen draws over the window)
+            byte[] thumbnail = CaptureFileThumbnail() ?? _options.Document?.Thumbnail;
+
             var document = new BimGoDocument
             {
+                Thumbnail = thumbnail,
                 Scene = Scene,
                 Comments = Comments.ToDocument(),
                 Journal = _journal,

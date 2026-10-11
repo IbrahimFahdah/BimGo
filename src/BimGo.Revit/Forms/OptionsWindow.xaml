@@ -294,6 +294,8 @@
                                 <RowDefinition Height="38"/>
                                 <RowDefinition Height="38"/>
                                 <RowDefinition Height="38"/>
+                                <RowDefinition Height="38"/>
+                                <RowDefinition Height="38"/>
                             </Grid.RowDefinitions>
 
                             <TextBlock Grid.Row="0" Style="{StaticResource FieldLabel}" Text="Anti-aliasing"/>
@@ -348,6 +350,28 @@
                                     <ComboBoxItem Content="Glow + light"/>
                                 </ComboBox>
                                 <TextBlock Margin="10,0,0,0" VerticalAlignment="Center" FontSize="12" Foreground="{StaticResource Muted}" Text="Lighting fixtures glow and cast light · K cycles"/>
+                            </StackPanel>
+
+                            <TextBlock Grid.Row="7" Style="{StaticResource FieldLabel}" Text="Eye heights"/>
+                            <StackPanel Grid.Row="7" Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                                <TextBlock VerticalAlignment="Center" FontSize="12" Foreground="{StaticResource Muted}" Text="Standing" Margin="0,0,6,0"/>
+                                <TextBox x:Name="TextEyeStanding" Style="{StaticResource MonoBox}" Width="56"/>
+                                <TextBlock VerticalAlignment="Center" FontSize="12" Foreground="{StaticResource Muted}" Text="Seated" Margin="14,0,6,0"/>
+                                <TextBox x:Name="TextEyeSeated" Style="{StaticResource MonoBox}" Width="56"/>
+                                <TextBlock VerticalAlignment="Center" FontSize="12" Foreground="{StaticResource Muted}" Text="Child" Margin="14,0,6,0"/>
+                                <TextBox x:Name="TextEyeChild" Style="{StaticResource MonoBox}" Width="56"/>
+                                <TextBlock Margin="10,0,0,0" VerticalAlignment="Center" FontSize="12" Foreground="{StaticResource Muted}" Text="m · picked in the pause menu"/>
+                            </StackPanel>
+
+                            <TextBlock Grid.Row="8" Style="{StaticResource FieldLabel}" Text="Units"/>
+                            <StackPanel Grid.Row="8" Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                                <ComboBox x:Name="ComboUnits" Width="140" Height="28" VerticalContentAlignment="Center">
+                                    <ComboBoxItem Content="Metric"/>
+                                    <ComboBoxItem Content="Imperial"/>
+                                </ComboBox>
+                                <CheckBox x:Name="CheckDecimalFeet" Content="Decimal feet" VerticalAlignment="Center" Margin="12,0,0,0"
+                                          ToolTip="Imperial lengths as 5.63' instead of 5' 7 1/2&quot;"/>
+                                <TextBlock Margin="10,0,0,0" VerticalAlignment="Center" FontSize="12" Foreground="{StaticResource Muted}" Text="Lengths and areas in the walkthrough · also in the pause menu"/>
                             </StackPanel>
                         </Grid>
 

@@ -64,7 +64,13 @@ namespace BimGo.Format
                     var journal = new JournalDto { Entries = document.Journal?.Entries.ToList() ?? new List<JournalEntry>() };
                     WriteJson(zip, BimGoFormat.ENTRY_JOURNAL, journal, BimGoFormat.JSON_INDENTED);
 
-                    // Optional part: older readers ignore entries they don't know, so no format bump is needed
+                    // Optional parts: older readers ignore entries they don't know, so no format bump is needed
+                    if (document.Thumbnail != null && document.Thumbnail.Length > 0 && document.Thumbnail.Length <= BimGoFormat.MAX_THUMBNAIL_BYTES)
+                    {
+                        ZipArchiveEntry thumbnail = zip.CreateEntry(BimGoFormat.ENTRY_THUMBNAIL, CompressionLevel.NoCompression);
+                        using Stream thumbnailStream = thumbnail.Open();
+                        thumbnailStream.Write(document.Thumbnail);
+                    }
                     if (document.Bookmarks != null && !document.Bookmarks.IsEmpty)
                     {
                         WriteJson(zip, BimGoFormat.ENTRY_BOOKMARKS, document.Bookmarks, BimGoFormat.JSON_INDENTED);
@@ -337,8 +343,13 @@ namespace BimGo.Format
                 if (record?.SnapshotData == null || record.SnapshotData.Length == 0 || !CommentSnapshots.IsValidName(record.Snapshot)) { continue; }
                 if (!written.Add(record.Snapshot)) { continue; }
                 ZipArchiveEntry image = zip.CreateEntry(record.Snapshot, CompressionLevel.NoCompression);
-                using Stream stream = image.Open();
-                stream.Write(record.SnapshotData);
+                using (Stream stream = image.Open()) { stream.Write(record.SnapshotData); }
+
+                // The unmarked original of a marked-up picture (review tools round)
+                if (record.SnapshotOriginalData == null || record.SnapshotOriginalData.Length == 0 || !CommentSnapshots.IsValidName(record.SnapshotOriginal)) { continue; }
+                if (!written.Add(record.SnapshotOriginal)) { continue; }
+                ZipArchiveEntry original = zip.CreateEntry(record.SnapshotOriginal, CompressionLevel.NoCompression);
+                using (Stream stream = original.Open()) { stream.Write(record.SnapshotOriginalData); }
             }
         }
 

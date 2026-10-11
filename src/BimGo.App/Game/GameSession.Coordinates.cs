@@ -126,7 +126,7 @@ namespace BimGo.Game
         private void CoordinateRow(FontAtlas f, float labelX, float valueRight, float y, string label, double value)
         {
             _ui.Text(f.Body, labelX, y, label, UiTheme.TEXT_MUTED);
-            Text.Clear().Append(value, 3).Append(" m");
+            Text.Clear().AppendCoordinate(value);
             _ui.TextRight(f.Mono, valueRight, y + S(1), Text.Span, UiTheme.COORDS);
         }
 

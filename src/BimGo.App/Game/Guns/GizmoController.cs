@@ -247,7 +247,7 @@ namespace BimGo.Game.Guns
             _rawOffset = Target.Offset + new Vector3(0f, 0f, change);
             _zFree = true;
             _session.Dynamics.SetTransform(Target, _rawOffset, Target.Angle);
-            message = change < 0f ? $"Dropped {-change:0.000} m onto the surface below" : $"Lifted {change:0.000} m onto the surface";
+            message = change < 0f ? $"Dropped {UnitFormat.Length(-change)} onto the surface below" : $"Lifted {UnitFormat.Length(change)} onto the surface";
             return true;
         }
 
@@ -354,8 +354,8 @@ namespace BimGo.Game.Guns
         {
             float degrees = DeltaAngle * 180f / MathF.PI;
             Vector3 delta = DeltaOffset;
-            text.Append("Δ ").Append(new Vector2(delta.X, delta.Y).Length(), 3).Append(" m");
-            if (MathF.Abs(delta.Z) > 5e-4f) { text.Append(" · Z ").Append(delta.Z, 3, plusSign: true).Append(" m"); }
+            text.Append("Δ ").AppendLength(new Vector2(delta.X, delta.Y).Length());
+            if (MathF.Abs(delta.Z) > 5e-4f) { text.Append(" · Z ").AppendLength(delta.Z, 3, plusSign: true); }
             text.Append(" · ").Append(degrees, 1).Append('°');
         }
 

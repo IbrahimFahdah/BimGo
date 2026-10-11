@@ -61,7 +61,8 @@ namespace BimGo.Game
         private void AddBookmarkHere()
         {
             if (_player == null) { return; }
-            BookmarkRecord record = Bookmarks.CreatePending(null, _player.Feet, _player.Yaw, _player.Pitch, _player.Flying, CurrentLevelName, BookmarkSunTime(), _section);
+            BookmarkRecord record = Bookmarks.CreatePending(null, _player.Feet, _player.Yaw, _player.Pitch, _player.Flying, CurrentLevelName, BookmarkSunTime(), _section,
+                CurrentStandingEye, BookmarkVisibility());
             _thumbnailFor = record;
             Sound.Play(SoundId.CommentPlace);
             BeginBookmarkRename(record, isNew: true);
@@ -104,14 +105,17 @@ namespace BimGo.Game
         }
 
         /// <summary>
-        /// Puts the player at a bookmark (walk / fly mode as saved) and, if it kept a sun time, restores that time with
-        /// shadows on.
+        /// Puts the player at a bookmark (walk / fly mode as saved) and restores what it kept: the sun time (shadows on),
+        /// the section cut, the hidden categories / links / elements and the eye height. Older bookmarks without a field
+        /// leave that part as it is.
         /// </summary>
         private void GoToBookmark(BookmarkRecord record)
         {
             if (record == null || _player == null) { return; }
             if (record.Sun != null) { ApplySunTime(record.Sun); }
             if (record.Section != null) { ApplySection(record.Section, announce: false); }
+            if (record.Visibility != null) { ApplyVisibility(record.Visibility, record: true); }
+            if (record.EyeHeight is float eye) { ApplyEyeHeight(eye); }
             if (record.Flying != _player.Flying) { _player.ToggleFly(); }
             _player.TeleportTo(record.Local, record.Yaw, Math.Clamp(record.Pitch, -1.5f, 1.5f));
             Sound.Play(SoundId.Teleport);
@@ -141,8 +145,11 @@ namespace BimGo.Game
         private bool CloseBookmarks()
         {
             if (!_bookmarksOpen) { return false; }
+            FlushTourDraft();
             _bookmarksOpen = false;
             _bookmarkDeleteArmed = null;
+            _tourSettingsOpen = false;
+            _tourDraft = null;
             return true;
         }
 
@@ -179,25 +186,43 @@ namespace BimGo.Game
 
             float ix = x + S(24), iw = w - S(48);
             float cy = y + S(20);
-            _ui.Text(f.Small, ix, cy, "BOOKMARKS", UiTheme.BOOKMARK_LABEL, S(2f));
+            _ui.Text(f.Small, ix, cy, _tourSettingsOpen ? "BOOKMARKS · TOUR" : "BOOKMARKS", UiTheme.BOOKMARK_LABEL, S(2f));
             Text.Clear().AppendGrouped(Bookmarks.Bookmarks.Count).Append(Bookmarks.Bookmarks.Count == 1 ? " viewpoint · saved to " : " viewpoints · saved to ").Append(Bookmarks.FileName);
             _ui.TextRight(f.Small, ix + iw, cy, Text.Span, UiTheme.TEXT_MUTED, S(0.6f));
             cy += S(30);
-            _ui.Text(f.Body, ix, cy, "B saves where you stand · CTRL+1–9 jump to the first nine", UiTheme.TEXT_MUTED);
+            _ui.Text(f.Body, ix, cy, _tourSettingsOpen
+                ? "The tour plays the ticked bookmarks in list order · SPACE pause · ← → stops · ESC ends it"
+                : "B saves where you stand · CTRL+1–9 jump to the first nine · PLAY TOUR plays them all", UiTheme.TEXT_MUTED);
             cy += S(34);
 
             float buttonsY = y + h - S(24) - S(48);
-            BuildBookmarkRows(f, input, ix, cy, iw, buttonsY - S(16));
+            if (_tourSettingsOpen) { BuildTourSettings(f, input, ix, cy, iw, buttonsY - S(16)); }
+            else { BuildBookmarkRows(f, input, ix, cy, iw, buttonsY - S(16)); }
 
             if (_bookmarksNotice != null) { _ui.TextWrapped(f.Body, ix, buttonsY - S(30), iw, _bookmarksNotice, UiTheme.MEASURE_TEXT, maxLines: 1); }
-            if (MenuButton(f, ix, buttonsY, S(240), "ADD THIS VIEW", false, false))
+            float bx = ix;
+            if (!_tourSettingsOpen)
             {
-                BookmarkRecord added = Bookmarks.Add(null, _player.Feet, _player.Yaw, _player.Pitch, _player.Flying, CurrentLevelName, BookmarkSunTime(), _section);
-                _thumbnailFor = added;
-                _bookmarksNotice = Bookmarks.LastError ?? $"Added “{added.Name}” (RENAME to change it)";
-                _bookmarkScroll = Bookmarks.Bookmarks.Count; // show the end of the list (clamped while drawing)
+                if (MenuButton(f, bx, buttonsY, S(220), "ADD THIS VIEW", false, false))
+                {
+                    BookmarkRecord added = Bookmarks.Add(null, _player.Feet, _player.Yaw, _player.Pitch, _player.Flying, CurrentLevelName, BookmarkSunTime(), _section,
+                        CurrentStandingEye, BookmarkVisibility());
+                    _thumbnailFor = added;
+                    _bookmarksNotice = Bookmarks.LastError ?? $"Added “{added.Name}” (RENAME to change it)";
+                    _bookmarkScroll = Bookmarks.Bookmarks.Count; // show the end of the list (clamped while drawing)
+                }
+                bx += S(236);
             }
-            if (MenuButton(f, ix + S(256), buttonsY, S(160), "CLOSE", false, false)) { CloseBookmarks(); }
+            if (MenuButton(f, bx, buttonsY, S(200), _tourSettingsOpen ? "BACK TO LIST" : "TOUR SETTINGS", false, false)) { ToggleTourSettings(); }
+            bx += S(216);
+            if (MenuButton(f, bx, buttonsY, S(140), "CLOSE", false, false))
+            {
+                CloseBookmarks();
+                return;
+            }
+            float playW = S(200);
+            if (MenuButton(f, ix + iw - playW, buttonsY, playW, "PLAY TOUR", primary: true, danger: false)) { StartTour(); return; }
+            if (_tourSettingsOpen && MenuButton(f, ix + iw - playW * 2f - S(16), buttonsY, playW, "RECORD VIDEO", false, false)) { StartVideo(); }
         }
 
         /// <summary>
@@ -286,7 +311,8 @@ namespace BimGo.Game
             }
             else if (here != null)
             {
-                Bookmarks.Update(here, _player.Feet, _player.Yaw, _player.Pitch, _player.Flying, CurrentLevelName, BookmarkSunTime(), _section);
+                Bookmarks.Update(here, _player.Feet, _player.Yaw, _player.Pitch, _player.Flying, CurrentLevelName, BookmarkSunTime(), _section,
+                    CurrentStandingEye, BookmarkVisibility());
                 _thumbnailFor = here;
                 _bookmarksNotice = Bookmarks.LastError ?? $"“{here.Name}” now points at where you are";
                 Sound.Play(SoundId.Commit);

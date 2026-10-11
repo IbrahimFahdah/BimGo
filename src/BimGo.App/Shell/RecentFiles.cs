@@ -101,13 +101,84 @@ namespace BimGo.Shell
     }
 
     /// <summary>
-    /// Summary of a recent file for the home screen (read once from its manifest).
+    /// The last Revit model walked live (review tools round: the start screen shows it greyed out when its session
+    /// isn't running: "open it in Revit and press Go"). %LocalAppData%\BimGo\LastLive.json; never throws.
+    /// </summary>
+    internal sealed class LastLiveSession
+    {
+        private static readonly JsonSerializerOptions OPTIONS = new() { WriteIndented = true, PropertyNameCaseInsensitive = true };
+
+        public string DocTitle { get; set; } = string.Empty;
+        public string DocPath { get; set; } = string.Empty;
+        public string RevitVersion { get; set; } = string.Empty;
+        public DateTime LastUsedUtc { get; set; }
+
+        /// <summary>The file path.</summary>
+        public static string FilePath => System.IO.Path.Combine(Utilities.Log_Utils.Folder, "LastLive.json");
+
+        /// <summary>The last live session, or null (none yet, or unreadable).</summary>
+        public static LastLiveSession Load()
+        {
+            try
+            {
+                if (!File.Exists(FilePath)) { return null; }
+                LastLiveSession last = JsonSerializer.Deserialize<LastLiveSession>(File.ReadAllText(FilePath), OPTIONS);
+                return last == null || string.IsNullOrWhiteSpace(last.DocTitle) && string.IsNullOrWhiteSpace(last.DocPath) ? null : last;
+            }
+            catch (Exception ex)
+            {
+                Utilities.Log_Utils.Write($"Last live session could not be read: {ex.Message}");
+                return null;
+            }
+        }
+
+        /// <summary>Records a joined session.</summary>
+        public static void Save(Live.SessionInfo info)
+        {
+            if (info == null) { return; }
+            try
+            {
+                var last = new LastLiveSession
+                {
+                    DocTitle = info.DocTitle ?? string.Empty,
+                    DocPath = info.DocPath ?? string.Empty,
+                    RevitVersion = info.RevitVersion ?? string.Empty,
+                    LastUsedUtc = DateTime.UtcNow
+                };
+                Directory.CreateDirectory(Utilities.Log_Utils.Folder);
+                string temp = FilePath + ".tmp";
+                File.WriteAllText(temp, JsonSerializer.Serialize(last, OPTIONS));
+                File.Move(temp, FilePath, overwrite: true);
+            }
+            catch (Exception ex)
+            {
+                Utilities.Log_Utils.Write($"Last live session could not be saved: {ex.Message}");
+            }
+        }
+
+        /// <summary>True when a running session is this model (same path, else same title).</summary>
+        public bool IsRunningIn(IReadOnlyList<Live.SessionInfo> sessions)
+        {
+            foreach (Live.SessionInfo session in sessions)
+            {
+                if (!string.IsNullOrEmpty(DocPath) && string.Equals(session.DocPath, DocPath, StringComparison.OrdinalIgnoreCase)) { return true; }
+                if (string.IsNullOrEmpty(DocPath) && string.Equals(session.DocTitle, DocTitle, StringComparison.OrdinalIgnoreCase)) { return true; }
+            }
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Summary of a recent file for the home screen (read once from its manifest and thumbnail).
     /// </summary>
     internal sealed class RecentInfo
     {
         public bool Exists { get; init; }
         public string Title { get; init; }
         public string Detail { get; init; }
+
+        /// <summary>The file's thumbnail.jpg (review tools round), or null (older files, Revit exports).</summary>
+        public byte[] Thumbnail { get; init; }
 
         /// <summary>
         /// Reads a file's manifest (cheap: only manifest.json is decompressed).
@@ -126,7 +197,8 @@ namespace BimGo.Shell
             {
                 Exists = true,
                 Title = string.IsNullOrWhiteSpace(manifest.Title) ? System.IO.Path.GetFileNameWithoutExtension(path) : manifest.Title,
-                Detail = $"{counts.Elements:N0} elements{edits}{revit}"
+                Detail = $"{counts.Elements:N0} elements{edits}{revit}",
+                Thumbnail = BimGoReader.ReadThumbnail(path)
             };
         }
     }

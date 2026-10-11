@@ -79,7 +79,19 @@ namespace BimGo.Game
             if (saved.GroundOffset is float ground) { _groundZ = _groundDefault + ground; }
             RestoreSection(saved.Section);
 
-            foreach (string key in saved.HiddenCategories)
+            ApplyHiddenLists(saved);
+            RefreshMasks();
+            _sidecarVisibilityRevision = _visibilityRevision;
+        }
+
+        /// <summary>
+        /// Hides the categories, links and elements a saved state lists (on top of what is already hidden; the caller
+        /// refreshes the masks). Elements no longer in the model are logged.
+        /// </summary>
+        private void ApplyHiddenLists(VisibilitySettings saved)
+        {
+            if (saved == null) { return; }
+            foreach (string key in saved.HiddenCategories ?? new List<string>())
             {
                 if (CategoryCatalog.Find(key) is CategoryDef def && Scene.CategoryLoaded[def.Index]) { _categoryVisible[def.Index] = false; }
             }
@@ -89,7 +101,7 @@ namespace BimGo.Game
             {
                 if (!string.IsNullOrEmpty(link.InstanceUniqueId)) { linkByKey.TryAdd(link.InstanceUniqueId, link.Index); }
             }
-            foreach (string key in saved.HiddenLinks)
+            foreach (string key in saved.HiddenLinks ?? new List<string>())
             {
                 if (linkByKey.TryGetValue(key, out int index)) { _linkVisible[index] = false; }
             }
@@ -97,7 +109,7 @@ namespace BimGo.Game
             // Elements: host by UniqueId (else id), linked by (link, UniqueId)
             Dictionary<(int, string), int> linked = null;
             int missing = 0;
-            foreach (HiddenElement item in saved.HiddenElements)
+            foreach (HiddenElement item in saved.HiddenElements ?? new List<HiddenElement>())
             {
                 int element = -1;
                 if (string.IsNullOrEmpty(item.Link))
@@ -117,9 +129,39 @@ namespace BimGo.Game
                 else { missing++; }
             }
             if (missing > 0) { Utilities.Log_Utils.Write($"Visibility: {missing} hidden element(s) are not in this model any more."); }
+        }
 
+        /// <summary>
+        /// Replaces what is hidden with a saved state (bookmark GO and the tour): everything is shown, then the state's
+        /// categories, links and elements are hidden. The ground plane and the section are left alone.
+        /// </summary>
+        /// <param name="saved">The state (an empty one shows everything).</param>
+        /// <param name="record">True to record the change for saving (GO); false for the tour, which puts the
+        /// walkthrough's own state back when it ends.</param>
+        private void ApplyVisibility(VisibilitySettings saved, bool record)
+        {
+            for (int e = 0; e < _userHidden.Length && _userHiddenCount > 0; e++)
+            {
+                if (_userHidden[e]) { SetUserHidden(e, false); }
+            }
+            for (int c = 0; c < _categoryVisible.Length; c++) { _categoryVisible[c] = Scene.CategoryLoaded[c]; }
+            Array.Fill(_linkVisible, true);
+            _isolateBackup = null;
+            ApplyHiddenLists(saved);
             RefreshMasks();
-            _sidecarVisibilityRevision = _visibilityRevision;
+            if (record) { VisibilityChanged(); }
+        }
+
+        /// <summary>
+        /// What a new bookmark keeps of the visibility: hidden categories, links and elements (not the ground or the
+        /// section, which has its own field). Allocates: bookmark actions only.
+        /// </summary>
+        private VisibilitySettings BookmarkVisibility()
+        {
+            VisibilitySettings settings = ToVisibilitySettings();
+            settings.GroundOffset = null;
+            settings.Section = null;
+            return settings;
         }
 
         /// <summary>

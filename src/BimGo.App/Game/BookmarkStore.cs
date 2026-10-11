@@ -28,6 +28,9 @@ namespace BimGo.Game
         /// <summary>The saved home viewpoint (walkthroughs start here; H returns here), or null.</summary>
         public BookmarkRecord Home { get; private set; }
 
+        /// <summary>The bookmark tour's settings (tour round; never null).</summary>
+        public TourSettings Tour { get; private set; } = new();
+
         /// <summary>The last IO error, or null.</summary>
         public string LastError { get; private set; }
 
@@ -77,6 +80,7 @@ namespace BimGo.Game
                 Home = document.Home;
                 Prepare(Home);
             }
+            if (document?.Tour != null) { Tour = document.Tour.Copy().Clean(); }
             if (document?.Bookmarks == null) { return; }
             foreach (BookmarkRecord record in document.Bookmarks)
             {
@@ -87,9 +91,42 @@ namespace BimGo.Game
         }
 
         /// <summary>
+        /// Rebuilds every bookmark's detail line (review tools round: after the display units change). Not a change.
+        /// </summary>
+        public void RefreshLabels()
+        {
+            if (Home != null) { Prepare(Home); }
+            foreach (BookmarkRecord record in Bookmarks) { Prepare(record); }
+        }
+
+        /// <summary>
         /// The bookmarks as a document (for saving into a .bimgo).
         /// </summary>
-        public BookmarkDocument ToDocument() => new() { Model = _model, Bookmarks = Bookmarks.ToList(), Home = Home };
+        public BookmarkDocument ToDocument() => new() { Model = _model, Bookmarks = Bookmarks.ToList(), Home = Home, Tour = Tour.Copy() };
+
+        /// <summary>
+        /// Replaces the tour settings and saves (the panel calls this when a change is finished, not while dragging).
+        /// </summary>
+        public void SetTour(TourSettings settings)
+        {
+            Tour = (settings ?? new TourSettings()).Copy().Clean();
+            Save();
+        }
+
+        /// <summary>
+        /// Sets a bookmark's tour overrides (null = the tour's own value) and saves.
+        /// </summary>
+        /// <returns>False if the bookmark is not in this store.</returns>
+        public bool SetTourOverrides(BookmarkRecord record, float? hold, float? swivel, bool skip)
+        {
+            if (record == null || !Bookmarks.Contains(record)) { return false; }
+            record.TourHold = hold is float h ? Math.Clamp(h, TourSettings.MIN_HOLD, TourSettings.MAX_HOLD) : null;
+            record.TourSwivel = swivel is float s ? Math.Clamp(s, -TourSettings.MAX_SWIVEL, TourSettings.MAX_SWIVEL) : null;
+            record.TourSkip = skip;
+            Prepare(record);
+            Save();
+            return true;
+        }
 
         /// <summary>
         /// Saves the home viewpoint (walkthroughs of this model start there) and saves.
@@ -137,9 +174,12 @@ namespace BimGo.Game
         /// Adds a bookmark at a scene-local feet position and saves.
         /// </summary>
         /// <param name="sun">The sun's date / time when shadows are on (restored by GO), else null.</param>
-        public BookmarkRecord Add(string name, Vector3 localFeet, float yaw, float pitch, bool flying, string level, SunTime sun = null, Scene.SectionCut section = null)
+        /// <param name="eyeHeight">The standing eye height (m), or null.</param>
+        /// <param name="visibility">What is hidden (categories, links, elements), or null.</param>
+        public BookmarkRecord Add(string name, Vector3 localFeet, float yaw, float pitch, bool flying, string level, SunTime sun = null, Scene.SectionCut section = null,
+            float? eyeHeight = null, VisibilitySettings visibility = null)
         {
-            BookmarkRecord record = CreatePending(name, localFeet, yaw, pitch, flying, level, sun, section);
+            BookmarkRecord record = CreatePending(name, localFeet, yaw, pitch, flying, level, sun, section, eyeHeight, visibility);
             Bookmarks.Add(record);
             Save();
             return record;
@@ -149,7 +189,8 @@ namespace BimGo.Game
         /// Makes a bookmark that is not in the list yet (B: it joins the list only when its name is confirmed with
         /// Enter; Esc throws it away). Nothing is saved.
         /// </summary>
-        public BookmarkRecord CreatePending(string name, Vector3 localFeet, float yaw, float pitch, bool flying, string level, SunTime sun = null, Scene.SectionCut section = null)
+        public BookmarkRecord CreatePending(string name, Vector3 localFeet, float yaw, float pitch, bool flying, string level, SunTime sun = null, Scene.SectionCut section = null,
+            float? eyeHeight = null, VisibilitySettings visibility = null)
         {
             var record = new BookmarkRecord
             {
@@ -159,7 +200,9 @@ namespace BimGo.Game
                 Flying = flying,
                 Level = level ?? string.Empty,
                 Sun = sun?.Copy(),
-                Section = section?.Clone()
+                Section = section?.Clone(),
+                EyeHeight = eyeHeight,
+                Visibility = visibility
             };
             SetPosition(record, localFeet);
             Prepare(record);
@@ -195,12 +238,15 @@ namespace BimGo.Game
         /// Moves a bookmark to a new viewpoint (keeps its name and place in the list) and saves.
         /// </summary>
         /// <param name="sun">The sun's date / time when shadows are on, else null (clears it).</param>
-        public bool Update(BookmarkRecord record, Vector3 localFeet, float yaw, float pitch, bool flying, string level, SunTime sun = null, Scene.SectionCut section = null)
+        public bool Update(BookmarkRecord record, Vector3 localFeet, float yaw, float pitch, bool flying, string level, SunTime sun = null, Scene.SectionCut section = null,
+            float? eyeHeight = null, VisibilitySettings visibility = null)
         {
             if (record == null || !Bookmarks.Contains(record)) { return false; }
             SetPosition(record, localFeet);
             record.Sun = sun?.Copy();
             record.Section = section?.Clone();
+            record.EyeHeight = eyeHeight;
+            record.Visibility = visibility;
             record.Yaw = yaw;
             record.Pitch = pitch;
             record.Flying = flying;
@@ -274,7 +320,10 @@ namespace BimGo.Game
             string level = string.IsNullOrEmpty(record.Level) ? "—" : record.Level;
             string fly = record.Flying ? " · FLY" : string.Empty;
             string sun = record.Sun != null ? $" · SUN {record.Sun.Day}/{record.Sun.Month} {record.Sun.Minutes / 60:00}:{record.Sun.Minutes % 60:00}" : string.Empty;
-            record.Detail = $"{level} · {record.Author} · {record.Created.ToLocalTime():dd MMM HH:mm}{fly}{sun}";
+            string eye = record.EyeHeight is float e && MathF.Abs(e - Scene.LaunchSettings.DEFAULT_EYE_STANDING) > 0.005f
+                ? $" · EYE {UnitFormat.Length(e, 2)}" : string.Empty;
+            string skip = record.TourSkip ? " · NOT IN TOUR" : string.Empty;
+            record.Detail = $"{level} · {record.Author} · {record.Created.ToLocalTime():dd MMM HH:mm}{fly}{sun}{eye}{skip}";
         }
     }
 }

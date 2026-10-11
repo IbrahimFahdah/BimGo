@@ -17,6 +17,36 @@ namespace BimGo.Scene
     }
 
     /// <summary>
+    /// The player's eye-height preset (tour round). Heights are set in the settings; collision follows the eye.
+    /// </summary>
+    public enum EyePreset
+    {
+        /// <summary>A standing adult (the default, 1.62 m).</summary>
+        Standing = 0,
+
+        /// <summary>Seated, or a wheelchair user (1.20 m).</summary>
+        Seated = 1,
+
+        /// <summary>A child (1.10 m).</summary>
+        Child = 2
+    }
+
+    /// <summary>
+    /// The walkthrough video's frame size (tour round, build A2).
+    /// </summary>
+    public enum VideoSize
+    {
+        /// <summary>The window's size (rounded down to even numbers).</summary>
+        Window = 0,
+
+        /// <summary>1920 × 1080 (the default).</summary>
+        FullHd = 1,
+
+        /// <summary>3840 × 2160.</summary>
+        Uhd4K = 2
+    }
+
+    /// <summary>
     /// How lighting fixtures show in the walkthrough.
     /// </summary>
     public enum ArtificialLightMode
@@ -265,6 +295,68 @@ namespace BimGo.Scene
 
         /// <summary>Maximum riser the player steps up without jumping (mm).</summary>
         public float MaxStepHeightMm { get; set; } = 200f;
+
+        /// <summary>Walkthrough video frame size (tour round, build A2).</summary>
+        public VideoSize VideoSize { get; set; } = VideoSize.FullHd;
+
+        /// <summary>Walkthrough video frames per second: 30 or 60.</summary>
+        public int VideoFps { get; set; } = 30;
+
+        /// <summary>Units for lengths and areas on screen (review tools round): metric or imperial (per machine).</summary>
+        public UnitSystem DisplayUnits { get; set; } = UnitSystem.Metric;
+
+        /// <summary>Imperial lengths as decimal feet (5.33') instead of feet-inches to 1/8" (5' 4").</summary>
+        public bool DecimalFeet { get; set; }
+
+        /// <summary>The eye-height preset in use (tour round; the pause menu changes it).</summary>
+        public EyePreset EyePreset { get; set; } = EyePreset.Standing;
+
+        /// <summary>Standing eye height (m).</summary>
+        public float EyeHeightStanding { get; set; } = DEFAULT_EYE_STANDING;
+
+        /// <summary>Seated / wheelchair eye height (m).</summary>
+        public float EyeHeightSeated { get; set; } = DEFAULT_EYE_SEATED;
+
+        /// <summary>Child eye height (m).</summary>
+        public float EyeHeightChild { get; set; } = DEFAULT_EYE_CHILD;
+
+        /// <summary>Default standing eye height (m).</summary>
+        public const float DEFAULT_EYE_STANDING = 1.62f;
+
+        /// <summary>Default seated eye height (m).</summary>
+        public const float DEFAULT_EYE_SEATED = 1.20f;
+
+        /// <summary>Default child eye height (m).</summary>
+        public const float DEFAULT_EYE_CHILD = 1.10f;
+
+        /// <summary>Lowest eye height a preset accepts (m).</summary>
+        public const float MIN_EYE_HEIGHT = 0.9f;
+
+        /// <summary>Highest eye height a preset accepts (m).</summary>
+        public const float MAX_EYE_HEIGHT = 2.0f;
+
+        /// <summary>The eye height of a preset (m).</summary>
+        public float EyeHeightFor(EyePreset preset) => preset switch
+        {
+            EyePreset.Seated => EyeHeightSeated,
+            EyePreset.Child => EyeHeightChild,
+            _ => EyeHeightStanding
+        };
+
+        /// <summary>Sets a preset's eye height (clamped, rounded to the centimetre).</summary>
+        public void SetEyeHeight(EyePreset preset, float metres)
+        {
+            float value = CleanEye(metres, EyeHeightFor(preset));
+            switch (preset)
+            {
+                case EyePreset.Seated: EyeHeightSeated = value; break;
+                case EyePreset.Child: EyeHeightChild = value; break;
+                default: EyeHeightStanding = value; break;
+            }
+        }
+
+        private static float CleanEye(float metres, float fallback) =>
+            float.IsFinite(metres) ? MathF.Round(Math.Clamp(metres, MIN_EYE_HEIGHT, MAX_EYE_HEIGHT) * 100f) / 100f : fallback;
 
         /// <summary>Gizmo / Clone: move and rotate in fixed increments (G toggles in the walkthrough).</summary>
         public bool GizmoSnap { get; set; }
@@ -550,6 +642,13 @@ namespace BimGo.Scene
             MouseSensitivity = Math.Clamp(MouseSensitivity, 0.1f, 3f);
             FieldOfView = Math.Clamp(FieldOfView, 60f, 120f);
             MaxStepHeightMm = Math.Clamp(MaxStepHeightMm, 50f, 450f);
+            if (!Enum.IsDefined(EyePreset)) { EyePreset = EyePreset.Standing; }
+            if (!Enum.IsDefined(VideoSize)) { VideoSize = VideoSize.FullHd; }
+            if (!Enum.IsDefined(DisplayUnits)) { DisplayUnits = UnitSystem.Metric; }
+            VideoFps = VideoFps >= 45 ? 60 : 30;
+            EyeHeightStanding = CleanEye(EyeHeightStanding, DEFAULT_EYE_STANDING);
+            EyeHeightSeated = CleanEye(EyeHeightSeated, DEFAULT_EYE_SEATED);
+            EyeHeightChild = CleanEye(EyeHeightChild, DEFAULT_EYE_CHILD);
             SnapMoveMm = NearestStep(SNAP_MOVE_STEPS_MM, SnapMoveMm);
             SnapAngleDeg = NearestStep(SNAP_ANGLE_STEPS_DEG, SnapAngleDeg);
 

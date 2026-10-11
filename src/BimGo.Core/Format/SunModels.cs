@@ -86,6 +86,12 @@ namespace BimGo.Format
         public float GlassTransmission { get; set; } = 1f;
 
         /// <summary>
+        /// A location chosen in BimGo instead of the model's (location override), or null to use the Revit site's.
+        /// Older readers ignore it; Revit is never changed.
+        /// </summary>
+        public LocationOverride Location { get; set; }
+
+        /// <summary>
         /// Clamps everything into range (guards against hand-edited files). Returns this for chaining.
         /// </summary>
         public SunSettings Clean()
@@ -95,6 +101,7 @@ namespace BimGo.Format
             SkyIntensity = Clamp(SkyIntensity, MIN_INTENSITY, MAX_INTENSITY, 1f);
             ShadowIntensity = Clamp(ShadowIntensity, 0f, 1f, 1f);
             GlassTransmission = Clamp(GlassTransmission, 0f, 2f, 1f);
+            if (Location != null && !Location.Clean().IsValid) { Location = null; }
             return this;
         }
 
@@ -106,7 +113,8 @@ namespace BimGo.Format
             SunIntensity = SunIntensity,
             SkyIntensity = SkyIntensity,
             ShadowIntensity = ShadowIntensity,
-            GlassTransmission = GlassTransmission
+            GlassTransmission = GlassTransmission,
+            Location = Location?.Copy()
         };
 
         /// <summary>
@@ -116,5 +124,53 @@ namespace BimGo.Format
 
         private static float Clamp(float value, float min, float max, float fallback) =>
             float.IsFinite(value) ? Math.Clamp(value, min, max) : fallback;
+    }
+
+    /// <summary>
+    /// A site location chosen in BimGo (searched from the bundled place list, or typed as latitude / longitude) that
+    /// replaces the Revit site's for the sun, shadows and the daylight studies. True north stays the model's.
+    /// </summary>
+    public sealed class LocationOverride
+    {
+        /// <summary>Latitude (degrees, north positive).</summary>
+        public double Latitude { get; set; }
+
+        /// <summary>Longitude (degrees, east positive).</summary>
+        public double Longitude { get; set; }
+
+        /// <summary>Standard time zone (hours from UTC, without daylight saving).</summary>
+        public double TimeZone { get; set; }
+
+        /// <summary>The IANA time zone (e.g. "Australia/Sydney"), or null when only the offset is known.</summary>
+        public string ZoneId { get; set; }
+
+        /// <summary>
+        /// Daylight saving follows <see cref="ZoneId"/>'s rules for the date (default). Off: the manual +1 h DST tick
+        /// decides, as for the model's own location.
+        /// </summary>
+        public bool AutoDaylightSaving { get; set; } = true;
+
+        /// <summary>What to call the place ("Sydney, New South Wales, Australia" or "−33.86°, 151.21°").</summary>
+        public string Name { get; set; } = string.Empty;
+
+        /// <summary>True when the coordinates and the offset are usable.</summary>
+        [System.Text.Json.Serialization.JsonIgnore]
+        public bool IsValid => double.IsFinite(Latitude) && double.IsFinite(Longitude) && double.IsFinite(TimeZone)
+            && Math.Abs(Latitude) <= 90.0 && Math.Abs(Longitude) <= 180.0;
+
+        /// <summary>
+        /// Clamps the offset, trims the texts (hand-edited files). Returns this for chaining; check <see cref="IsValid"/>.
+        /// </summary>
+        public LocationOverride Clean()
+        {
+            if (double.IsFinite(TimeZone)) { TimeZone = Math.Clamp(TimeZone, -14.0, 14.0); }
+            ZoneId = string.IsNullOrWhiteSpace(ZoneId) ? null : ZoneId.Trim();
+            Name = (Name ?? string.Empty).Trim();
+            if (Name.Length > 120) { Name = Name[..120]; }
+            return this;
+        }
+
+        /// <summary>A copy.</summary>
+        public LocationOverride Copy() => (LocationOverride)MemberwiseClone();
     }
 }

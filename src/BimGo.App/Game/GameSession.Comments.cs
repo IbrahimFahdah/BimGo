@@ -358,6 +358,18 @@ namespace BimGo.Game
             // Picture (left) and the issue fields (right)
             float picW = MathF.Min(S(384), iw * 0.42f), picH = picW * 9f / 16f;
             DrawCommentThumbnail(f, record, ix, cy, picW, picH);
+
+            // Markup (review tools round): on the picture's corner; MARKED UP when it carries markup
+            if (record.SnapshotData != null)
+            {
+                float mw = S(96), mh = S(26);
+                if (SmallButton(f, input, ix + picW - mw - S(6), cy + picH - mh - S(6), mw, mh, "MARKUP…")) { OpenMarkup(record, returnToGame: false); return; }
+                if (record.HasMarkup)
+                {
+                    _ui.Rect(ix + S(6), cy + picH - mh - S(6), S(92), mh, Rgba.Hex(0x0C0E12, 0.75f));
+                    _ui.TextCentred(f.Small, ix + S(6) + S(46), cy + picH - mh - S(6) + mh * 0.5f - f.Small.LineHeight * 0.5f, "MARKED UP", UiTheme.COMMENT_LABEL, S(0.6f));
+                }
+            }
             float rx = ix + picW + S(24), rw = iw - picW - S(24);
             float textH = _ui.TextWrapped(f.Body, rx, cy, rw, record.Text, UiTheme.TEXT, maxLines: 5);
             float fy = cy + MathF.Max(textH, f.Body.LineHeight) + S(14);
@@ -416,6 +428,7 @@ namespace BimGo.Game
                 // Where the player stands now (the picture is taken from the 3D view behind the menu, next frame)
                 Comments.SetView(record, _player.Feet, _player.Yaw, _player.Pitch, _player.Flying, section: _section);
                 _commentThumbnailFor = record;
+                _markupAfterCapture = record; // then the markup editor (SKIP keeps the clean picture)
                 _commentsNotice = Comments.LastError ?? "View and picture set to where you stand";
                 Sound.Play(SoundId.Commit);
             }

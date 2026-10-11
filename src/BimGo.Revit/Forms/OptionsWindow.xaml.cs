@@ -196,6 +196,11 @@ namespace BimGo.Forms
             RadioRealistic.IsChecked = _settings.Colour == ColourMode.Realistic;
             LoadTextures();
             TextStep.Text = _settings.MaxStepHeightMm.ToString("0", CultureInfo.InvariantCulture);
+            TextEyeStanding.Text = _settings.EyeHeightStanding.ToString("0.00", CultureInfo.InvariantCulture);
+            TextEyeSeated.Text = _settings.EyeHeightSeated.ToString("0.00", CultureInfo.InvariantCulture);
+            TextEyeChild.Text = _settings.EyeHeightChild.ToString("0.00", CultureInfo.InvariantCulture);
+            ComboUnits.SelectedIndex = _settings.DisplayUnits == BimGo.Scene.UnitSystem.Imperial ? 1 : 0;
+            CheckDecimalFeet.IsChecked = _settings.DecimalFeet;
 
             ComboMsaa.SelectedIndex = _settings.Msaa >= 4 ? 2 : _settings.Msaa >= 2 ? 1 : 0;
             SliderFov.Value = _settings.FieldOfView;
@@ -436,6 +441,11 @@ namespace BimGo.Forms
                 TextStep.Focus();
                 return;
             }
+            if (!ReadEyeHeight(TextEyeStanding, out float eyeStanding) || !ReadEyeHeight(TextEyeSeated, out float eyeSeated)
+                || !ReadEyeHeight(TextEyeChild, out float eyeChild))
+            {
+                return;
+            }
 
             if (!ReadPhases(out string existingPhase, out string newPhase)) { return; }
 
@@ -470,6 +480,11 @@ namespace BimGo.Forms
             _settings.ProxyMissingTextures = CheckProxyTextures.IsChecked == true;
             _settings.TextureMaxSize = MaterialData.TEXTURE_SIZES[Math.Clamp(ComboTextureSize.SelectedIndex, 0, MaterialData.TEXTURE_SIZES.Length - 1)];
             _settings.MaxStepHeightMm = step;
+            _settings.SetEyeHeight(EyePreset.Standing, eyeStanding);
+            _settings.SetEyeHeight(EyePreset.Seated, eyeSeated);
+            _settings.SetEyeHeight(EyePreset.Child, eyeChild);
+            _settings.DisplayUnits = ComboUnits.SelectedIndex == 1 ? BimGo.Scene.UnitSystem.Imperial : BimGo.Scene.UnitSystem.Metric; // qualified: Revit has its own UnitSystem
+            _settings.DecimalFeet = CheckDecimalFeet.IsChecked == true;
             _settings.Msaa = ComboMsaa.SelectedIndex switch { 2 => 4, 1 => 2, _ => 0 };
             _settings.FieldOfView = (float)SliderFov.Value;
             _settings.MouseSensitivity = (float)SliderSensitivity.Value;
@@ -729,6 +744,23 @@ namespace BimGo.Forms
                 if (match != null) { return match; }
             }
             return fallback;
+        }
+
+        /// <summary>
+        /// Reads one eye height (m) from its box, telling the user when it is out of range.
+        /// </summary>
+        /// <returns>False (after telling the user) if the text isn't a height between 0.9 and 2.0 m.</returns>
+        private bool ReadEyeHeight(Wpf.TextBox box, out float metres)
+        {
+            if (float.TryParse(box.Text.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out metres)
+                && metres >= LaunchSettings.MIN_EYE_HEIGHT && metres <= LaunchSettings.MAX_EYE_HEIGHT)
+            {
+                return true;
+            }
+            ShowTabOf(box);
+            Win.MessageBox.Show(this, $"Eye heights must be between {LaunchSettings.MIN_EYE_HEIGHT:0.0} and {LaunchSettings.MAX_EYE_HEIGHT:0.0} m (e.g. 1.62).", "BimGo", Win.MessageBoxButton.OK, Win.MessageBoxImage.Warning);
+            box.Focus();
+            return false;
         }
 
         /// <summary>

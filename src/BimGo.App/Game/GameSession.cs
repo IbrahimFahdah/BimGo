@@ -226,6 +226,9 @@ namespace BimGo.Game
             if (LaunchSettings.TryParseColour(settings.SectionCapColour, out uint capRgb)) { SetCapColour(capRgb); }
             _sectionNotice = null;
             InitialiseLights(settings);
+            ReadEyeSettings(settings);
+            ReadVideoSettings(settings);
+            UnitFormat.Read(settings);
         }
 
         #region Setup
@@ -276,6 +279,7 @@ namespace BimGo.Game
                 Dynamics = Dynamics
             };
             _player = new Player(controller);
+            InitialiseEyeHeight();
             RefreshMasks();
 
             // Ground: just below the lowest level (or the model)
@@ -502,6 +506,10 @@ namespace BimGo.Game
                 bool open = _window.PumpMessages();
                 if (!open || _endRequested)
                 {
+                    // A tour puts the walkthrough back first (so a save on the way out keeps the real state)
+                    AbortVideo();
+                    if (_tourActive) { StopTour(finished: false); }
+
                     // The window still exists (close was only requested): unsaved changes may cancel it
                     if (_window.Handle != 0 && !ConfirmDiscardOrSave())
                     {
@@ -567,10 +575,25 @@ namespace BimGo.Game
                 _target.Ensure(_window.Width, _window.Height, _msaa);
             }
 
+            // A bookmark tour has the keys (it carries on when the window loses focus)
+            if (_tourActive)
+            {
+                UpdateTour(input, dt);
+                return;
+            }
+
             if (_window.FocusLost)
             {
                 _window.FocusLost = false;
                 if (!_paused && !IsEditingComment) { SetPaused(true); }
+            }
+
+            // A comment picture just taken opens the markup editor; while it is open it has the keys
+            if (_markupPending != null) { OpenPendingMarkup(); }
+            if (_markupOpen)
+            {
+                UpdateMarkupKeys(input);
+                return;
             }
 
             if (IsEditingComment)
@@ -624,7 +647,7 @@ namespace BimGo.Game
             if (escape)
             {
                 if (captured) { current.OnCancel(); }
-                else if (_paused && (ClosePush() || CloseComments() || CloseBookmarks() || CloseTextures() || CloseLibrary() || CloseRooms())) { /* back to the pause menu */ }
+                else if (_paused && (ClosePush() || CloseComments() || CloseBookmarks() || CloseTextures() || CloseLibrary() || CloseRooms() || CloseGeometry())) { /* back to the pause menu */ }
                 else { SetPaused(!_paused); }
             }
             if (input.IsPressed(Vk.VK_F1)) { _showHelp = !_showHelp; }
@@ -742,7 +765,10 @@ namespace BimGo.Game
 
             for (int i = 0; i < _guns.Length; i++)
             {
-                if (input.IsPressed('1' + i)) { SelectGun(i); }
+                if (!input.IsPressed('1' + i)) { continue; }
+                // The selected gun's own key again: the gun may cycle a mode (Measure: distance → area → angle → clearance)
+                if (i == _activeGun) { _guns[i].OnReselect(); }
+                else { SelectGun(i); }
             }
             if (input.Wheel != 0)
             {
@@ -782,6 +808,7 @@ namespace BimGo.Game
         /// </summary>
         private void FixedUpdate(float dt)
         {
+            if (_tourActive) { return; } // the tour places the player itself
             _player.Controller.GroundZ = _groundZ;
             bool frozen = IsEditingComment || _sunPanelOpen || _sunHoursOpen || !_window.IsActive || _guns[_activeGun].CapturesInput;
             _player.FixedUpdate(dt, _window.Input, inputEnabled: !frozen);
@@ -793,9 +820,19 @@ namespace BimGo.Game
         /// </summary>
         private void UpdateCamera(float alpha, float dt)
         {
-            Camera.Position = _player.GetEye(Math.Clamp(alpha, 0f, 1f), dt);
-            Camera.Yaw = _player.Yaw;
-            Camera.Pitch = _player.Pitch;
+            if (_tourActive)
+            {
+                // The tour's pose: exact eye height (no smoothing), swivel and glides
+                Camera.Position = _tourPose.Eye;
+                Camera.Yaw = _tourPose.Yaw;
+                Camera.Pitch = _tourPose.Pitch;
+            }
+            else
+            {
+                Camera.Position = _player.GetEye(Math.Clamp(alpha, 0f, 1f), dt);
+                Camera.Yaw = _player.Yaw;
+                Camera.Pitch = _player.Pitch;
+            }
             Camera.HorizontalFovDegrees = _fov;
             Camera.ViewportWidth = _window.Width;
             Camera.ViewportHeight = _window.Height;
@@ -820,7 +857,7 @@ namespace BimGo.Game
         {
             PumpSource(dt);
             foreach (Gun gun in _guns) { gun.Tick(dt); }
-            if (_paused || IsEditingComment) { return; }
+            if (_paused || IsEditingComment || _tourActive) { return; }
 
             Gun active = _guns[_activeGun];
             active.Update(dt, _aim);
@@ -1032,6 +1069,9 @@ namespace BimGo.Game
             return hitStatic;
         }
 
+        /// <summary>The ground plane's height (scene-local metres): the Measure gun's clearance lands on it outside.</summary>
+        public float GroundZ => _groundZ;
+
         /// <summary>
         /// The player (for guns that move it).
         /// </summary>
@@ -1078,6 +1118,9 @@ namespace BimGo.Game
             settings.BcfCoordinates = _bcfCoordinates;
             settings.SectionCapColour = $"#{_capRgb:X6}";
             settings.ShadowQuality = _shadowQuality;
+            WriteEyeSettings(settings);
+            WriteVideoSettings(settings);
+            UnitFormat.Write(settings);
             settings.Save();
         }
 
@@ -1086,6 +1129,8 @@ namespace BimGo.Game
         /// </summary>
         public void Dispose()
         {
+            try { AbortVideo(); } catch (Exception ex) { Utilities.Log_Utils.Write($"Video stop failed: {ex.Message}"); }
+            if (_tourActive) { try { StopTour(finished: false); } catch (Exception ex) { Utilities.Log_Utils.Write($"Tour stop failed: {ex.Message}"); } }
             try { SaveSettings(); } catch { /* logged inside */ }
             try { FlushSunSidecar(); } catch { /* logged inside */ }
             try { FlushVisibilitySidecar(); } catch { /* logged inside */ }
@@ -1093,6 +1138,7 @@ namespace BimGo.Game
             _push?.Dispose();
             try { ReleaseThumbnails(); } catch (Exception ex) { Utilities.Log_Utils.Write($"Thumbnail cleanup failed: {ex.Message}"); }
             try { ReleaseLibraryPreviews(); } catch (Exception ex) { Utilities.Log_Utils.Write($"Library preview cleanup failed: {ex.Message}"); }
+            try { ReleaseMarkup(); } catch (Exception ex) { Utilities.Log_Utils.Write($"Markup cleanup failed: {ex.Message}"); }
             Sound.Dispose();
             _renderer?.Dispose();
             _overlay.Dispose();

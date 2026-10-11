@@ -21,6 +21,10 @@ namespace BimGo.Game
         private const int SNAPSHOT_MAX_WIDTH = 1280;
         private const long SNAPSHOT_JPEG_QUALITY = 82L;
 
+        /// <summary>The .bimgo's start-screen thumbnail (review tools round).</summary>
+        private const int FILE_THUMB_WIDTH = 384, FILE_THUMB_HEIGHT = 216;
+        private const long FILE_THUMB_JPEG_QUALITY = 80L;
+
         #endregion
 
         #region Fields
@@ -79,6 +83,10 @@ namespace BimGo.Game
                         ? EncodeJpeg(pixels, width, height, snapshotWidth, snapshotWidth * 9 / 16, SNAPSHOT_JPEG_QUALITY)
                         : null;
                     Comments.SetPictures(comment, data, snapshot);
+
+                    // Review tools round: straight into the markup editor (new comment, SET VIEW HERE)
+                    if (ReferenceEquals(_markupAfterCapture, comment) && snapshot != null) { _markupPending = comment; }
+                    _markupAfterCapture = null;
                 }
             }
             catch (Exception ex)
@@ -158,6 +166,45 @@ namespace BimGo.Game
                 bitmap.Save(stream, System.Drawing.Imaging.ImageFormat.Png);
             }
             return stream.ToArray();
+        }
+
+        /// <summary>
+        /// The file's start-screen picture (review tools round): the current view rendered off-screen at 640 × 360 (no
+        /// HUD, markers or menus; the photo pass) and stored as a 384 × 216 JPEG in thumbnail.jpg on every save.
+        /// The window's framebuffer, viewport and camera are put back afterwards.
+        /// </summary>
+        /// <returns>The JPEG, or null when it could not be made (the save goes ahead without a new one).</returns>
+        private byte[] CaptureFileThumbnail()
+        {
+            const int RENDER_W = 640, RENDER_H = 360;
+            if (_renderer == null) { return null; }
+            float viewportW = Camera.ViewportWidth, viewportH = Camera.ViewportHeight, aspect = Camera.Aspect;
+            try
+            {
+                Camera.ViewportWidth = RENDER_W;
+                Camera.ViewportHeight = RENDER_H;
+                Camera.Aspect = (float)RENDER_W / RENDER_H;
+                Camera.Update();
+                byte[] pixels = RenderPhotoView(RENDER_W, RENDER_H);
+                return EncodeJpeg(pixels, RENDER_W, RENDER_H, FILE_THUMB_WIDTH, FILE_THUMB_HEIGHT, FILE_THUMB_JPEG_QUALITY);
+            }
+            catch (Exception ex)
+            {
+                Utilities.Log_Utils.Write($"File thumbnail failed: {ex.Message}");
+                return null;
+            }
+            finally
+            {
+                Camera.ViewportWidth = viewportW;
+                Camera.ViewportHeight = viewportH;
+                Camera.Aspect = aspect;
+                Camera.Update();
+                _photoTarget?.Dispose();
+                _photoResolve?.Dispose();
+                _photoTarget = _photoResolve = null;
+                Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0);
+                Gl.Viewport(0, 0, _window.Width, _window.Height);
+            }
         }
 
         #endregion
