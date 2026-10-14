@@ -31,6 +31,8 @@ export const BimGoFormat = {
   ENTRY_THUMBNAIL: 'thumbnail.jpg',
   /** Largest thumbnail read back (bytes). */
   MAX_THUMBNAIL_BYTES: 2 * 1024 * 1024,
+  /** Optional (Round C): clash sets, tests, results and history (clashes/ClashModels ClashDocument). */
+  ENTRY_CLASHES: 'clashes.json',
   TEXTURE_FOLDER: 'textures/',
   /** The folder family library previews live under. */
   LIBRARY_FOLDER: 'library/',

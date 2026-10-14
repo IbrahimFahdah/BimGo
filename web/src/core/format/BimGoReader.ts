@@ -40,6 +40,11 @@ export interface BimGoDocument {
    * Optional: older readers ignore it.
    */
   thumbnail: Uint8Array | null;
+  /**
+   * Clash detection's data (Round C: clashes.json), kept as the file's raw JSON bytes so a model opened without using
+   * clash detection never parses it (ClashFiles.parse / serialize convert). Null when there is none.
+   */
+  clashes: Uint8Array | null;
 }
 
 /** Progress and cancellation for a read (replaces OperationProgress). */
@@ -150,7 +155,8 @@ async function readDocument(file: Blob, name: string, progress?: ReadProgress): 
     name,
     readFormatVersion: formatVersion,
     manifest,
-    thumbnail: await readThumbnail(zip)
+    thumbnail: await readThumbnail(zip),
+    clashes: zip.get(BimGoFormat.ENTRY_CLASHES) ? await readBytes(zip, BimGoFormat.ENTRY_CLASHES) : null
   };
 }
 

@@ -35,6 +35,8 @@ export interface SaveContent {
   savedBy: string;
   /** The start screen's picture of the view (thumbnail.jpg), or null for none. */
   thumbnail?: Uint8Array | null;
+  /** Clash detection's data (clashes.json bytes), or null for none: written as held, so a dormant file keeps it unchanged. */
+  clashes?: Uint8Array | null;
 }
 
 /**
@@ -87,6 +89,7 @@ export async function writeBimGo(document: BimGoDocument, content: SaveContent, 
     await zip.addText(BimGoFormat.ENTRY_VISIBILITY, json(visibility(v), true), signal);
   }
   if (content.sun) { await zip.addText(BimGoFormat.ENTRY_SUN, json(sunSettings(content.sun), true), signal); }
+  if (content.clashes && content.clashes.length > 0) { await zip.add(BimGoFormat.ENTRY_CLASHES, content.clashes, true, signal); }
   if (scene.lighting.emissive.length > 0 || scene.lighting.lights.length > 0) {
     await zip.addText(BimGoFormat.ENTRY_LIGHTING, json(buildLighting(scene.lighting), false), signal);
   }
