@@ -5,7 +5,7 @@ using BimGo.Format;
 namespace BimGo.Live
 {
     /// <summary>
-    /// The sidecar files beside a Revit model (comments, bookmarks, sun, visibility), read and written for a browser
+    /// The sidecar files beside a Revit model (comments, bookmarks, sun, visibility, clashes), read and written for a browser
     /// walkthrough, which can't reach the disk itself (sidecar.read / sidecar.write). Same files and shapes as the
     /// desktop app writes, so both can work on the same model.
     /// </summary>
@@ -37,6 +37,9 @@ namespace BimGo.Live
                     break;
                 case SidecarKinds.VISIBILITY:
                     document = VisibilityFiles.Read(VisibilityFiles.SidecarFor(commentsPath), out error);
+                    break;
+                case SidecarKinds.CLASHES:
+                    document = Clashes.ClashFiles.Read(Clashes.ClashFiles.SidecarFor(commentsPath), out error);
                     break;
                 default:
                     return Fail(kind, $"Unknown sidecar '{kind}'.");
@@ -82,6 +85,12 @@ namespace BimGo.Live
                         break;
                     case SidecarKinds.VISIBILITY:
                         written = VisibilityFiles.Write(VisibilityFiles.SidecarFor(commentsPath), json.Deserialize<VisibilitySettings>(LiveProtocol.JSON)?.Clean() ?? new VisibilitySettings(), out error);
+                        break;
+                    case SidecarKinds.CLASHES:
+                        // The same bytes the desktop stores (format and version checked, cleaned)
+                        Clashes.ClashDocument clashes = Clashes.ClashFiles.Parse(System.Text.Encoding.UTF8.GetBytes(json.GetRawText()), out error);
+                        if (clashes == null) { return Fail(kind, error ?? "No clash data to write."); }
+                        written = Clashes.ClashFiles.Write(Clashes.ClashFiles.SidecarFor(commentsPath), clashes, out error);
                         break;
                     default:
                         return Fail(kind, $"Unknown sidecar '{kind}'.");

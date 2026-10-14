@@ -364,6 +364,9 @@ namespace BimGo.Live
         public const string BOOKMARKS = "bookmarks";
         public const string SUN = "sun";
         public const string VISIBILITY = "visibility";
+
+        /// <summary>Clash detection's sets, tests and results (Round C; clashes.json in the model folder).</summary>
+        public const string CLASHES = "clashes";
     }
 
     /// <summary>

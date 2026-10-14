@@ -330,16 +330,19 @@ function drawPadCursor(ui: UiBatch, x: number, y: number, width: number, height:
   ui.flush(width, height);
 }
 
-/** The sidecars kept beside the Revit model replace the snapshot's empty ones (comments, bookmarks, sun, visibility). */
+/** The sidecars kept beside the Revit model replace the snapshot's empty ones (comments, bookmarks, sun, visibility, clashes). */
 async function loadSidecars(source: LiveSessionSource, document: BimGoDocument): Promise<void> {
   if (!source.hello.sidecars) { return; }
-  const [comments, bookmarks, sun, visibility] = await Promise.all([
-    source.readSidecar('comments'), source.readSidecar('bookmarks'), source.readSidecar('sun'), source.readSidecar('visibility')
+  const [comments, bookmarks, sun, visibility, clashes] = await Promise.all([
+    source.readSidecar('comments'), source.readSidecar('bookmarks'), source.readSidecar('sun'), source.readSidecar('visibility'),
+    source.readSidecar('clashes')
   ]);
   if (comments) { document.comments = readCommentDocument(comments); }
   if (bookmarks) { document.bookmarks = readBookmarkDocument(bookmarks); }
   if (sun) { document.sun = readSunSettings(sun); }
   if (visibility) { document.visibility = readVisibility(visibility); }
+  // Clash detection reads its document only when switched on (Round C): kept as bytes until then
+  if (clashes) { document.clashes = new TextEncoder().encode(JSON.stringify(clashes)); }
 }
 
 /** After a live session: a reload of the page opens the home screen, not the ended session. */

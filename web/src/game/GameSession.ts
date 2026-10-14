@@ -63,6 +63,7 @@ import { SunHoursMode } from './SunHoursMode';
 import { SunPanel } from './SunPanel';
 import { SunState } from './SunState';
 import { Textures } from './Textures';
+import { Clashes, ClashViewMode } from './clashes/Clashes';
 import { TourPlayer } from './Tour';
 import { UnitFormat } from './UnitFormat';
 import { VideoMode } from './VideoMode';
@@ -202,10 +203,12 @@ export class GameSession implements GunHost, EditHost {
   unarmed = false;
   /** This frame's length (gamepad look). */
   private frameTime = 0;
+  /** Clash detection (Round C): dormant until Y or pause menu → CLASHES. */
+  readonly clashes: Clashes;
   /** Clash mode is on (the docked clash list). */
-  clashModeOn = false;
-  /** True while a clash flight moves the player (the player's own keys wait). */
-  clashFreezesPlayer = false;
+  get clashModeOn(): boolean { return this.clashes?.modeOn ?? false; }
+  /** True while a clash flight (or the dock's search box) holds the player (the player's own keys wait). */
+  get clashFreezesPlayer(): boolean { return this.clashes?.freezesPlayer ?? false; }
   textures!: Textures;
   /** Bumped by every change that Save would write (comments, bookmarks, materials, edits…). */
   dirtyRevision = 0;
@@ -377,6 +380,7 @@ export class GameSession implements GunHost, EditHost {
     this.video = new VideoMode(this);
     this.markup = new MarkupEditor(this);
     this.wheel = new GunWheel(this);
+    this.clashes = new Clashes(this);
     Hotkeys.read(settings);
     PadInput.read(settings);
     UnitFormat.set(settings.displayUnits, settings.decimalFeet);
@@ -582,6 +586,12 @@ export class GameSession implements GunHost, EditHost {
       }
       return null;
     }
+    if (this.clashes.running) {
+      // A clash run (main thread, in time slices): the progress screen only, Esc / CANCEL stops it
+      const run = this.clashes.running;
+      if (drawProgress(this.ui, this.window.width, this.window.height, run.title, run.progress, this.window.input)) { run.progress.cancelRequested = true; }
+      return null;
+    }
     this.pumpSource(dt);
     this.updateLive(dt);
     this.updateTitle();
@@ -703,6 +713,12 @@ export class GameSession implements GunHost, EditHost {
     if (this.sunPanel.open && !this.paused) {
       if (input.pressed(InputAction.Fullscreen)) { toggleFullscreen(); }
       this.sunPanel.updateKeys(input);
+      return;
+    }
+
+    // Clash mode (Round C-B): the docked clash list has the cursor; the move keys fly, RMB-drag looks
+    if (this.clashes.modeOn && !this.paused) {
+      this.clashes.updateMode(input, dt);
       return;
     }
 
@@ -857,7 +873,7 @@ export class GameSession implements GunHost, EditHost {
 
   /** Y / pause menu → CLASHES: clash mode on or off. */
   toggleClashMode(): void {
-    this.toast('Clash detection is coming to the web viewer');
+    this.clashes.toggle();
   }
 
   /** The sun time keys (walking with shadows on, photo mode, the sun panel): −/+ 5 min and −/+ 1 min, on key repeat too. */
@@ -1245,7 +1261,7 @@ export class GameSession implements GunHost, EditHost {
 
   /** True while a mode that frees the cursor is open (sun panel, study, section editor, photo mode). */
   get cursorModeOpen(): boolean {
-    return this.sunPanel.open || this.sunHours.open || this.section.open || this.photo.open;
+    return this.sunPanel.open || this.sunHours.open || this.section.open || this.photo.open || this.clashModeOn;
   }
 
   /** Closes the cursor modes other than the one opening (one panel at a time). */
@@ -1832,6 +1848,9 @@ export class GameSession implements GunHost, EditHost {
     // ---- Photo mode: a pending shot renders off-screen first (camera restored afterwards)
     this.photo.renderPending();
 
+    // ---- Clash pictures (C-B2): row pictures, TO COMMENT / TO COMMENTS, off-screen (state restored afterwards)
+    this.clashes.renderPictures();
+
     this.renderScene(width, height, null, false);
 
     // Captures of the 3D view (no HUD)
@@ -1849,7 +1868,7 @@ export class GameSession implements GunHost, EditHost {
     // ---- Window pass: minimap 3D, then all 2D UI in one batch
     gl.viewport(0, 0, width, height);
     const mapX = width - this.s(20) - this.s(220), mapY = this.s(20);
-    if (this.showMap && !this.paused && !this.uiHidden && !this.photo.open) { this.drawMinimapPlan(mapX + this.s(8), mapY + this.s(30), this.s(204), this.s(170)); }
+    if (this.showMap && !this.paused && !this.uiHidden && !this.photo.open && !this.clashModeOn) { this.drawMinimapPlan(mapX + this.s(8), mapY + this.s(30), this.s(204), this.s(170)); }
 
     if (this.paused) {
       // A text box opened from a panel (reply, assignee, edit) sits over the menu, which then gets no clicks
@@ -1883,25 +1902,37 @@ export class GameSession implements GunHost, EditHost {
   renderScene(width: number, height: number, framebuffer: WebGLFramebuffer | null, photo: boolean): void {
     const renderer = this.renderer, settings = this.settings;
 
-    // ---- Sun lighting and shadow maps (only changed cascades re-render)
+    // ---- Sun lighting and shadow maps (only changed cascades re-render). Clash pictures (C-B2) other than the real
+    // model view draw without the sun, so they leave the cascades as the main view needs them
     renderer.lighting = this.sun.lighting();
-    const shadowError = renderer.updateShadows(this.camera, this.scene.bounds, this.shadowSceneKey, this.groupVisible, settings.whitecard,
+    const clashes = this.clashes, clashShotUnlit = clashes.shot && clashes.view !== ClashViewMode.REAL;
+    const shadowError = clashShotUnlit ? null : renderer.updateShadows(this.camera, this.scene.bounds, this.shadowSceneKey, this.groupVisible, settings.whitecard,
       shadowPresetFor(settings.shadowQuality));
     if (shadowError) {
       this.onShadowFailure(shadowError);
       renderer.lighting = this.sun.lighting();
     }
 
-    // ---- Artificial lights for this frame (after the sun: daylight dims them), and their cached shadow maps
-    this.lights.update(renderer.artificial, settings.lightMode, settings.lightIntensity, settings.bloomIntensity, this.bloomFailed,
-      renderer.lighting, this.camera, this.groupVisible, this.userHidden, this.hidden, this.dynamics);
-    const lightShadowError = renderer.updateLightShadows(this.groupVisible, this.shadowSceneKey);
-    if (lightShadowError) { this.toast(lightShadowError, 6, true); }
+    // ---- Artificial lights for this frame (after the sun: daylight dims them), and their cached shadow maps (unlit
+    // clash pictures keep the main view's picks)
+    if (!clashShotUnlit) {
+      this.lights.update(renderer.artificial, settings.lightMode, settings.lightIntensity, settings.bloomIntensity, this.bloomFailed,
+        renderer.lighting, this.camera, this.groupVisible, this.userHidden, this.hidden, this.dynamics);
+      const lightShadowError = renderer.updateLightShadows(this.groupVisible, this.shadowSceneKey);
+      if (lightShadowError) { this.toast(lightShadowError, 6, true); }
+    }
 
-    // ---- Ambient occlusion and glow: half-resolution geometry pre-pass, AO + blur, bloom source + blur
-    const effectsError = renderer.updateScreenEffects(this.camera, width, height, this.groupVisible, this.groundZ,
-      settings.ambientOcclusion, renderer.artificial.bloom > 0);
-    if (effectsError) { this.onScreenEffectsFailure(effectsError); }
+    // ---- Ambient occlusion and glow: half-resolution geometry pre-pass, AO + blur, bloom source + blur. Clash
+    // pictures skip them (their targets stay sized for the window); the clash view keeps AO only for the real model
+    const clashView = clashes.viewActive && (!photo || clashes.shot);
+    const clashNoAo = clashView && clashes.view !== ClashViewMode.REAL;
+    if (clashes.shot) {
+      renderer.skipScreenEffects();
+    } else {
+      const effectsError = renderer.updateScreenEffects(this.camera, width, height, this.groupVisible, this.groundZ,
+        settings.ambientOcclusion && !clashNoAo, renderer.artificial.bloom > 0);
+      if (effectsError) { this.onScreenEffectsFailure(effectsError); }
+    }
 
     // ---- Reflection probes: a couple of faces per frame until baked, re-baked a moment after things change
     if (!photo) { this.reflections.update({ ...this.sceneParams(), section: false }, String(this.shadowSceneKey)); }
@@ -1919,6 +1950,20 @@ export class GameSession implements GunHost, EditHost {
 
     this.renderer.drawSky(this.camera);
     const p = this.sceneParams();
+    if (clashView) {
+      // Clash view (Round C-B): the pair in red / green, the rest ghosted / wireframe / real / hidden (G)
+      clashes.drawView(p, this.groupVisible, () => this.drawSceneSolids(p, true));
+    } else {
+      this.drawSceneSolids(p, photo);
+    }
+
+    // Bloom from glowing surfaces over everything (glass included)
+    this.renderer.compositeGlow();
+    this.finishScene(photo);
+  }
+
+  /** The scene's own passes: opaque, section caps, ground, gun highlights (not for photos), glass. */
+  private drawSceneSolids(p: SceneDrawParams, photo: boolean): void {
     this.renderer.drawStatic(p, this.groupVisible, false);
     this.renderer.drawDynamic(p, this.dynamics, false);
     if (this.section.isActive) {
@@ -1961,10 +2006,10 @@ export class GameSession implements GunHost, EditHost {
     this.renderer.drawDynamic(p, this.dynamics, true);
     gl.depthMask(true);
     gl.disable(gl.BLEND);
+  }
 
-    // Bloom from glowing surfaces over everything (glass included)
-    this.renderer.compositeGlow();
-
+  /** After the scene: photo exposure, markers, the sun hours grid and the section gizmo. */
+  private finishScene(photo: boolean): void {
     // Photo exposure (the preview and the photo alike)
     if (this.photo.open) { this.renderer.applyExposure(this.photo.exposure); }
 
@@ -1973,6 +2018,7 @@ export class GameSession implements GunHost, EditHost {
     if (!this.uiHidden && !photo && !this.photo.open) {
       this.overlay.begin(this.camera);
       this.guns.forEach((gun, i) => gun.drawWorld(this.overlay, i === this.activeGun));
+      this.clashes.drawMarkers(this.overlay);
       this.overlay.draw(this.camera, true, 1, false);
       this.overlay.draw(this.camera, false, 0.16, false);
     }
@@ -2249,6 +2295,17 @@ export class GameSession implements GunHost, EditHost {
     const width = this.window.width, height = this.window.height;
     const active = this.guns[this.activeGun];
 
+    // Clash mode (Round C-B): its own HUD (docked list, no crosshair or guns)
+    if (this.clashModeOn) {
+      this.buildStatusPanel(f);
+      this.buildCoordinatePanel(f, this.s(20), this.s(20) + this.s(146) + this.s(10));
+      this.clashes.buildDock(f);
+      this.buildHelp(f, height);
+      this.buildRoomBanner(f, width);
+      this.buildToast(f, width);
+      return;
+    }
+
     // Screen flash (portals, teleports)
     if (this.clock < this.flashUntil) {
       const t = (this.flashUntil - this.clock) / Math.max(this.flashLength, 0.01);
@@ -2504,6 +2561,9 @@ export class GameSession implements GunHost, EditHost {
   get editsLocalOnly(): boolean { return this.source.isRevit && !this.source.canEdit; }
   get editTargetName(): string { return this.source.isRevit ? 'Revit' : 'the file'; }
   get journal() { return this.document.journal; }
+
+  /** True when a static element is hidden as edited (demolished, deleted, or standing in for its moved instance). */
+  isStaticHidden(element: number): boolean { return this.hidden[element]; }
 
   /** Hides or restores a static element (drawing, picking, collision and shadows). */
   setStaticHidden(element: number, hidden: boolean): void {
@@ -3010,7 +3070,7 @@ export class GameSession implements GunHost, EditHost {
 
   /** Everything Save writes, as one comparable value. */
   private get saveKey(): string {
-    return `${this.journal.revision}|${this.comments.revision}|${this.bookmarks.revision}|${this.sun.revision}|${this.visibilityRevision}|${this.dirtyRevision}`;
+    return `${this.journal.revision}|${this.comments.revision}|${this.bookmarks.revision}|${this.sun.revision}|${this.visibilityRevision}|${this.dirtyRevision}|${this.clashes.revision}`;
   }
 
   /** True when edits, comments, bookmarks, the sun, visibility or materials changed since the last save. */
@@ -3104,6 +3164,7 @@ export class GameSession implements GunHost, EditHost {
         sun: { ...this.sun.settings, time: { ...this.sun.settings.time } },
         visibility: this.toVisibilitySettings(),
         materials: this.textures.current,
+        clashes: this.clashes.bytesForSave(),
         savedBy: this.settings.userName,
         thumbnail
       }, { generator: 'BimGo Web', version: __BIMGO_VERSION__ }, this.isFileMode ? FileKinds.SAVE : FileKinds.SESSION_SAVE,
@@ -3190,6 +3251,7 @@ export class GameSession implements GunHost, EditHost {
     this.sunHours.dispose();
     this.section.dispose();
     this.photo.dispose();
+    this.clashes.dispose();
     this.menu.library.dispose();
     this.renderer?.dispose();
   }

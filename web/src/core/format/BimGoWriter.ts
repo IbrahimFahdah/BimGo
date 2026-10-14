@@ -232,7 +232,7 @@ function commentDocument(d: CommentDocument): Json {
       view: c.view
         ? { x: c.view.x, y: c.view.y, z: c.view.z, yaw: f(c.view.yaw), pitch: f(c.view.pitch), flying: c.view.flying, section: section(c.view.section) }
         : null,
-      thumbnail: c.thumbnail, elementUniqueId: c.elementUniqueId, snapshot: c.snapshot, snapshotOriginal: c.snapshotOriginal
+      thumbnail: c.thumbnail, elementUniqueId: c.elementUniqueId, snapshot: c.snapshot, snapshotOriginal: c.snapshotOriginal, clashId: c.clashId
     }))
   };
 }

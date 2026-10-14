@@ -2,7 +2,7 @@ import type { EditRequest, EditResult } from '../edits/EditMessages';
 import type { Json } from '../format/Json';
 import { LiveClient } from '../live/LiveClient';
 import {
-  editRequestJson, type HelloAck, isSessionUrl, MessageTypes, readEditResult, readSnapshotReady, type SidecarKind, type SnapshotReady
+  type ClashViewRequest, editRequestJson, type HelloAck, isSessionUrl, MessageTypes, readEditResult, readSnapshotReady, type SidecarKind, type SnapshotReady
 } from '../live/LiveProtocol';
 import type { ModelSource } from './ModelSource';
 
@@ -100,13 +100,38 @@ export class LiveSessionSource implements ModelSource {
     }) !== null;
   }
 
+  /**
+   * SHOW IN REVIT (Round C-B2): selects a clash pair (host elements, linked ones, or one of each, together) and sets up
+   * the clash 3D view. An older add-in only selects (ElementIds: the host elements and the link instances).
+   */
+  showClash(hostIds: number[], linked: { linkInstanceId: number; elementId: number }[], view: ClashViewRequest): boolean {
+    if (!this.connected) { return false; }
+    const hosts = [...new Set(hostIds.filter(id => id > 0))];
+    const links = linked.filter(l => l.linkInstanceId > 0);
+    if (hosts.length === 0 && links.length === 0) { return false; }
+    return this.client.send(MessageTypes.SELECT, {
+      elementIds: [...new Set([...hosts, ...links.map(l => l.linkInstanceId)])],
+      linked: links.length > 0 ? links : null,
+      hosts,
+      clashView: view
+    }) !== null;
+  }
+
+  /** True once the add-in turned down the clashes sidecar (an add-in from before clash detection). */
+  clashesUnsupported = false;
+
   /** Reads a sidecar beside the model (null when there is none yet or it can't be read). */
   async readSidecar(kind: SidecarKind): Promise<Json | null> {
     if (!this.hello.sidecars || !this.connected) { return null; }
     try {
       const answer = await this.client.request(MessageTypes.SIDECAR_READ, { kind }, 10000);
       if (answer.payload.success === false) {
-        this.notices.push(String(answer.payload.message ?? `The ${kind} could not be read`));
+        const message = String(answer.payload.message ?? `The ${kind} could not be read`);
+        if (kind === 'clashes' && /unknown sidecar/i.test(message)) {
+          this.clashesUnsupported = true;
+          return null;
+        }
+        this.notices.push(message);
         return null;
       }
       const document = answer.payload.document;
@@ -119,7 +144,7 @@ export class LiveSessionSource implements ModelSource {
 
   /** Replaces a sidecar (answers come back as notices on failure only). */
   writeSidecar(kind: SidecarKind, document: Json): boolean {
-    if (!this.hello.sidecars || !this.connected) { return false; }
+    if (!this.hello.sidecars || !this.connected || (kind === 'clashes' && this.clashesUnsupported)) { return false; }
     return this.client.send(MessageTypes.SIDECAR_WRITE, { kind, document }) !== null;
   }
 

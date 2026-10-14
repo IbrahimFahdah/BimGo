@@ -201,7 +201,7 @@ export class SceneRenderer {
     this.groundGeometryProgram = ShaderProgram.create('ao ground geometry', GROUND_VS, GEOMETRY_GROUND_FS);
 
     this.scene = locations(this.sceneProgram, ['uViewProj', 'uModel', 'uEye', 'uLightDir', 'uFogColor', 'uFogDensity', 'uWhitecard',
-      'uPlan', 'uClipZ', 'uOverride', 'uRealistic', 'uReflections', 'uTintMode', 'uSkyZenith', 'uSkyHorizon', ...PROBE_UNIFORMS, ...LIGHT_UNIFORMS,
+      'uPlan', 'uClipZ', 'uOverride', 'uGhost', 'uRealistic', 'uReflections', 'uTintMode', 'uSkyZenith', 'uSkyHorizon', ...PROBE_UNIFORMS, ...LIGHT_UNIFORMS,
       ...AO_UNIFORMS, ...ARTIFICIAL_UNIFORMS, ...CLIP_UNIFORMS]);
     this.sky = locations(this.skyProgram, ['uInvViewProj', 'uEye', 'uSun', 'uSunDir', 'uZenith', 'uHorizon', 'uSunDisc']);
     this.ground = locations(this.groundProgram, ['uViewProj', 'uCenter', 'uHalf', 'uEye', 'uFogColor', ...LIGHT_UNIFORMS, ...AO_UNIFORMS, ...ARTIFICIAL_UNIFORMS]);
@@ -433,6 +433,8 @@ export class SceneRenderer {
    * (zero raster cost), so the batch / chunk draw lists never change.
    */
   setElementHidden(element: number, hidden: boolean): void {
+    this.hiddenElements[element] = hidden;
+    if (this.lineVao) { this.setElementLinesHidden(element, hidden); }
     gl.bindVertexArray(this.vao);
     for (const pass of [0, 2]) {
       const start = this.batches.ranges[element * 4 + pass], count = this.batches.ranges[element * 4 + pass + 1];
@@ -444,6 +446,28 @@ export class SceneRenderer {
       } else {
         gl.bufferSubData(gl.ELEMENT_ARRAY_BUFFER, start * 4, this.batches.indices, start, count);
       }
+    }
+    gl.bindVertexArray(null);
+  }
+
+  /** Elements hidden in the static batches (the wireframe's edges follow them). */
+  private readonly hiddenElements: boolean[] = [];
+
+  private setElementLinesHidden(element: number, hidden: boolean): void {
+    gl.bindVertexArray(this.lineVao);
+    const triangles = this.batches.indices;
+    for (const pass of [0, 2]) {
+      const start = this.batches.ranges[element * 4 + pass], count = this.batches.ranges[element * 4 + pass + 1];
+      if (count <= 0) { continue; }
+      const lines = new Uint32Array(count * 2);
+      if (hidden) { lines.fill(triangles[start]); }
+      else {
+        for (let t = 0, l = 0; t < count; t += 3, l += 6) {
+          const a = triangles[start + t], b = triangles[start + t + 1], c = triangles[start + t + 2];
+          lines[l] = a; lines[l + 1] = b; lines[l + 2] = b; lines[l + 3] = c; lines[l + 4] = c; lines[l + 5] = a;
+        }
+      }
+      gl.bufferSubData(gl.ELEMENT_ARRAY_BUFFER, start * 8, lines);
     }
     gl.bindVertexArray(null);
   }
@@ -910,6 +934,70 @@ export class SceneRenderer {
     gl.bindVertexArray(null);
   }
 
+  /**
+   * Clash view (Round C-B): when above 0, scene passes draw as faint grey glass of this opacity (colour-override draws,
+   * the clash pair, are never ghosted). 0 = normal.
+   */
+  ghostAlpha = 0;
+
+  // The wireframe view's edges (three lines per triangle, built on first use; WebGL has no polygon mode)
+  private lineVao: WebGLVertexArrayObject | null = null;
+  private lineIbo: WebGLBuffer | null = null;
+
+  /**
+   * The clash view's wireframe: the static batches' triangle edges as lines (chunk culling as the triangle pass; hidden
+   * elements stay hidden). The edge buffer is built the first time (twice the index memory, only when asked for).
+   */
+  drawStaticLines(p: SceneDrawParams, groupVisible: boolean[], transparent: boolean): void {
+    this.ensureLines();
+    this.sceneProgram.use();
+    this.applyUniforms(p, 0, 0, 0, 0, false);
+    gl.bindVertexArray(this.lineVao);
+    const b = this.batches, bounds = b.chunkBounds;
+    for (const batch of b.batches) {
+      if (batch.transparent !== transparent || !groupVisible[batch.group]) { continue; }
+      const end = batch.chunkStart + batch.chunkCount;
+      for (let c = batch.chunkStart; c < end; c++) {
+        const o = c * 6;
+        if (!FpsCamera.isBoxVisible(p.planes, bounds[o], bounds[o + 1], bounds[o + 2], bounds[o + 3], bounds[o + 4], bounds[o + 5])) { continue; }
+        gl.drawElements(gl.LINES, b.chunkCount[c] * 2, gl.UNSIGNED_INT, b.chunkStart[c] * 8);
+      }
+    }
+    gl.bindVertexArray(null);
+  }
+
+  private ensureLines(): void {
+    if (this.lineVao) { return; }
+    const triangles = this.batches.indices;
+    const lines = new Uint32Array(triangles.length * 2);
+    for (let t = 0, l = 0; t + 2 < triangles.length; t += 3, l += 6) {
+      const a = triangles[t], b = triangles[t + 1], c = triangles[t + 2];
+      lines[l] = a; lines[l + 1] = b; lines[l + 2] = b; lines[l + 3] = c; lines[l + 4] = c; lines[l + 5] = a;
+    }
+    // Hidden elements: zero-length lines, as their triangles are degenerate
+    const ranges = this.batches.ranges;
+    for (let e = 0; e < this.hiddenElements.length; e++) {
+      if (!this.hiddenElements[e]) { continue; }
+      for (const pass of [0, 2]) {
+        const start = ranges[e * 4 + pass], count = ranges[e * 4 + pass + 1];
+        if (count > 0) { lines.fill(triangles[start], start * 2, (start + count) * 2); }
+      }
+    }
+    this.lineVao = gl.createVertexArray();
+    gl.bindVertexArray(this.lineVao);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.vbo);
+    setVertexLayout();
+    this.lineIbo = gl.createBuffer();
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.lineIbo);
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, lines, gl.STATIC_DRAW);
+    gl.bindVertexArray(null);
+  }
+
+  /** Draws the next passes without AO or glow, keeping their targets (off-screen clash pictures of another size). */
+  skipScreenEffects(): void {
+    this.aoActive = this.glowActive = false;
+  }
+
   /** Draws an element again with a colour override (scan highlight). */
   drawElementHighlight(p: SceneDrawParams, element: number, r: number, g: number, b: number, a: number): void {
     this.sceneProgram.use();
@@ -942,6 +1030,7 @@ export class SceneRenderer {
     gl.uniform2f(u.uClipZ, p.clipZMin, p.clipZMax);
     this.applyClip(u, p.section === true);
     gl.uniform4f(u.uOverride, r, g, b, a);
+    gl.uniform1f(u.uGhost, a > 0 ? 0 : this.ghostAlpha);
 
     const realistic = p.realistic && !p.whitecard && this.hasMaterials;
     gl.uniform1i(u.uRealistic, realistic ? 1 : 0);
@@ -1164,6 +1253,8 @@ export class SceneRenderer {
       this.geometryProgram, this.groundGeometryProgram, this.capStencilProgram, this.capProgram, this.exposureProgram]) { p?.dispose(); }
     gl.deleteBuffer(this.capVbo);
     gl.deleteVertexArray(this.capVao);
+    gl.deleteBuffer(this.lineIbo);
+    gl.deleteVertexArray(this.lineVao);
     this.shadows.dispose();
     this.effects.dispose();
     this.lightShadows.dispose();

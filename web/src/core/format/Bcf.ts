@@ -583,7 +583,7 @@ export const BcfMapping = {
     const modified = latest(record.edited, record.updated);
     const modifiedBy = modified === null ? null : modified === record.updated ? record.updatedBy : record.editedBy;
     const topic = newTopic({
-      guid, topicType: 'Issue', status: BcfMapping.statusToBcf(record.status), title: BcfMapping.titleOf(record.text),
+      guid, topicType: record.clashId !== null ? 'Clash' : 'Issue', status: BcfMapping.statusToBcf(record.status), title: BcfMapping.titleOf(record.text),
       priority: BcfMapping.priorityToBcf(record.priority), creationDate: record.created, creationAuthor: record.author ?? '',
       modifiedDate: modified, modifiedAuthor: modifiedBy, assignedTo: record.assignedTo, description: record.text
     });
@@ -802,6 +802,6 @@ export function blankComment(): CommentRecord {
     id: newId(), author: '', created: new Date().toISOString(), text: '', x: 0, y: 0, z: 0, elementId: -1, level: '',
     edited: null, editedBy: null, status: CommentStatus.OPEN, assignedTo: null, priority: CommentPriority.NORMAL,
     updated: null, updatedBy: null, replies: null, view: null, thumbnail: null, elementUniqueId: null, snapshot: null,
-    snapshotData: null, snapshotOriginal: null, snapshotOriginalData: null, local: vec3(), header: ''
+    snapshotData: null, snapshotOriginal: null, snapshotOriginalData: null, clashId: null, local: vec3(), header: ''
   };
 }

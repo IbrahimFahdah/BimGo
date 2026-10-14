@@ -58,6 +58,11 @@ export interface CommentRecord {
   snapshotOriginal: string | null;
   /** Runtime only: the unmarked picture's JPEG bytes, or null. */
   snapshotOriginalData: Uint8Array | null;
+  /**
+   * The clash this comment was made from (Round C-B2: TO COMMENT), or null. BCF exports such a comment as a "Clash"
+   * topic with both elements as components.
+   */
+  clashId: string | null;
   /** Runtime only: scene-local position. */
   local: Vec3;
   /** Runtime only: the list header. */
@@ -142,6 +147,7 @@ export function cleanComment(c: CommentRecord): CommentRecord {
   c.view?.section?.clean();
   if (isBlank(c.thumbnail)) { c.thumbnail = null; }
   if (isBlank(c.elementUniqueId)) { c.elementUniqueId = null; }
+  if (isBlank(c.clashId)) { c.clashId = null; }
   if (!CommentSnapshots.isValidName(c.snapshot)) { c.snapshot = null; }
   if (!CommentSnapshots.isValidName(c.snapshotOriginal) || c.snapshot === null) { c.snapshotOriginal = null; }
   return c;
@@ -187,6 +193,7 @@ export function readComment(j: Json): CommentRecord {
     snapshotData: null,
     snapshotOriginal: str(j.snapshotOriginal, null),
     snapshotOriginalData: null,
+    clashId: str(j.clashId, null),
     local: vec3(),
     header: ''
   };

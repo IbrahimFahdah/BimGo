@@ -75,6 +75,7 @@ export class CommentStore {
       snapshotData: null,
       snapshotOriginal: null,
       snapshotOriginalData: null,
+      clashId: null,
       local: vec3(),
       header: ''
     };
@@ -242,6 +243,16 @@ export class CommentStore {
       this.comments.splice(i, 1);
       this.save();
     }
+  }
+
+  /** Removes several comments, saving once (bulk delete). Returns how many were removed. */
+  removeMany(records: readonly CommentRecord[]): number {
+    const doomed = new Set(records);
+    const before = this.comments.length;
+    for (let i = this.comments.length - 1; i >= 0; i--) { if (doomed.has(this.comments[i])) { this.comments.splice(i, 1); } }
+    const removed = before - this.comments.length;
+    if (removed > 0) { this.save(); }
+    return removed;
   }
 
   clear(): void {

@@ -35,8 +35,24 @@ export const MessageTypes = {
   SIDECAR_RESULT: 'sidecar.result'
 } as const;
 
-/** The sidecar files kept beside the Revit model. */
-export type SidecarKind = 'comments' | 'bookmarks' | 'sun' | 'visibility';
+/** The sidecar files kept beside the Revit model ('clashes': Round C, add-ins from this round on). */
+export type SidecarKind = 'comments' | 'bookmarks' | 'sun' | 'visibility' | 'clashes';
+
+/**
+ * SHOW IN REVIT (Round C-B2): the clash 3D view's name, section box and camera, in Revit internal metres (port of
+ * ClashViewRequest). Older add-ins ignore it and just select.
+ */
+export interface ClashViewRequest {
+  name: string;
+  sectionBox: boolean;
+  minX: number; minY: number; minZ: number;
+  maxX: number; maxY: number; maxZ: number;
+  eyeX: number; eyeY: number; eyeZ: number;
+  directionX: number; directionY: number; directionZ: number;
+}
+
+/** The view BimGo makes once in Revit and reuses. */
+export const CLASH_VIEW_NAME = 'BimGo clash';
 
 /** One protocol message. */
 export interface Envelope {

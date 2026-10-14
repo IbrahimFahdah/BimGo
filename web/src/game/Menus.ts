@@ -23,6 +23,7 @@ import { Hints } from './Hints';
 
 const COLOUR_OPTIONS = ['Whitecard', 'Material', 'Realistic'];
 const STATUS_FILTERS = ['All', 'Open', 'In progress', 'Closed'];
+const TYPE_FILTERS = ['All', 'Issues', 'Clashes'];
 const STATUS_OPTIONS = ['Open', 'In progress', 'Closed'];
 const PRIORITY_OPTIONS = ['Low', 'Normal', 'High'];
 /** Reflections: off, some (shine tiers 50 % +), or all (25 % +). */
@@ -201,6 +202,10 @@ export class PauseMenu {
   private commentDeleteArmedUntil = 0;
   private commentsNotice: string | null = null;
   private commentStatusFilter = 0; // 0 all, 1 open, 2 in progress, 3 closed
+  // C-B3: the type filter (0 all, 1 issues, 2 clashes), the ticked comments and the last one ticked (Shift runs)
+  private commentTypeFilter = 0;
+  private readonly commentSelected = new Set<CommentRecord>();
+  private commentAnchor: CommentRecord | null = null;
   /** The comment shown in full (null = the list). */
   private commentDetail: CommentRecord | null = null;
   private replyScroll = 0;
@@ -244,7 +249,7 @@ export class PauseMenu {
 
   /** True while a panel with a search box has the keyboard (letters must not act as shortcuts, e.g. P). */
   get capturesTyping(): boolean {
-    return this.session.paused && (this.rooms.open || this.library.open || this.controls.open);
+    return this.session.paused && (this.rooms.open || this.library.open || this.controls.open || this.session.clashes.panel.capturesTyping);
   }
 
   private s(v: number): number { return this.session.s(v); }
@@ -255,6 +260,7 @@ export class PauseMenu {
     if (this.session.textures?.close()) { return true; }
     if (this.rooms.close()) { return true; }
     if (this.library.close()) { return true; }
+    if (this.session.clashes.panel.close()) { return true; }
     if (this.commentsOpen && this.commentDetail) { this.commentDetail = null; return true; }
     if (this.commentsOpen) { this.commentsOpen = false; this.commentDeleteArmed = null; return true; }
     if (this.closeBookmarks()) { return true; }
@@ -273,6 +279,7 @@ export class PauseMenu {
     if (this.session.textures?.open) { this.session.textures.build(); return; }
     if (this.rooms.open) { this.rooms.build(); return; }
     if (this.library.open) { this.library.build(); return; }
+    if (this.session.clashes.panel.isOpen) { this.session.clashes.panel.build(this.session.ui.atlas); return; }
     if (this.geometryOpen) { this.buildGeometryPanel(); return; }
     if (this.controls.open) { this.controls.build(); return; }
 
@@ -309,7 +316,7 @@ export class PauseMenu {
     const roomsButton = session.scene.rooms.length > 0;
     const libraryButton = this.library.available;
     const sessionButtons = 5; // + CONTROLS
-    const reviewButtons = 5 + (hiddenThings > 0 ? 1 : 0) + (texturesButton ? 1 : 0) + (libraryButton ? 1 : 0) + (roomsButton ? 1 : 0);
+    const reviewButtons = 6 + (hiddenThings > 0 ? 1 : 0) + (texturesButton ? 1 : 0) + (libraryButton ? 1 : 0) + (roomsButton ? 1 : 0);
     const rows = twoStacks ? Math.max(sessionButtons, reviewButtons) : sessionButtons + reviewButtons;
     const step = Math.min(Math.max((endY - this.s(12) - buttonsTop) / rows, this.s(40)), this.s(54));
     const buttonH = step - this.s(6);
@@ -351,6 +358,9 @@ export class PauseMenu {
       y += step;
     }
     if (w.menuButton(f, x, y, stackW, 'SUN HOURS STUDY', false, false, true, buttonH)) { session.sunHours.show(); return; }
+    y += step;
+    // Clash detection (Round C): tests, sets and runs (switching it on the first time); Y is clash mode
+    if (w.menuButton(f, x, y, stackW, session.clashes.panel.label(), false, false, true, buttonH)) { session.clashes.panel.show(); return; }
     y += step;
     if (libraryButton) {
       if (w.menuButton(f, x, y, stackW, this.library.menuLabel(), false, false, true, buttonH)) { this.library.show(); return; }
@@ -725,6 +735,8 @@ export class PauseMenu {
       return;
     }
 
+    const input = session.input;
+    this.overlays.begin(input); // C-B3: the bulk delete confirm takes the click while it is open
     const ix = x + this.s(24), iw = pw - this.s(48);
     let cy = y + this.s(20);
     const count = session.comments.comments.length;
@@ -741,18 +753,40 @@ export class PauseMenu {
       if (w.smallButton(f, ix + this.s(284), cy, this.s(32), this.s(32), '→')) { this.stepCommentFilter(+1); }
       filterX = ix + this.s(336);
     }
-    const status = w.segmented(f, filterX, cy, Math.min(this.s(420), ix + iw - filterX), STATUS_FILTERS, this.commentStatusFilter);
+    const statusW = Math.min(this.s(340), (ix + iw - filterX - this.s(12)) * 0.58);
+    const status = w.segmented(f, filterX, cy, statusW, STATUS_FILTERS, this.commentStatusFilter);
     if (status !== this.commentStatusFilter) {
       this.commentStatusFilter = status;
       this.commentScroll = 0;
+      this.commentSelected.clear();
+    }
+    // C-B3: the type (comments made from clashes are their own type)
+    const type = w.segmented(f, filterX + statusW + this.s(12), cy, Math.min(this.s(260), ix + iw - filterX - statusW - this.s(12)), TYPE_FILTERS, this.commentTypeFilter);
+    if (type !== this.commentTypeFilter) {
+      this.commentTypeFilter = type;
+      this.commentScroll = 0;
+      this.commentSelected.clear();
     }
     cy += this.s(46);
 
     const buttonsY = y + ph - this.s(24) - this.s(48);
-    this.buildCommentRows(f, ix, cy, iw, buttonsY - this.s(16));
+    const selectY = buttonsY - this.s(44);
+    this.buildCommentRows(f, ix, cy, iw, selectY - this.s(14));
     if (this.commentDetail) { return; }
 
-    if (this.commentsNotice) { ui.textWrapped(f.body, ix, buttonsY - this.s(30), iw, this.commentsNotice, UiTheme.MEASURE_TEXT, 1); }
+    // C-B3: the ticked comments: select all shown, clear, delete (a confirm)
+    let sx = ix;
+    if (w.smallButton(f, sx, selectY, this.s(170), this.s(30), 'SELECT ALL SHOWN')) {
+      for (const record of session.comments.comments) { if (this.matchesCommentFilter(record)) { this.commentSelected.add(record); } }
+    }
+    sx += this.s(178);
+    if (this.commentSelected.size > 0) {
+      if (w.smallButton(f, sx, selectY, this.s(90), this.s(30), 'CLEAR')) { this.commentSelected.clear(); }
+      sx += this.s(98);
+      if (w.smallButton(f, sx, selectY, this.s(220), this.s(30), `DELETE SELECTED (${this.commentSelected.size})…`, true)) { this.confirmDeleteSelected(); }
+      sx += this.s(228);
+    }
+    if (this.commentsNotice) { ui.textWrapped(f.body, sx + this.s(6), selectY + this.s(5), ix + iw - sx - this.s(6), this.commentsNotice, UiTheme.MEASURE_TEXT, 1); }
     // EXPORT BCF (the comments shown) · IMPORT BCF · BCF coordinates · CLOSE
     const gap = this.s(10);
     const bw = Math.min(this.s(230), (iw - gap * 3) / 4);
@@ -766,6 +800,49 @@ export class PauseMenu {
     if (w.menuButton(f, bx, buttonsY, bw, session.bcf.coordinateLabel, false, false)) { session.bcf.cycleCoordinates(); }
     bx += bw + gap;
     if (w.menuButton(f, bx, buttonsY, bw, 'CLOSE', false, false)) { this.closePanels(); }
+
+    // The open confirm, on top
+    this.overlays.draw(f, input, x, y, pw, ph);
+  }
+
+  /** Ticks or unticks a comment (C-B3); run: ticks every shown comment from the last one ticked to this one. */
+  private tickComment(record: CommentRecord, run: boolean): void {
+    const comments = this.session.comments.comments;
+    const anchor = this.commentAnchor;
+    if (run && anchor && comments.includes(anchor) && this.matchesCommentFilter(anchor)) {
+      let inside = false;
+      for (const shown of comments) {
+        if (!this.matchesCommentFilter(shown)) { continue; }
+        const end = shown === record || shown === anchor;
+        if (end || inside) { this.commentSelected.add(shown); }
+        if (end && record !== anchor) { inside = !inside; }
+      }
+    } else if (!this.commentSelected.delete(record)) {
+      this.commentSelected.add(record);
+    }
+    this.commentAnchor = record;
+  }
+
+  /** DELETE SELECTED…: a confirm, then the ticked comments go (one save; clash comments unlinked). */
+  private confirmDeleteSelected(): void {
+    const session = this.session;
+    for (const record of [...this.commentSelected]) { if (!session.comments.comments.includes(record)) { this.commentSelected.delete(record); } }
+    const count = this.commentSelected.size;
+    if (count === 0) { return; }
+    const clashes = [...this.commentSelected].filter(r => r.clashId).length;
+    const fromClashes = clashes > 0 ? ` ${clashes} of them were made from clashes: those clashes stay (TO COMMENT makes a new comment).` : '';
+    this.overlays.openConfirm(count === 1 ? 'DELETE COMMENT?' : 'DELETE COMMENTS?',
+      `Delete ${count === 1 ? 'the ticked comment' : `the ${count} ticked comments`} with their pictures and replies?${fromClashes} This can't be undone.`,
+      'DELETE', true, false, () => {
+        const doomed = [...this.commentSelected];
+        const removed = session.comments.removeMany(doomed);
+        session.clashes.unlinkComments(doomed);
+        this.commentSelected.clear();
+        this.commentAnchor = null;
+        this.commentDeleteArmed = null;
+        this.commentsNotice = session.comments.lastError ?? `${removed} comment${removed === 1 ? '' : 's'} deleted`;
+        session.sound.play(SoundId.Remove);
+      });
   }
 
   /** The scrolling rows: status bar, thumbnail, header, text, issue line and GO / OPEN / DELETE. */
@@ -787,23 +864,40 @@ export class PauseMenu {
     this.commentScroll = Math.min(Math.max(this.commentScroll, 0), maxScroll);
     if (this.commentDeleteArmed && session.clock > this.commentDeleteArmedUntil) { this.commentDeleteArmed = null; }
 
-    let go: CommentRecord | null = null, open: CommentRecord | null = null, remove: CommentRecord | null = null;
+    let go: CommentRecord | null = null, open: CommentRecord | null = null, remove: CommentRecord | null = null, tick: CommentRecord | null = null;
+    let tickRun = false;
     const buttonW = this.s(70), gap = this.s(6);
     const buttonsW = buttonW * 3 + gap * 2;
     const thumbW = this.s(120), thumbH = this.s(68);
+    const tickW = this.s(30); // C-B3: the tick column
+    const ctrl = input.isDown(Vk.CONTROL), shift = input.isDown(Vk.SHIFT);
     const last = Math.min(list.length, this.commentScroll + visible);
     for (let i = this.commentScroll; i < last; i++) {
       const record = list[i];
       const ry = y + (i - this.commentScroll) * rowH;
       if (((i - this.commentScroll) & 1) === 0) { ui.rect(x - this.s(8), ry - this.s(4), width + this.s(16), rowH - this.s(4), Rgba.hex(0xffffff, 0.03)); }
 
-      // Status bar on the left edge, then the thumbnail
+      // Status bar on the left edge, the tick (C-B3), then the thumbnail
       ui.rect(x - this.s(8), ry - this.s(4), this.s(3), rowH - this.s(4), statusColour(record.status));
-      this.drawCommentThumbnail(f, record, x, ry, thumbW, thumbH);
+      const ticked = this.commentSelected.has(record);
+      if (ticked) { ui.rect(x - this.s(5), ry - this.s(4), width + this.s(13), rowH - this.s(4), Rgba.hex(0x22d3ee, 0.10)); }
+      const box = this.s(18), boxY = ry + thumbH * 0.5 - box * 0.5;
+      const tickHover = w.hover(x - this.s(4), ry - this.s(4), tickW, rowH - this.s(4));
+      ui.rect(x, boxY, box, box, ticked ? UiTheme.ACCENT : tickHover ? Rgba.hex(0xffffff, 0.12) : UiTheme.CONTROL);
+      ui.outline(x, boxY, box, box, Math.max(1, ui.scale), ticked ? UiTheme.ACCENT : UiTheme.CONTROL_BORDER);
+      if (ticked) { w.tick(x, boxY, box, Rgba.hex(0x06232a)); }
+      if (tickHover && input.leftPressed) {
+        input.consumeClicks();
+        session.sound.play(SoundId.UiClick);
+        tick = record;
+        tickRun = shift;
+      }
+      this.drawCommentThumbnail(f, record, x + tickW, ry, thumbW, thumbH);
 
-      const textX = x + thumbW + this.s(14);
-      const textW = width - buttonsW - thumbW - this.s(30);
-      ui.textWrapped(f.small, textX, ry + this.s(2), textW, record.level ? `${record.header} · ${record.level}` : record.header, UiTheme.COMMENT_LABEL, 1);
+      const textX = x + tickW + thumbW + this.s(14);
+      const textW = width - buttonsW - tickW - thumbW - this.s(30);
+      const header = record.header + (record.clashId ? ' · CLASH' : '') + (record.level ? ` · ${record.level}` : '');
+      ui.textWrapped(f.small, textX, ry + this.s(2), textW, header, UiTheme.COMMENT_LABEL, 1);
       ui.textWrapped(f.body, textX, ry + this.s(20), textW, record.text, record.status === CommentStatus.CLOSED ? UiTheme.TEXT_MUTED : UiTheme.TEXT, 1);
       this.issueLine(f, record, textX, ry + this.s(46), textW);
 
@@ -812,13 +906,22 @@ export class PauseMenu {
       if (w.smallButton(f, bx + buttonW + gap, by, buttonW, this.s(30), 'OPEN')) { open = record; }
       const armed = this.commentDeleteArmed === record;
       if (w.smallButton(f, bx + (buttonW + gap) * 2, by, buttonW, this.s(30), armed ? 'SURE?' : 'DELETE', true)) { remove = record; }
+
+      // Ctrl+click (or Shift+click) on the rest of the row ticks it too (C-B3)
+      if ((ctrl || shift) && input.leftPressed && w.hover(x - this.s(8), ry - this.s(4), width + this.s(16), rowH - this.s(4))) {
+        input.consumeClicks();
+        session.sound.play(SoundId.UiClick);
+        tick = record;
+        tickRun = shift;
+      }
     }
     if (maxScroll > 0) {
       ui.textRight(f.small, x + width, bottom + this.s(2), `${this.commentScroll + 1}–${last} of ${list.length} · wheel to scroll`, UiTheme.TEXT_FAINT);
     }
 
     // Act after drawing (the list must not change while it is being walked)
-    if (go) { this.goToComment(go); }
+    if (tick) { this.tickComment(tick, tickRun); }
+    else if (go) { this.goToComment(go); }
     else if (open) {
       this.commentDetail = open;
       this.replyScroll = 0;
@@ -1009,6 +1112,8 @@ export class PauseMenu {
     const session = this.session;
     if (this.commentDeleteArmed === record && session.clock <= this.commentDeleteArmedUntil) {
       session.comments.remove(record);
+      session.clashes.unlinkComments([record]);
+      this.commentSelected.delete(record);
       this.commentDeleteArmed = null;
       this.commentsNotice = 'Comment deleted';
       session.sound.play(SoundId.Remove);
@@ -1027,6 +1132,8 @@ export class PauseMenu {
   }
 
   private matchesCommentFilter(record: CommentRecord): boolean {
+    if (this.commentTypeFilter === 1 && record.clashId) { return false; } // C-B3: issues only
+    if (this.commentTypeFilter === 2 && !record.clashId) { return false; } // clashes only
     if (this.commentStatusFilter > 0 && record.status !== CommentStatus.ALL[this.commentStatusFilter - 1]) { return false; }
     const levels = this.session.scene.levels;
     if (this.commentLevelFilter < 0 || this.commentLevelFilter >= levels.length) { return true; }
@@ -1207,7 +1314,7 @@ export class PauseMenu {
   // #endregion
 }
 
-type EditMode = 'comment' | 'bookmark' | 'user' | 'reply' | 'assign' | 'sunStudy';
+type EditMode = 'comment' | 'bookmark' | 'user' | 'reply' | 'assign' | 'sunStudy' | 'custom';
 
 /**
  * The text box for comments, bookmark names and the author name (port of the Comment editor region of
@@ -1227,6 +1334,9 @@ export class TextEditor {
   private resumeMenuAfter = false;
   /** Reply / assign / edit text opened from the comment panel: the menu stays open behind the box. */
   private overMenu = false;
+  /** Any other short text (Round C: clash test / set names, rule values, clash assignee and notes): what Enter does. */
+  private customCommit: ((text: string) => void) | null = null;
+  private customTitle = '';
 
   constructor(private readonly session: GameSession) {}
 
@@ -1289,6 +1399,18 @@ export class TextEditor {
     this.session.paused = false;
   }
 
+  /**
+   * Opens the text box for any short text: commit gets the trimmed text on Enter; Esc leaves everything as it was.
+   * @param level The second part of the heading (default: an em dash).
+   */
+  beginCustom(title: string, initial: string | null, max: number, commit: (text: string) => void, level: string | null = null): void {
+    this.start('custom', max, (initial ?? '').slice(0, max));
+    this.customCommit = commit;
+    this.customTitle = title;
+    this.level = level;
+    this.session.input.releaseAll();
+  }
+
   private start(mode: EditMode, max: number, text: string): void {
     this.active = true;
     this.mode = mode;
@@ -1325,7 +1447,10 @@ export class TextEditor {
 
   private cancel(): void {
     const session = this.session;
-    if (this.mode === 'bookmark') {
+    if (this.mode === 'custom') {
+      this.customCommit = null;
+      session.toast('Not changed');
+    } else if (this.mode === 'bookmark') {
       if (this.bookmarkIsNew && session.thumbnailFor === this.bookmark) { session.thumbnailFor = null; }
       session.toast(this.bookmarkIsNew ? 'Bookmark cancelled (nothing was saved)' : 'Name not changed');
     } else if (this.mode === 'sunStudy') {
@@ -1343,6 +1468,13 @@ export class TextEditor {
     const text = this.text.trim();
     const { mode, record, bookmark } = this;
     this.finish();
+
+    if (mode === 'custom') {
+      const commit = this.customCommit;
+      this.customCommit = null;
+      commit?.(text);
+      return;
+    }
 
     if (mode === 'reply' && record) {
       if (!text) { session.menu.setCommentsNotice('Empty reply not saved'); return; }
@@ -1414,12 +1546,13 @@ export class TextEditor {
     const h = this.s(96) + textHeight;
     const x = session.screenWidth * 0.5 - w * 0.5, y = session.screenHeight * 0.5 + this.s(48);
 
-    const naming = this.mode === 'bookmark' || this.mode === 'user';
+    const naming = this.mode === 'bookmark' || this.mode === 'user' || this.mode === 'custom';
     const study = this.mode === 'sunStudy';
     const frame = study ? UiTheme.SUN : naming ? UiTheme.BOOKMARK : UiTheme.COMMENT;
     const label = study ? UiTheme.SUN_LABEL : naming ? UiTheme.BOOKMARK_LABEL : UiTheme.COMMENT_LABEL;
     ui.panel(x, y, w, h, UiTheme.PANEL_STRONG, frame);
-    const title = this.mode === 'user' ? 'YOUR NAME (SHOWN ON COMMENTS)'
+    const title = this.mode === 'custom' ? `${this.customTitle} · ${this.level ?? '—'}`
+      : this.mode === 'user' ? 'YOUR NAME (SHOWN ON COMMENTS)'
       : study ? 'SUN STUDY NAME (same name replaces)'
       : `${this.mode === 'bookmark' ? 'BOOKMARK NAME' : this.mode === 'reply' ? 'REPLY' : this.mode === 'assign' ? 'ASSIGN TO (empty = unassigned)'
         : this.record ? 'EDIT COMMENT' : 'NEW COMMENT'} · ${this.level ?? '—'}`;

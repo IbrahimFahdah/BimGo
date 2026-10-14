@@ -69,8 +69,17 @@ export class CommentsBcf {
         const topic = BcfMapping.toTopic(record);
         const viewpoint = BcfMapping.toViewpoint(this.viewForBcf(record), CharacterController.STAND_EYE, frame, session.settings.fieldOfView);
         if (record.view?.section) { viewpoint.clippingPlanes.push(...BcfMapping.toClippingPlanes(record.view.section, frame)); }
-        const component = this.componentFor(record, system);
-        if (component) { viewpoint.selection.push(component); }
+        const clash = record.clashId ? session.clashes.findClash(record.clashId) : null;
+        if (clash) {
+          // A clash comment: both elements of the pair
+          for (const element of [clash.a, clash.b]) {
+            if (!element.ifcGuid && element.elementId <= 0) { continue; }
+            viewpoint.selection.push({ ifcGuid: element.ifcGuid || null, authoringToolId: element.elementId > 0 ? String(element.elementId) : null, originatingSystem: system });
+          }
+        } else {
+          const component = this.componentFor(record, system);
+          if (component) { viewpoint.selection.push(component); }
+        }
         topic.viewpoint = viewpoint;
         topic.snapshot = await toPng(record.snapshotData ?? thumbnailBytes(record));
         topic.snapshotExtension = '.png';
