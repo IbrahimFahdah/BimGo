@@ -48,6 +48,7 @@ namespace BimGo.Native
         public const uint DEPTH_COMPONENT = 0x1902;
         public const uint TEXTURE_COMPARE_MODE = 0x884C, TEXTURE_COMPARE_FUNC = 0x884D, COMPARE_REF_TO_TEXTURE = 0x884E;
         public const uint POLYGON_OFFSET_LINE = 0x2A02;
+        public const uint FRONT_AND_BACK = 0x0408, LINE = 0x1B01, FILL = 0x1B02; // clash view wireframe (glPolygonMode)
         public const uint OUT_OF_MEMORY = 0x0505;
         public const uint NONE = 0;
 
@@ -87,7 +88,7 @@ namespace BimGo.Native
             "glDepthFunc", "glDepthMask", "glBlendFunc", "glCullFace", "glPolygonOffset", "glGetString",
             "glGetIntegerv", "glGetError", "glBindTexture", "glGenTextures", "glDeleteTextures", "glTexImage2D",
             "glTexParameteri", "glPixelStorei", "glDrawElements", "glDrawArrays", "glColorMask", "glDrawBuffer",
-            "glReadBuffer", "glReadPixels", "glStencilFunc", "glStencilOp", "glStencilMask", "glClearStencil",
+            "glReadBuffer", "glReadPixels", "glStencilFunc", "glStencilOp", "glStencilMask", "glClearStencil", "glPolygonMode",
 
             // GL 1.3+
             "glActiveTexture", "glMultiDrawElements", "glBlendFuncSeparate", "glTexImage3D", "glTexSubImage3D", "glGenerateMipmap",
@@ -177,6 +178,7 @@ namespace BimGo.Native
         public static void BlendFuncSeparate(uint srcRgb, uint dstRgb, uint srcA, uint dstA) => _gl.BlendFuncSeparate((GLEnum)srcRgb, (GLEnum)dstRgb, (GLEnum)srcA, (GLEnum)dstA);
         public static void CullFace(uint mode) => _gl.CullFace((GLEnum)mode);
         public static void PolygonOffset(float factor, float units) => _gl.PolygonOffset(factor, units);
+        public static void PolygonMode(uint face, uint mode) => _gl.PolygonMode((GLEnum)face, (GLEnum)mode);
         public static uint GetError() => (uint)_gl.GetError();
         public static void PixelStore(uint name, int value) => _gl.PixelStore((GLEnum)name, value);
         public static void ColorMask(bool r, bool g, bool b, bool a) => _gl.ColorMask(r, g, b, a);

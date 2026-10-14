@@ -167,6 +167,12 @@ namespace BimGo.Rendering
         /// <summary>The fog / clear colour: the sky's horizon when the sun is on.</summary>
         public Vector3 FogColour => Lighting.Enabled ? Lighting.Horizon : FOG_COLOUR;
 
+        /// <summary>
+        /// Clash view (Round C-B): when above 0, scene passes draw as faint grey glass of this opacity (colour-override
+        /// draws, the clash pair, are never ghosted). 0 = normal.
+        /// </summary>
+        public float GhostAlpha { get; set; }
+
         /// <summary>The shadow maps (state, presets, last error).</summary>
         public ShadowMaps Shadows => _shadows;
 
@@ -288,7 +294,7 @@ namespace BimGo.Rendering
         /// </summary>
         private struct SceneUniforms
         {
-            public int ViewProj, Model, Eye, LightDir, FogColor, FogDensity, Whitecard, Plan, ClipZ, Override;
+            public int ViewProj, Model, Eye, LightDir, FogColor, FogDensity, Whitecard, Plan, ClipZ, Override, Ghost;
             public int Realistic, Reflections, SkyZenith, SkyHorizon, TintMode;
             public int ReflectThreshold, ReflectGain, ReflectDebug, Time;
             public int ProbesOn, ProbeGridOrigin, ProbeGridCell, ProbeGridSize, ProbeMaxLod;
@@ -322,6 +328,7 @@ namespace BimGo.Rendering
                 Plan = p.Uniform("uPlan"),
                 ClipZ = p.Uniform("uClipZ"),
                 Override = p.Uniform("uOverride"),
+                Ghost = p.Uniform("uGhost"),
                 Realistic = p.Uniform("uRealistic"),
                 Reflections = p.Uniform("uReflections"),
                 SkyZenith = p.Uniform("uSkyZenith"),
@@ -916,6 +923,16 @@ namespace BimGo.Rendering
         }
 
         /// <summary>
+        /// Draws the next passes without AO or glow, keeping their targets as they are (clash pictures, Round C-B2: an
+        /// off-screen picture of another size would otherwise remake them twice a frame). The next
+        /// <see cref="UpdateScreenEffects"/> turns them back on.
+        /// </summary>
+        public void SkipScreenEffects()
+        {
+            _aoActive = _glowActive = false;
+        }
+
+        /// <summary>
         /// Gives this frame's picked lights their shadow maps (call after the session filled <see cref="Artificial"/>,
         /// before binding the scene target): renders the few that are new, moved or out of date, then keeps only the
         /// lights that have a map (a new light joins, fading in, once its map exists). With no lights the maps are freed.
@@ -1293,6 +1310,7 @@ namespace BimGo.Rendering
             Gl.Uniform2(u.ClipZ, p.ClipZ.X, p.ClipZ.Y);
             ApplyClip(u.ClipCount, u.ClipPlanes, p.Section);
             Gl.Uniform4(u.Override, overrideColour.X, overrideColour.Y, overrideColour.Z, overrideColour.W);
+            Gl.Uniform1(u.Ghost, overrideColour.W > 0f ? 0f : GhostAlpha);
 
             bool realistic = p.Realistic && !p.Whitecard && HasMaterials;
             Gl.Uniform1(u.Realistic, realistic ? 1 : 0);

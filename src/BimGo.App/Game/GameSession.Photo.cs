@@ -4,7 +4,6 @@ using BimGo.Platform;
 using BimGo.Rendering;
 using BimGo.Scene;
 using Gl = BimGo.Native.Gl;
-using Vk = BimGo.Native.Win32;
 
 // The class belongs to the Game namespace
 namespace BimGo.Game
@@ -81,7 +80,7 @@ namespace BimGo.Game
             _photoShotIn = 0;
             _fov = _photoSavedFov;
             _window.Input.ReleaseAll();
-            if (!_paused && _window.IsActive) { _window.SetCaptured(true); }
+            if (!_paused && _window.IsActive && !_clashModeOn) { _window.SetCaptured(true); } // clash mode keeps its cursor
         }
 
         /// <summary>
@@ -90,17 +89,17 @@ namespace BimGo.Game
         /// </summary>
         private void UpdatePhotoMode(InputState input)
         {
-            if (input.IsPressed(Vk.VK_ESCAPE) || input.IsPressed('M'))
+            if (input.Pressed(InputAction.Back) || input.Pressed(InputAction.PhotoMode))
             {
                 ClosePhotoMode();
                 return;
             }
-            if (input.IsPressed(Vk.VK_F11)) { _window.ToggleFullscreen(); }
-            if (input.IsPressed(Vk.VK_RETURN)) { RequestPhoto(); }
-            if (input.RightDown) { _player.Look(input.MouseDeltaX, input.MouseDeltaY, _sensitivity, _invertY); }
-            if (input.Wheel != 0 && _photoKind == 0) { _fov = Math.Clamp(_fov - input.Wheel * 2f, 30f, 120f); }
-            if (ShadowsOn && input.IsPressedOrRepeated(Vk.VK_OEM_4)) { StepSunTime(input.IsDown(Vk.VK_SHIFT) ? -1 : -TIME_STEP); }
-            if (ShadowsOn && input.IsPressedOrRepeated(Vk.VK_OEM_6)) { StepSunTime(input.IsDown(Vk.VK_SHIFT) ? 1 : TIME_STEP); }
+            if (input.Pressed(InputAction.Fullscreen)) { _window.ToggleFullscreen(); }
+            if (input.Pressed(InputAction.PhotoTake)) { RequestPhoto(); }
+            if (input.Down(InputAction.DragLook)) { _player.Look(input.MouseDeltaX, input.MouseDeltaY, _sensitivity, _invertY); }
+            PadEditorLook(input);
+            if (input.Wheel != 0 && _photoKind == 0) { _fov = Math.Clamp(_fov - input.Wheel * 2f, 30f, 120f); } // fixed: PhotoZoom
+            if (ShadowsOn) { StepSunTimeKeys(input); }
 
             string message = _photoMessage;
             if (message != null)
@@ -427,7 +426,7 @@ namespace BimGo.Game
             float ix = x + S(16), iw = w - S(32), cy = y + S(14);
             _ui.Text(f.Small, ix, cy, "PHOTO MODE", UiTheme.ACCENT, S(1.4f));
             cy += S(26);
-            _ui.TextWrapped(f.Small, ix, cy, iw, "RMB-drag looks · wheel: field of view · Enter: take", UiTheme.TEXT_MUTED, maxLines: 1);
+            _ui.TextWrapped(f.Small, ix, cy, iw, HINT_PHOTO_USE.Text, UiTheme.TEXT_MUTED, maxLines: 1);
             cy += S(24);
 
             int kind = Segmented(f, input, ix, cy, iw, PHOTO_KINDS, _photoKind);
@@ -479,7 +478,7 @@ namespace BimGo.Game
             }
             else
             {
-                _ui.TextWrapped(f.Small, ix, cy + S(4), iw, "Shadows off: O (or the sun panel) for sunlight", UiTheme.TEXT_FAINT, maxLines: 1);
+                _ui.TextWrapped(f.Small, ix, cy + S(4), iw, HINT_PHOTO_SHADOWS.Text, UiTheme.TEXT_FAINT, maxLines: 1);
             }
             cy += S(38);
 
@@ -487,12 +486,12 @@ namespace BimGo.Game
             _photoGrid = grid;
             cy += S(34);
 
-            if (MenuButton(f, ix, cy, iw, _photoShotIn > 0 ? "RENDERING…" : "TAKE PHOTO (ENTER)", true, false, _photoShotIn == 0, S(44))) { RequestPhoto(); }
+            if (MenuButton(f, ix, cy, iw, _photoShotIn > 0 ? "RENDERING…" : HINT_PHOTO_TAKE.Text, true, false, _photoShotIn == 0, S(44))) { RequestPhoto(); }
             cy += S(52);
             if (SmallButton(f, input, ix, cy, iw, S(30), "OPEN FOLDER")) { OpenPhotoFolder(); }
             cy += S(40);
             if (_photoNotice != null) { _ui.TextWrapped(f.Small, ix, cy, iw, _photoNotice, UiTheme.MEASURE_TEXT, maxLines: 2); }
-            if (SmallButton(f, input, ix, y + h - S(44), iw, S(30), "CLOSE (M / ESC)")) { ClosePhotoMode(); }
+            if (SmallButton(f, input, ix, y + h - S(44), iw, S(30), HINT_PHOTO_CLOSE.Text)) { ClosePhotoMode(); }
         }
 
         #endregion

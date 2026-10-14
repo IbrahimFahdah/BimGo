@@ -4,7 +4,6 @@ using BimGo.Physics;
 using BimGo.Platform;
 using BimGo.Rendering;
 using BimGo.Scene;
-using Vk = BimGo.Native.Win32;
 
 // The class belongs to the Game namespace
 namespace BimGo.Game
@@ -64,7 +63,7 @@ namespace BimGo.Game
         {
             _section = (cut ?? new SectionCut()).Clone().Clean();
             SectionChanged();
-            if (announce) { Toast(_section.IsActive ? "Section cut on (P edits, Ctrl+P clears)" : "Section cut off", 3f); }
+            if (announce) { Toast(_section.IsActive ? $"Section cut on ({Key(InputAction.SectionBox)} edits, {Key(InputAction.SectionClear)} clears)" : "Section cut off", 3f); }
         }
 
         /// <summary>Recomputes the planes after any change and records it for saving.</summary>
@@ -107,7 +106,7 @@ namespace BimGo.Game
             if (!_aim.HasHit)
             {
                 Sound.Play(SoundId.Error);
-                Toast("Aim at a surface to cut there (Shift+P)", 3f);
+                Toast($"Aim at a surface to cut there ({Key(InputAction.SectionPlane)})", 3f);
                 return;
             }
             // The hit normal faces the eye: the cut-away side is the eye's. Follow the view ray through the aimed element
@@ -127,7 +126,7 @@ namespace BimGo.Game
             _section.Clean();
             SectionChanged();
             Sound.Play(SoundId.Click);
-            Toast("Plane cut at the aimed surface (P to drag it, Ctrl+P clears)", 3f);
+            Toast($"Plane cut at the aimed surface ({Key(InputAction.SectionBox)} to drag it, {Key(InputAction.SectionClear)} clears)", 3f);
         }
 
         /// <summary>Fits the box to the level the player stands on: model footprint, level to just under the next.</summary>
@@ -223,7 +222,7 @@ namespace BimGo.Game
             _sectionOpen = false;
             _sectionDrag = -1;
             _window.Input.ReleaseAll();
-            if (!_paused && _window.IsActive) { _window.SetCaptured(true); }
+            if (!_paused && _window.IsActive && !_clashModeOn) { _window.SetCaptured(true); } // clash mode keeps its cursor
         }
 
         /// <summary>
@@ -231,14 +230,16 @@ namespace BimGo.Game
         /// </summary>
         private void UpdateSectionEditor(InputState input)
         {
-            if (input.IsPressed(Vk.VK_ESCAPE) || (input.IsPressed('P') && !input.IsDown(Vk.VK_CONTROL)))
+            // (Ctrl+P, clear all cuts, is live here so it doesn't also close the editor: it does nothing in it, as before)
+            if (input.Pressed(InputAction.Back) || input.Pressed(InputAction.SectionBox))
             {
                 CloseSectionEditor();
                 return;
             }
-            if (input.IsPressed(Vk.VK_F11)) { _window.ToggleFullscreen(); }
-            if (input.IsPressed(Vk.VK_F12)) { RequestScreenshot(); }
-            if (input.RightDown) { _player.Look(input.MouseDeltaX, input.MouseDeltaY, _sensitivity, _invertY); }
+            if (input.Pressed(InputAction.Fullscreen)) { _window.ToggleFullscreen(); }
+            if (input.Pressed(InputAction.Screenshot)) { RequestScreenshot(); }
+            if (input.Down(InputAction.DragLook)) { _player.Look(input.MouseDeltaX, input.MouseDeltaY, _sensitivity, _invertY); }
+            PadEditorLook(input);
 
             Vector2 mouse = input.MousePosition;
             bool overPanel = mouse.X >= _sectionPanelRect.X && mouse.X < _sectionPanelRect.X + _sectionPanelRect.Z
@@ -252,7 +253,7 @@ namespace BimGo.Game
                     Sound.Play(SoundId.Click);
                     return;
                 }
-                DragHandle(mouse, input.IsDown(Vk.VK_SHIFT));
+                DragHandle(mouse, input.Down(InputAction.SectionFreeDrag));
                 return;
             }
 
@@ -448,7 +449,7 @@ namespace BimGo.Game
             float ix = x + S(16), iw = w - S(32), cy = y + S(14);
             _ui.Text(f.Small, ix, cy, "SECTION BOX", UiTheme.ACCENT, S(1.4f));
             cy += S(26);
-            _ui.TextWrapped(f.Small, ix, cy, iw, "Drag a handle along its arrow (Shift: no snap) · RMB-drag to look", UiTheme.TEXT_MUTED, maxLines: 2);
+            _ui.TextWrapped(f.Small, ix, cy, iw, HINT_SECTION_DRAG.Text, UiTheme.TEXT_MUTED, maxLines: 2);
             cy += S(38);
 
             float half = (iw - S(8)) * 0.5f;
@@ -460,7 +461,7 @@ namespace BimGo.Game
             if (SmallButton(f, input, ix + half + S(8), cy, half, S(30), _section.PlaneOn ? "PLANE: ON" : "PLANE: OFF"))
             {
                 if (_section.PlaneOn) { _section.PlaneOn = false; SectionChanged(); }
-                else { _sectionNotice = "Aim at a surface and press Shift+P for a plane"; }
+                else { _sectionNotice = $"Aim at a surface and press {Key(InputAction.SectionPlane)} for a plane"; }
             }
             cy += S(40);
 
@@ -482,10 +483,10 @@ namespace BimGo.Game
             if (SmallButton(f, input, ix + S(52) + buttonW + S(8), cy, buttonW, S(30), "RESET")) { SetCapColour(0x3D4045); }
             cy += S(42);
 
-            if (SmallButton(f, input, ix, cy, iw, S(30), "CLEAR ALL CUTS (Ctrl+P)", danger: true)) { ClearSection(); }
+            if (SmallButton(f, input, ix, cy, iw, S(30), HINT_SECTION_CLEAR.Text, danger: true)) { ClearSection(); }
             cy += S(40);
             if (_sectionNotice != null) { _ui.TextWrapped(f.Small, ix, cy, iw, _sectionNotice, UiTheme.MEASURE_TEXT, maxLines: 2); }
-            if (SmallButton(f, input, ix, y + h - S(44), iw, S(30), "CLOSE (P / ESC) · cut stays")) { CloseSectionEditor(); }
+            if (SmallButton(f, input, ix, y + h - S(44), iw, S(30), HINT_SECTION_CLOSE.Text)) { CloseSectionEditor(); }
         }
 
         #endregion

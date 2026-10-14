@@ -22,7 +22,7 @@ namespace BimGo.Game
         private readonly string _model;
         private readonly Vector3 _origin;
 
-        /// <summary>All bookmarks, in list order (Ctrl+1..9 jump to the first nine).</summary>
+        /// <summary>All bookmarks, in list order (Shift+1..9 by default jump to the first nine).</summary>
         public List<BookmarkRecord> Bookmarks { get; } = new();
 
         /// <summary>The saved home viewpoint (walkthroughs start here; H returns here), or null.</summary>

@@ -140,7 +140,8 @@ namespace BimGo.Format
                     Kind = manifest.Kind,
                     Path = path,
                     ReadFormatVersion = manifest.FormatVersion,
-                    Thumbnail = ReadThumbnail(zip)
+                    Thumbnail = ReadThumbnail(zip),
+                    Clashes = ReadBytes(zip, BimGoFormat.ENTRY_CLASHES)
                 };
             }
             catch (Exception ex)

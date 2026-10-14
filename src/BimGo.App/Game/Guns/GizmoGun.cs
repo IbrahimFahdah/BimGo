@@ -2,6 +2,7 @@ using System.Numerics;
 using BimGo.Audio;
 using BimGo.Edits;
 using BimGo.Physics;
+using BimGo.Platform;
 using BimGo.Rendering;
 using BimGo.Scene;
 
@@ -40,7 +41,7 @@ namespace BimGo.Game.Guns
         public override void OnKeys(Platform.InputState input)
         {
             // Aim + F (not locked on): drop or lift the aimed element onto the surface below and commit it at once
-            if (!_gizmo.Active && input.IsPressed('F'))
+            if (!_gizmo.Active && input.Pressed(InputAction.GizmoDrop))
             {
                 DropAimed();
                 return;
@@ -108,7 +109,7 @@ namespace BimGo.Game.Guns
             if (_hover < 0)
             {
                 Session.Sound.Play(SoundId.Error);
-                Session.Toast("Aim at furniture or a fitting, then F drops it onto the surface below");
+                Session.Toast($"Aim at furniture or a fitting, then {Hotkeys.Label(InputAction.GizmoDrop)} drops it onto the surface below");
                 return;
             }
             if (!LockOn(_hover, _hoverDynamic)) { return; }
@@ -227,18 +228,43 @@ namespace BimGo.Game.Guns
         /// </summary>
         public static void HandleKeys(GameSession session, GizmoController gizmo, Platform.InputState input)
         {
-            if (input.IsPressed('G')) { session.ToggleGizmoSnap(); }
+            if (input.Pressed(InputAction.GizmoSnap)) { session.ToggleGizmoSnap(); }
             if (!gizmo.Active) { return; }
-            if (input.IsPressed('F')) { Drop(session, gizmo); }
-            if (input.IsPressed('R'))
+            if (input.Pressed(InputAction.GizmoDrop)) { Drop(session, gizmo); }
+            if (input.Pressed(InputAction.HoldRotate))
             {
                 gizmo.ToggleMode();
                 session.Sound.Play(Audio.SoundId.UiClick);
             }
             bool rotating = gizmo.Mode == GizmoMode.Rotate;
-            if (input.IsPressed('Z')) { if (rotating) { session.StepSnapAngle(-1); } else { session.StepSnapMove(-1); } }
-            if (input.IsPressed('X')) { if (rotating) { session.StepSnapAngle(+1); } else { session.StepSnapMove(+1); } }
+            if (input.Pressed(InputAction.HoldStepDown)) { if (rotating) { session.StepSnapAngle(-1); } else { session.StepSnapMove(-1); } }
+            if (input.Pressed(InputAction.HoldStepUp)) { if (rotating) { session.StepSnapAngle(+1); } else { session.StepSnapMove(+1); } }
         }
+
+        #region Hints (rebuilt when a key binding changes)
+
+        private static string K(InputAction action) => Hotkeys.Label(action);
+
+        private static readonly KeyHint HINT_MOVE = new(() =>
+            $"{Hotkeys.Map.DescribeJoined("", true, InputAction.MoveForward, InputAction.MoveLeft, InputAction.MoveBack, InputAction.MoveRight)} · " +
+            $"{Hotkeys.Map.DescribeJoined("/", false, InputAction.HoldUp, InputAction.HoldDown)} up/down · {K(InputAction.HoldRotate)} rotate");
+        private static readonly KeyHint HINT_ROTATE = new(() =>
+            $"{Hotkeys.Map.DescribeJoined("/", false, InputAction.MoveLeft, InputAction.MoveRight)} rotate · {K(InputAction.HoldRotate)} move");
+        private static readonly KeyHint HINT_SNAP = new(() =>
+            $"{K(InputAction.HoldFine)} fine · {K(InputAction.GizmoSnap)} snap on/off · {K(InputAction.HoldSnapInvert)} flips snap");
+        private static readonly KeyHint HINT_STEP_MOVE = new(() =>
+            $"{Hotkeys.Map.DescribeJoined("/", false, InputAction.HoldStepDown, InputAction.HoldStepUp)} move step · {K(InputAction.GizmoDrop)} drop to surface");
+        private static readonly KeyHint HINT_STEP_ANGLE = new(() =>
+            $"{Hotkeys.Map.DescribeJoined("/", false, InputAction.HoldStepDown, InputAction.HoldStepUp)} angle step · {K(InputAction.GizmoDrop)} drop to surface");
+        private static readonly KeyHint HINT_COMMIT = new(() => $"{K(InputAction.GunSecondary)} commit · Esc cancel");
+        private static readonly KeyHint HINT_SNAP_OFF_KEY = new(() => $" · {K(InputAction.GizmoSnap)} off");
+        private static readonly KeyHint HINT_SNAP_FLIP_KEY = new(() => $" · {K(InputAction.HoldSnapInvert)}");
+        private static readonly KeyHint HINT_SNAP_STATE_KEY = new(() => $" ({K(InputAction.GizmoSnap)})");
+        private static readonly KeyHint HINT_SNAP_OFF = new(() => $"Snap off ({K(InputAction.GizmoSnap)})");
+        private static readonly KeyHint HINT_MOVABLE_GIZMO = new(() => $"Movable: {K(InputAction.GunPrimary)} locks on · {K(InputAction.GizmoDrop)} drops to surface");
+        private static readonly KeyHint HINT_MOVABLE_CLONE = new(() => $"Movable: {K(InputAction.GunPrimary)} clones");
+
+        #endregion
 
         /// <summary>
         /// F while locked on: drop or lift onto the surface below, with a sound and a note.
@@ -248,7 +274,7 @@ namespace BimGo.Game.Guns
         {
             bool moved = gizmo.DropToSurface(out string message);
             session.Sound.Play(moved ? Audio.SoundId.UiClick : Audio.SoundId.Error);
-            if (message != null) { session.Toast(moved ? message + " (RMB commits)" : message); }
+            if (message != null) { session.Toast(moved ? $"{message} ({Hotkeys.Label(InputAction.GunSecondary)} commits)" : message); }
             return moved;
         }
 
@@ -284,28 +310,28 @@ namespace BimGo.Game.Guns
                 ui.Text(f.Mono, x, y, delta.Span, UiTheme.TEXT);
                 y += s(20);
                 bool rotating = gizmo.Mode == GizmoMode.Rotate;
-                ui.Text(f.Body, x, y, rotating ? "A/D rotate · R move" : "WASD · E/Q up/down · R rotate", UiTheme.TEXT_SOFT);
+                ui.Text(f.Body, x, y, rotating ? HINT_ROTATE.Text : HINT_MOVE.Text, UiTheme.TEXT_SOFT);
                 y += s(18);
                 if (gizmo.IsSnapping(session.Input))
                 {
-                    TextBuffer snap = AppendSnap(session.Text.Clear().Append("SNAP "), session).Append(session.GizmoSnap ? " · G off" : " · Ctrl");
+                    TextBuffer snap = AppendSnap(session.Text.Clear().Append("SNAP "), session).Append(session.GizmoSnap ? HINT_SNAP_OFF_KEY.Text : HINT_SNAP_FLIP_KEY.Text);
                     ui.Text(f.Body, x, y, snap.Span, UiTheme.ACCENT);
                 }
                 else
                 {
-                    ui.Text(f.Body, x, y, "Shift fine · G snap on/off · Ctrl flips snap", UiTheme.TEXT_MUTED);
+                    ui.Text(f.Body, x, y, HINT_SNAP.Text, UiTheme.TEXT_MUTED);
                 }
                 y += s(18);
-                ui.Text(f.Body, x, y, rotating ? "Z/X angle step · F drop to surface" : "Z/X move step · F drop to surface", UiTheme.TEXT_MUTED);
+                ui.Text(f.Body, x, y, rotating ? HINT_STEP_ANGLE.Text : HINT_STEP_MOVE.Text, UiTheme.TEXT_MUTED);
                 y += s(18);
-                ui.Text(f.Body, x, y, "RMB commit · Esc cancel", UiTheme.TEXT_MUTED);
+                ui.Text(f.Body, x, y, HINT_COMMIT.Text, UiTheme.TEXT_MUTED);
                 return;
             }
 
             // Snap state (G toggles)
             TextBuffer state = session.GizmoSnap
-                ? AppendSnap(session.Text.Clear().Append("Snap on · "), session).Append(" (G)")
-                : session.Text.Clear().Append("Snap off (G)");
+                ? AppendSnap(session.Text.Clear().Append("Snap on · "), session).Append(HINT_SNAP_STATE_KEY.Text)
+                : session.Text.Clear().Append(HINT_SNAP_OFF.Text);
             ui.TextRight(f.Small, x + width, y - s(20), state.Span, session.GizmoSnap ? UiTheme.ACCENT : UiTheme.TEXT_FAINT, s(0.5f));
 
             if (hover < 0)
@@ -321,7 +347,7 @@ namespace BimGo.Game.Guns
             y += s(22);
             ui.TextWrapped(f.Body, x, y, width, hovered.FamilyType, UiTheme.TEXT_SOFT, maxLines: 1);
             y += s(20);
-            if (hovered.Movable) { ui.Text(f.Body, x, y, title == "GIZMO" ? "Movable: LMB locks on · F drops to surface" : "Movable: LMB clones", UiTheme.GOOD); }
+            if (hovered.Movable) { ui.Text(f.Body, x, y, title == "GIZMO" ? HINT_MOVABLE_GIZMO.Text : HINT_MOVABLE_CLONE.Text, UiTheme.GOOD); }
             else
             {
                 TextBuffer reason = session.Text.Clear().Append("Can't move: ").Append(hovered.MoveBlockReason);

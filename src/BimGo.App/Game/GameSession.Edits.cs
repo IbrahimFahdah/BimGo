@@ -180,7 +180,7 @@ namespace BimGo.Game
         {
             GizmoSnap = !GizmoSnap;
             Sound.Play(Audio.SoundId.UiClick);
-            Toast(GizmoSnap ? $"Snap ON: {DescribeSnap()}" : "Snap OFF: smooth moves (hold Ctrl to snap for a moment)");
+            Toast(GizmoSnap ? $"Snap ON: {DescribeSnap()}" : $"Snap OFF: smooth moves (hold {Key(InputAction.HoldSnapInvert)} to snap for a moment)");
         }
 
         /// <summary>

@@ -281,6 +281,7 @@ namespace BimGo.Game
                 if (texture != 0) { Gl.DeleteTexture(texture); }
             }
             _thumbnailTextures.Clear();
+            ReleaseClashPictures(); // clash row pictures and their targets (C-B2)
         }
 
         #endregion

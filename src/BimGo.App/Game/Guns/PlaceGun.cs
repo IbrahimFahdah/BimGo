@@ -126,7 +126,7 @@ namespace BimGo.Game.Guns
             _gizmo.Begin(placed);
             _gizmo.DropToSurface(out _); // quietly onto the floor (or desk) in front; F does it again after moving
             Session.Sound.Play(SoundId.Grab);
-            Session.Toast($"{entry.Label}: move it, then RMB commits it (Esc discards it)");
+            Session.Toast($"{entry.Label}: move it, then {Platform.Hotkeys.Label(InputAction.GunSecondary)} commits it (Esc discards it)");
         }
 
         /// <summary>

@@ -85,9 +85,10 @@ namespace BimGo.Game
         public CommentDocument ToDocument() => new() { Model = _model, Comments = Comments.ToList() };
 
         /// <summary>
-        /// Adds a comment at a scene-local position and saves.
+        /// Adds a comment at a scene-local position and saves (unless <paramref name="save"/> is false: a batch saves
+        /// once at the end, Round C-B2).
         /// </summary>
-        public CommentRecord Add(Vector3 local, string text, long elementId, string level, string elementUniqueId = null)
+        public CommentRecord Add(Vector3 local, string text, long elementId, string level, string elementUniqueId = null, bool save = true)
         {
             var record = new CommentRecord
             {
@@ -101,7 +102,7 @@ namespace BimGo.Game
             };
             Prepare(record);
             Comments.Add(record);
-            Save();
+            if (save) { Save(); }
             return record;
         }
 
@@ -128,7 +129,7 @@ namespace BimGo.Game
         /// it), recording who and when, and saves.
         /// </summary>
         /// <returns>False if the comment is not in this store or nothing changed.</returns>
-        public bool SetIssue(CommentRecord record, string status = null, string priority = null, string assignedTo = null)
+        public bool SetIssue(CommentRecord record, string status = null, string priority = null, string assignedTo = null, bool save = true)
         {
             if (record == null || !Comments.Contains(record)) { return false; }
             bool changed = false;
@@ -143,7 +144,7 @@ namespace BimGo.Game
             record.Updated = DateTimeOffset.Now;
             record.UpdatedBy = Environment.UserName;
             record.UpdatedLabel = null;
-            Save();
+            if (save) { Save(); }
             return true;
         }
 
@@ -213,7 +214,7 @@ namespace BimGo.Game
         /// Stores a comment's thumbnail (base64 JPEG) and, when given, the larger picture kept for BCF snapshots
         /// (JPEG bytes, saved as comments/&lt;id&gt;.jpg), then saves once.
         /// </summary>
-        public void SetPictures(CommentRecord record, string thumbnail, byte[] snapshot)
+        public void SetPictures(CommentRecord record, string thumbnail, byte[] snapshot, bool save = true)
         {
             if (record == null) { return; }
             if (!string.IsNullOrEmpty(thumbnail)) { record.Thumbnail = thumbnail; }
@@ -228,7 +229,7 @@ namespace BimGo.Game
                 record.SnapshotOriginalData = null;
                 record.SnapshotOriginalDirty = false;
             }
-            if (Comments.Contains(record)) { Save(); }
+            if (save && Comments.Contains(record)) { Save(); }
         }
 
         /// <summary>
@@ -308,6 +309,21 @@ namespace BimGo.Game
         public void Remove(CommentRecord record)
         {
             if (Comments.Remove(record)) { Save(); }
+        }
+
+        /// <summary>
+        /// Removes several comments and saves once (C-B3: bulk delete).
+        /// </summary>
+        /// <returns>How many were removed.</returns>
+        public int RemoveMany(IEnumerable<CommentRecord> records)
+        {
+            int removed = 0;
+            foreach (CommentRecord record in records.ToList())
+            {
+                if (Comments.Remove(record)) { removed++; }
+            }
+            if (removed > 0) { Save(); }
+            return removed;
         }
 
         /// <summary>

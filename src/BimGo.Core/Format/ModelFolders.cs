@@ -62,6 +62,9 @@ namespace BimGo.Format
         /// <summary>Walkthrough-only hiding in a model folder.</summary>
         public const string VISIBILITY_FILE = "visibility.json";
 
+        /// <summary>Clash detection's sets, tests and results (Round C).</summary>
+        public const string CLASHES_FILE = "clashes.json";
+
         /// <summary>Texture choices in a model folder (machine-specific image paths: never shared).</summary>
         public const string TEXTURE_OVERRIDES_FILE = "texture-overrides.json";
 
@@ -77,7 +80,8 @@ namespace BimGo.Format
             (COMMENTS_FILE, BimGoFormat.SIDECAR_SUFFIX),
             (BOOKMARKS_FILE, BimGoFormat.BOOKMARK_SIDECAR_SUFFIX),
             (SUN_FILE, BimGoFormat.SUN_SIDECAR_SUFFIX),
-            (VISIBILITY_FILE, BimGoFormat.VISIBILITY_SIDECAR_SUFFIX)
+            (VISIBILITY_FILE, BimGoFormat.VISIBILITY_SIDECAR_SUFFIX),
+            (CLASHES_FILE, BimGoFormat.CLASH_SIDECAR_SUFFIX)
         };
 
         #endregion

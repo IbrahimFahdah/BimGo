@@ -263,9 +263,11 @@ namespace BimGo.Live
 
                 case MessageTypes.SELECT:
                     SelectPayload select = envelope.Read<SelectPayload>();
-                    MessagePayload selected = select?.Linked is { Length: > 0 } linked
-                        ? SelectLinked(app, host, linked) ?? Select(app, host, select.ElementIds ?? Array.Empty<long>())
-                        : Select(app, host, select?.ElementIds ?? Array.Empty<long>());
+                    MessagePayload selected = select?.ClashView != null
+                        ? ShowClash(app, host, select)
+                        : select?.Linked is { Length: > 0 } linked
+                            ? SelectLinked(app, host, linked, select.Hosts) ?? Select(app, host, select.ElementIds ?? Array.Empty<long>())
+                            : Select(app, host, select?.ElementIds ?? Array.Empty<long>());
                     host.Send(MessageTypes.SELECT_RESULT, selected, envelope.Id);
                     break;
 
@@ -396,10 +398,12 @@ namespace BimGo.Live
         }
 
         /// <summary>
-        /// Selects elements inside linked models by link reference and zooms the active view to them.
+        /// Selects elements inside linked models by link reference (with host elements joining them, Round C-B2) and
+        /// zooms the active view to them.
         /// </summary>
+        /// <param name="hosts">Host elements selected with them (optional).</param>
         /// <returns>The answer, or null to fall back to selecting the link instances.</returns>
-        private static MessagePayload SelectLinked(UIApplication app, SessionHost host, LinkedElementRef[] linked)
+        private static MessagePayload SelectLinked(UIApplication app, SessionHost host, LinkedElementRef[] linked, long[] hosts = null)
         {
             UIDocument uiDoc = app.ActiveUIDocument;
             if (uiDoc == null || !SameDocument(uiDoc.Document, host.Document)) { return null; }
@@ -408,6 +412,15 @@ namespace BimGo.Live
             {
                 var references = new List<DB.Reference>();
                 XYZ min = null, max = null;
+                foreach (long hostId in hosts ?? Array.Empty<long>())
+                {
+                    if (hostId <= 0 || host.Document.GetElement(new ElementId(hostId)) is not Element hostElement) { continue; }
+                    references.Add(new DB.Reference(hostElement));
+                    BoundingBoxXYZ hostBox = hostElement.get_BoundingBox(null);
+                    if (hostBox == null) { continue; }
+                    min = min == null ? hostBox.Min : new XYZ(Math.Min(min.X, hostBox.Min.X), Math.Min(min.Y, hostBox.Min.Y), Math.Min(min.Z, hostBox.Min.Z));
+                    max = max == null ? hostBox.Max : new XYZ(Math.Max(max.X, hostBox.Max.X), Math.Max(max.Y, hostBox.Max.Y), Math.Max(max.Z, hostBox.Max.Z));
+                }
                 foreach (LinkedElementRef item in linked)
                 {
                     if (item == null) { continue; }
@@ -446,13 +459,119 @@ namespace BimGo.Live
                     }
                 }
                 if (_revitWindow != 0) { SetForegroundWindow(_revitWindow); }
-                return new MessagePayload { Success = true, Message = "Selected in the linked model in Revit" };
+                return new MessagePayload { Success = true, Message = hosts is { Length: > 0 } ? "Selected the pair in Revit (host and linked)" : "Selected in the linked model in Revit" };
             }
             catch (Exception ex)
             {
                 Utilities.Log_Utils.Write($"Linked selection failed (selecting the link instead): {ex.Message}");
                 return null;
             }
+        }
+
+        /// <summary>
+        /// SHOW IN REVIT (Round C-B2): makes (once) or reuses a 3D view named "BimGo clash", gives it the clash's section
+        /// box (switched on or off as in BimGo), turns it to look the way BimGo does, makes it the active view, selects
+        /// the pair (host, linked or one of each) and zooms to the clash region. The view change is a BimGo transaction
+        /// ("BimGo: clash view"), so it doesn't count as a change made outside BimGo.
+        /// </summary>
+        private static MessagePayload ShowClash(UIApplication app, SessionHost host, SelectPayload select)
+        {
+            UIDocument uiDoc = app.ActiveUIDocument;
+            if (uiDoc == null || !SameDocument(uiDoc.Document, host.Document))
+            {
+                return new MessagePayload { Success = false, Message = $"Switch to {host.Info.DocTitle} in Revit to show the clash there" };
+            }
+
+            Document doc = host.Document;
+            ClashViewRequest request = select.ClashView;
+            string name = string.IsNullOrWhiteSpace(request.Name) ? ClashViewRequest.DEFAULT_NAME : request.Name.Trim();
+            XYZ min = null, max = null;
+            if (request.HasRegion)
+            {
+                min = new XYZ(request.MinX / SceneExtractor.FT, request.MinY / SceneExtractor.FT, request.MinZ / SceneExtractor.FT);
+                max = new XYZ(request.MaxX / SceneExtractor.FT, request.MaxY / SceneExtractor.FT, request.MaxZ / SceneExtractor.FT);
+            }
+
+            // The view: found by name or made, its section box and camera set (one BimGo transaction)
+            View3D view;
+            try
+            {
+                using var transaction = new Transaction(doc, "BimGo: clash view");
+                transaction.Start();
+                view = new FilteredElementCollector(doc).OfClass(typeof(View3D)).Cast<View3D>()
+                    .FirstOrDefault(v => !v.IsTemplate && string.Equals(v.Name, name, StringComparison.OrdinalIgnoreCase));
+                if (view == null)
+                {
+                    ViewFamilyType type = new FilteredElementCollector(doc).OfClass(typeof(ViewFamilyType)).Cast<ViewFamilyType>()
+                        .FirstOrDefault(t => t.ViewFamily == ViewFamily.ThreeDimensional)
+                        ?? throw new InvalidOperationException("this model has no 3D view type");
+                    view = View3D.CreateIsometric(doc, type.Id);
+                    try { view.Name = name; }
+                    catch (Exception ex)
+                    {
+                        // The name is taken by another kind of view: keep Revit's own name
+                        Utilities.Log_Utils.Write($"Clash view name \"{name}\" not available: {ex.Message}");
+                    }
+                }
+
+                // A view template could own the section box: the clash view runs without one
+                if (view.ViewTemplateId != ElementId.InvalidElementId) { view.ViewTemplateId = ElementId.InvalidElementId; }
+                if (min != null)
+                {
+                    view.SetSectionBox(new BoundingBoxXYZ { Min = min, Max = max });
+                }
+                view.IsSectionBoxActive = request.SectionBox && min != null;
+                if (request.HasDirection && !view.IsLocked)
+                {
+                    XYZ forward = new XYZ(request.DirectionX, request.DirectionY, request.DirectionZ).Normalize();
+                    XYZ up = forward.CrossProduct(XYZ.BasisZ).CrossProduct(forward).Normalize();
+                    XYZ eye = new XYZ(request.EyeX / SceneExtractor.FT, request.EyeY / SceneExtractor.FT, request.EyeZ / SceneExtractor.FT);
+                    view.SetOrientation(new ViewOrientation3D(eye, up, forward));
+                }
+                transaction.Commit();
+            }
+            catch (Exception ex)
+            {
+                Utilities.Log_Utils.Write($"Clash view failed: {ex}");
+                return new MessagePayload { Success = false, Message = "Revit couldn't set up the clash view: " + ex.Message };
+            }
+
+            // Active, then the pair selected and the region zoomed
+            try
+            {
+                if (uiDoc.ActiveView == null || uiDoc.ActiveView.Id != view.Id) { uiDoc.ActiveView = view; }
+            }
+            catch (Exception ex)
+            {
+                Utilities.Log_Utils.Write($"Clash view could not be made active: {ex.Message}");
+            }
+
+            long[] hosts = select.Hosts ?? (select.Linked is { Length: > 0 } ? Array.Empty<long>() : select.ElementIds ?? Array.Empty<long>());
+            MessagePayload selected = select.Linked is { Length: > 0 } || hosts.Length > 0
+                ? SelectLinked(app, host, select.Linked ?? Array.Empty<LinkedElementRef>(), hosts)
+                : null;
+            if (min != null)
+            {
+                try
+                {
+                    UIView open = uiDoc.GetOpenUIViews().FirstOrDefault(v => v.ViewId == view.Id);
+                    open?.ZoomAndCenterRectangle(min, max);
+                }
+                catch (Exception ex)
+                {
+                    Utilities.Log_Utils.Write($"Zoom to the clash failed: {ex.Message}");
+                }
+            }
+            if (_revitWindow != 0) { SetForegroundWindow(_revitWindow); }
+
+            string box = request.SectionBox && min != null ? "section box on" : "section box off";
+            return new MessagePayload
+            {
+                Success = true,
+                Message = selected?.Success == true
+                    ? $"Clash shown in Revit: “{view.Name}”, {box}, the pair selected"
+                    : $"Clash view ready in Revit: “{view.Name}”, {box} (the pair couldn't be selected)"
+            };
         }
 
         #endregion

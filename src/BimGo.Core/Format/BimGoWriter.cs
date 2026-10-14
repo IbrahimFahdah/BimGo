@@ -83,6 +83,13 @@ namespace BimGo.Format
                     {
                         WriteJson(zip, BimGoFormat.ENTRY_SUN, document.Sun, BimGoFormat.JSON_INDENTED);
                     }
+                    if (document.Clashes != null && document.Clashes.Length > 0)
+                    {
+                        // Round C: written as held (raw JSON), so a file saved without opening clash detection keeps it unchanged
+                        ZipArchiveEntry clashes = zip.CreateEntry(BimGoFormat.ENTRY_CLASHES, CompressionLevel.Optimal);
+                        using Stream clashStream = clashes.Open();
+                        clashStream.Write(document.Clashes);
+                    }
                     if (scene.Lighting != null && !scene.Lighting.IsEmpty)
                     {
                         WriteJson(zip, BimGoFormat.ENTRY_LIGHTING, BuildLighting(scene.Lighting), BimGoFormat.JSON_COMPACT);

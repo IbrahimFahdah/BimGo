@@ -216,7 +216,7 @@ namespace BimGo.Format
             var topic = new BcfTopic
             {
                 Guid = guid,
-                TopicType = "Issue",
+                TopicType = record.ClashId != null ? "Clash" : "Issue",
                 Status = StatusToBcf(record.Status),
                 Title = TitleOf(record.Text),
                 Priority = PriorityToBcf(record.Priority),

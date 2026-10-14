@@ -92,13 +92,23 @@ namespace BimGo.Game
                 BcfFrame frame = BcfFrame.Resolve(Scene.Site, _bcfCoordinates, out bool fellBack);
                 string system = string.IsNullOrWhiteSpace(Scene.Provenance?.RevitVersion) ? "Autodesk Revit" : "Autodesk Revit " + Scene.Provenance.RevitVersion;
                 var topics = new List<BcfTopic>(records.Count);
+                Dictionary<string, BimGo.Clashes.ClashRecord> clashes = ClashesForBcf(records);
                 foreach (CommentRecord record in records)
                 {
                     BcfTopic topic = BcfMapping.ToTopic(record);
                     topic.Viewpoint = BcfMapping.ToViewpoint(ViewForBcf(record), CharacterController.STAND_EYE, frame, _fov);
                     if (record.View?.Section != null) { topic.Viewpoint.ClippingPlanes.AddRange(BcfMapping.ToClippingPlanes(record.View.Section, frame)); }
-                    BcfComponent component = ComponentFor(record, system);
-                    if (component != null) { topic.Viewpoint.Selection.Add(component); }
+                    if (record.ClashId != null && clashes != null && clashes.TryGetValue(record.ClashId, out BimGo.Clashes.ClashRecord clash))
+                    {
+                        // A clash comment (C-B2): both elements of the pair
+                        AddClashComponent(topic.Viewpoint.Selection, clash.A, system);
+                        AddClashComponent(topic.Viewpoint.Selection, clash.B, system);
+                    }
+                    else
+                    {
+                        BcfComponent component = ComponentFor(record, system);
+                        if (component != null) { topic.Viewpoint.Selection.Add(component); }
+                    }
                     topic.Snapshot = ToPng(record.SnapshotData ?? ThumbnailBytes(record));
                     topic.SnapshotExtension = ".png";
                     topics.Add(topic);
@@ -138,6 +148,31 @@ namespace BimGo.Game
             ApproachMarker(record.Local, out Vector3 feet, out float yaw, out float pitch);
             Vector3 world = ToRevit(feet);
             return new CommentView { X = world.X, Y = world.Y, Z = world.Z, Yaw = yaw, Pitch = pitch };
+        }
+
+        /// <summary>
+        /// The clashes that comments being exported were made from (C-B2), by id; null when none of them was. Switches
+        /// clash detection on to read them when it is still dormant.
+        /// </summary>
+        private Dictionary<string, BimGo.Clashes.ClashRecord> ClashesForBcf(List<CommentRecord> records)
+        {
+            if (!records.Any(r => r.ClashId != null)) { return null; }
+            EnsureClashes();
+            var byId = new Dictionary<string, BimGo.Clashes.ClashRecord>(StringComparer.OrdinalIgnoreCase);
+            foreach (BimGo.Clashes.ClashRecord clash in _clashDocument.Clashes) { byId.TryAdd(clash.Id, clash); }
+            return byId;
+        }
+
+        /// <summary>One element of a clash pair as a BCF component (IFC GUID when known, plus the ElementId).</summary>
+        private static void AddClashComponent(List<BcfComponent> selection, BimGo.Clashes.ClashElementRef element, string system)
+        {
+            if (element == null || (string.IsNullOrEmpty(element.IfcGuid) && element.ElementId <= 0)) { return; }
+            selection.Add(new BcfComponent
+            {
+                IfcGuid = string.IsNullOrEmpty(element.IfcGuid) ? null : element.IfcGuid,
+                AuthoringToolId = element.ElementId > 0 ? element.ElementId.ToString(System.Globalization.CultureInfo.InvariantCulture) : null,
+                OriginatingSystem = system
+            });
         }
 
         /// <summary>

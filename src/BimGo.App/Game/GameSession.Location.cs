@@ -137,6 +137,7 @@ namespace BimGo.Game
         /// </summary>
         private void UpdateLocationKeys(InputState input)
         {
+            // A text box: its keys stay outside the action map (input round B2)
             if (input.IsPressed(Vk.VK_ESCAPE))
             {
                 CloseLocationPicker();

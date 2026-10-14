@@ -40,6 +40,13 @@ namespace BimGo.Format
         /// </summary>
         public byte[] Thumbnail { get; set; }
 
+        /// <summary>
+        /// Clash detection's data (Round C: <c>clashes.json</c>), kept as the file's raw JSON bytes so a model opened
+        /// without using clash detection never parses it; <c>Clashes.ClashFiles.Parse</c> / <c>Serialize</c> convert.
+        /// Null when there is none. Optional: older readers ignore it.
+        /// </summary>
+        public byte[] Clashes { get; set; }
+
         /// <summary>When the geometry was extracted (UTC); kept across saves.</summary>
         public DateTime CreatedUtc { get; init; }
 

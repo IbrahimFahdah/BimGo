@@ -59,7 +59,7 @@ namespace BimGo.Game.Guns
 
         public override void OnKeys(InputState input)
         {
-            if (!input.IsPressed('E') || _hovered == null) { return; }
+            if (!input.Pressed(InputAction.CommentEdit) || _hovered == null) { return; }
             Session.BeginCommentEdit(_hovered);
             Session.Sound.Play(SoundId.UiClick);
         }
@@ -89,7 +89,7 @@ namespace BimGo.Game.Guns
             else
             {
                 _clearConfirmUntil = _clock + 2.5f;
-                Session.Toast($"Press X again to delete all {Session.Comments.Comments.Count} comments");
+                Session.Toast($"Press {Hotkeys.Label(InputAction.ClearMarkers)} again to delete all {Session.Comments.Comments.Count} comments");
             }
         }
 
@@ -204,7 +204,7 @@ namespace BimGo.Game.Guns
             }
             else
             {
-                Session.Text.Clear().Append("Hover a marker to read it, E to edit. Saved to ").Append(Session.Comments.FileName);
+                Session.Text.Clear().Append("Hover a marker to read it, ").Append(Hotkeys.Label(InputAction.CommentEdit)).Append(" to edit. Saved to ").Append(Session.Comments.FileName);
                 ui.TextWrapped(f.Body, x, y, width, Session.Text.Span, UiTheme.TEXT_MUTED, maxLines: 2);
             }
         }

@@ -308,6 +308,15 @@ namespace BimGo.Scene
         /// <summary>Imperial lengths as decimal feet (5.33') instead of feet-inches to 1/8" (5' 4").</summary>
         public bool DecimalFeet { get; set; }
 
+        /// <summary>Clash mode (Round C-B): jump straight to a clash instead of a quick flight (per machine).</summary>
+        public bool ClashInstantFly { get; set; }
+
+        /// <summary>Clash mode's list shows a picture on each row (Round C-B2: on by default; PICTURES switches it, per machine).</summary>
+        public bool ClashRowPictures { get; set; } = true;
+
+        /// <summary>The gun bar at the bottom of the screen (polish round: off by default; the gun wheel's bottom slot switches it).</summary>
+        public bool ShowGunBar { get; set; }
+
         /// <summary>The eye-height preset in use (tour round; the pause menu changes it).</summary>
         public EyePreset EyePreset { get; set; } = EyePreset.Standing;
 
@@ -357,6 +366,43 @@ namespace BimGo.Scene
 
         private static float CleanEye(float metres, float fallback) =>
             float.IsFinite(metres) ? MathF.Round(Math.Clamp(metres, MIN_EYE_HEIGHT, MAX_EYE_HEIGHT) * 100f) / 100f : fallback;
+
+        /// <summary>
+        /// Key bindings changed from the defaults (input round B2): action id (<see cref="InputAction"/> name) → its
+        /// bindings ("Ctrl+Shift+S", "Mouse4", "" for an empty slot). Only changes are stored, so new defaults reach
+        /// actions nobody rebound. Per machine; edited in the app's CONTROLS panel.
+        /// </summary>
+        public Dictionary<string, List<string>> KeyBindings { get; set; } = new(StringComparer.Ordinal);
+
+        /// <summary>Most entries kept (guards against a damaged file; there are fewer actions than this).</summary>
+        public const int MAX_KEY_BINDING_ENTRIES = 400;
+
+        /// <summary>Gamepad bindings changed from the defaults (build B): action id → chord ("PadLB+PadUp"; "" = none).</summary>
+        public Dictionary<string, string> PadBindings { get; set; } = new(StringComparer.Ordinal);
+
+        /// <summary>Gamepad look speed (build B; 1 = about 170° a second at full tilt).</summary>
+        public float PadLookSensitivity { get; set; } = 1f;
+
+        /// <summary>Gamepad: invert the look stick's up / down.</summary>
+        public bool PadInvertY { get; set; }
+
+        /// <summary>Gamepad stick dead zone (share of full tilt ignored around the centre).</summary>
+        public float PadDeadZone { get; set; } = DEFAULT_PAD_DEAD_ZONE;
+
+        /// <summary>Gamepad trigger threshold (share of the travel before a trigger counts as pressed).</summary>
+        public float PadTriggerThreshold { get; set; } = DEFAULT_PAD_TRIGGER;
+
+        /// <summary>
+        /// A generic (non-XInput) controller's button map (build B2-C, CONTROLS → MAP BUTTONS): gamepad code name ("PadA")
+        /// → its input ("B1", "POVU", "Y-"). Empty: the Xbox-style guess.
+        /// </summary>
+        public Dictionary<string, string> GenericPadMap { get; set; } = new(StringComparer.Ordinal);
+
+        /// <summary>The name of the generic controller the map was recorded with (for the CONTROLS status line).</summary>
+        public string GenericPadName { get; set; } = string.Empty;
+
+        public const float DEFAULT_PAD_DEAD_ZONE = 0.24f;
+        public const float DEFAULT_PAD_TRIGGER = 0.15f;
 
         /// <summary>Gizmo / Clone: move and rotate in fixed increments (G toggles in the walkthrough).</summary>
         public bool GizmoSnap { get; set; }
@@ -652,6 +698,32 @@ namespace BimGo.Scene
             SnapMoveMm = NearestStep(SNAP_MOVE_STEPS_MM, SnapMoveMm);
             SnapAngleDeg = NearestStep(SNAP_ANGLE_STEPS_DEG, SnapAngleDeg);
 
+            KeyBindings = CleanKeyBindings(KeyBindings);
+            var pad = new Dictionary<string, string>(StringComparer.Ordinal);
+            if (PadBindings != null)
+            {
+                foreach (KeyValuePair<string, string> pair in PadBindings)
+                {
+                    if (pad.Count >= MAX_KEY_BINDING_ENTRIES) { break; }
+                    if (string.IsNullOrWhiteSpace(pair.Key)) { continue; }
+                    pad.TryAdd(pair.Key.Trim(), pair.Value?.Trim() ?? string.Empty);
+                }
+            }
+            PadBindings = pad;
+            var generic = new Dictionary<string, string>(StringComparer.Ordinal);
+            if (GenericPadMap != null)
+            {
+                foreach (KeyValuePair<string, string> pair in GenericPadMap)
+                {
+                    if (generic.Count >= 64) { break; }
+                    if (!string.IsNullOrWhiteSpace(pair.Key) && !string.IsNullOrWhiteSpace(pair.Value)) { generic.TryAdd(pair.Key.Trim(), pair.Value.Trim()); }
+                }
+            }
+            GenericPadMap = generic;
+            GenericPadName = GenericPadName?.Trim() ?? string.Empty;
+            PadLookSensitivity = float.IsFinite(PadLookSensitivity) ? Math.Clamp(PadLookSensitivity, 0.2f, 3f) : 1f;
+            PadDeadZone = float.IsFinite(PadDeadZone) ? Math.Clamp(PadDeadZone, 0.05f, 0.6f) : DEFAULT_PAD_DEAD_ZONE;
+            PadTriggerThreshold = float.IsFinite(PadTriggerThreshold) ? Math.Clamp(PadTriggerThreshold, 0.05f, 0.9f) : DEFAULT_PAD_TRIGGER;
             LastOptionsTab = Math.Clamp(LastOptionsTab, 0, 6);
 
             // Last: the profile is whatever the (clamped) values match, so a hand-edited or older file reads true
@@ -659,6 +731,25 @@ namespace BimGo.Scene
         }
 
         #endregion
+
+        /// <summary>
+        /// Drops empty ids and null lists, trims, keeps the first of duplicate ids and at most
+        /// <see cref="KeyMap.MAX_SLOTS"/> keys per action (the keys themselves are checked when the map reads them).
+        /// </summary>
+        private static Dictionary<string, List<string>> CleanKeyBindings(Dictionary<string, List<string>> bindings)
+        {
+            var clean = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+            if (bindings == null) { return clean; }
+            foreach (KeyValuePair<string, List<string>> pair in bindings)
+            {
+                if (clean.Count >= MAX_KEY_BINDING_ENTRIES) { break; }
+                if (string.IsNullOrWhiteSpace(pair.Key) || pair.Value == null) { continue; }
+                string id = pair.Key.Trim();
+                if (clean.ContainsKey(id)) { continue; }
+                clean[id] = pair.Value.Take(KeyMap.MAX_SLOTS).Select(k => k?.Trim() ?? string.Empty).ToList();
+            }
+            return clean;
+        }
 
         /// <summary>Reads "#RRGGBB" (the # optional) as 0xRRGGBB.</summary>
         /// <returns>False when the text isn't a colour.</returns>

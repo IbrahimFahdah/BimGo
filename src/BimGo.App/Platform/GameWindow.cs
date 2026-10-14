@@ -197,8 +197,18 @@ namespace BimGo.Platform
                 Win32.TranslateMessage(msg);
                 Win32.DispatchMessageW(msg);
             }
+
+            // The gamepad (build B): polled once a frame with the messages, then the cursor it drives in menus
+            Gamepad.Poll(Input, IsActive);
+            Gamepad.DriveCursor(this, Input);
             return Handle != 0 && !CloseRequested;
         }
+
+        /// <summary>
+        /// What the gamepad does with the free cursor (build B): the walkthrough sets it every frame; the start screen
+        /// and progress screens keep <see cref="PadCursorMode.Menu"/>.
+        /// </summary>
+        public PadCursorMode PadCursor { get; set; } = PadCursorMode.Menu;
 
         /// <summary>
         /// Presents the back buffer.
@@ -481,6 +491,22 @@ namespace BimGo.Platform
 
                 case Win32.WM_RBUTTONUP:
                     Input.OnRight(false);
+                    return true;
+
+                case Win32.WM_MBUTTONDOWN:
+                case Win32.WM_MBUTTONUP:
+                    Input.OnButton(Scene.KeyCodes.MIDDLE_MOUSE, msg == Win32.WM_MBUTTONDOWN);
+                    return true;
+
+                case Win32.WM_XBUTTONDOWN:
+                case Win32.WM_XBUTTONUP:
+                    // Mouse 4 / 5 (back / forward side buttons); handled messages return TRUE
+                    int xbutton = Win32.HiWordSigned(wParam) & 0xFFFF;
+                    if (xbutton == Win32.XBUTTON1 || xbutton == Win32.XBUTTON2)
+                    {
+                        Input.OnButton(xbutton == Win32.XBUTTON1 ? Scene.KeyCodes.MOUSE4 : Scene.KeyCodes.MOUSE5, msg == Win32.WM_XBUTTONDOWN);
+                    }
+                    result = 1;
                     return true;
 
                 case Win32.WM_MOUSEWHEEL:

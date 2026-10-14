@@ -6,7 +6,6 @@ using BimGo.Physics;
 using BimGo.Platform;
 using BimGo.Rendering;
 using BimGo.Scene;
-using Vk = BimGo.Native.Win32;
 
 // The class belongs to the Game namespace
 namespace BimGo.Game
@@ -107,7 +106,7 @@ namespace BimGo.Game
             if (!_sunHoursOpen) { return; }
             _sunHoursOpen = false;
             _window.Input.ReleaseAll();
-            if (!_paused && _window.IsActive) { _window.SetCaptured(true); }
+            if (!_paused && _window.IsActive && !_clashModeOn) { _window.SetCaptured(true); } // clash mode keeps its cursor
         }
 
         /// <summary>
@@ -116,14 +115,15 @@ namespace BimGo.Game
         /// </summary>
         private void UpdateSunHoursMode(InputState input)
         {
-            if (input.IsPressed(Vk.VK_ESCAPE) || input.IsPressed('J'))
+            if (input.Pressed(InputAction.Back) || input.Pressed(InputAction.SunStudy))
             {
                 CloseSunHours();
                 return;
             }
-            if (input.IsPressed(Vk.VK_F11)) { _window.ToggleFullscreen(); }
-            if (input.IsPressed(Vk.VK_F12)) { RequestScreenshot(); }
-            if (input.RightDown) { _player.Look(input.MouseDeltaX, input.MouseDeltaY, _sensitivity, _invertY); }
+            if (input.Pressed(InputAction.Fullscreen)) { _window.ToggleFullscreen(); }
+            if (input.Pressed(InputAction.Screenshot)) { RequestScreenshot(); }
+            if (input.Down(InputAction.DragLook)) { _player.Look(input.MouseDeltaX, input.MouseDeltaY, _sensitivity, _invertY); }
+            PadEditorLook(input);
 
             Vector2 m = input.MousePosition;
             bool overPanel = m.X >= _sunPanelRect.X && m.X < _sunPanelRect.X + _sunPanelRect.Z && m.Y >= _sunPanelRect.Y && m.Y < _sunPanelRect.Y + _sunPanelRect.W;
@@ -1013,7 +1013,7 @@ namespace BimGo.Game
                 return;
             }
 
-            bool shift = input.IsDown(Vk.VK_SHIFT);
+            bool shift = input.Down(InputAction.FineAdjust);
             bool locked = _sunStudy.Running;
             SunHoursSettings s = _sunHours;
             int year = DateTime.Today.Year;
@@ -1191,7 +1191,7 @@ namespace BimGo.Game
             cy += S(40);
 
             if (_sunNotice != null) { _ui.TextWrapped(f.Small, ix, cy, iw, _sunNotice, UiTheme.MEASURE_TEXT, maxLines: 2); }
-            if (SmallButton(f, input, ix, y + h - S(44), iw, S(30), "CLOSE (J / ESC) · results stay")) { CloseSunHours(); }
+            if (SmallButton(f, input, ix, y + h - S(44), iw, S(30), HINT_STUDY_CLOSE.Text)) { CloseSunHours(); }
         }
 
         /// <summary>

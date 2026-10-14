@@ -4,7 +4,6 @@ using BimGo.Format;
 using BimGo.Platform;
 using BimGo.Rendering;
 using BimGo.Scene;
-using Vk = BimGo.Native.Win32;
 
 // The class belongs to the Game namespace
 namespace BimGo.Game
@@ -92,7 +91,7 @@ namespace BimGo.Game
             if (records.Count == 0)
             {
                 _bookmarksNotice = Bookmarks.Bookmarks.Count == 0
-                    ? "No bookmarks to tour yet: press B where you want a stop"
+                    ? $"No bookmarks to tour yet: press {Key(InputAction.AddBookmark)} where you want a stop"
                     : "Every bookmark is left out of the tour (TOUR SETTINGS ticks them back in)";
                 Sound.Play(SoundId.Error);
                 return false;
@@ -199,20 +198,20 @@ namespace BimGo.Game
                 return;
             }
 
-            if (input.IsPressed(Vk.VK_ESCAPE))
+            if (input.Pressed(InputAction.Back))
             {
                 StopTour(finished: false);
                 return;
             }
-            if (input.IsPressed(Vk.VK_F11)) { _window.ToggleFullscreen(); }
-            if (input.IsPressed(Vk.VK_SPACE))
+            if (input.Pressed(InputAction.Fullscreen)) { _window.ToggleFullscreen(); }
+            if (input.Pressed(InputAction.TourPause))
             {
                 _tourPaused = !_tourPaused;
                 Sound.Play(SoundId.UiClick);
             }
 
-            bool next = input.IsPressed(Vk.VK_RIGHT) || input.IsPressed(Vk.VK_NEXT) || input.LeftPressed;
-            bool previous = input.IsPressed(Vk.VK_LEFT) || input.IsPressed(Vk.VK_PRIOR) || input.RightPressed;
+            bool next = input.Pressed(InputAction.TourNext);
+            bool previous = !next && input.Pressed(InputAction.TourPrevious);
             if (next || previous)
             {
                 input.ConsumeClicks();
@@ -362,8 +361,8 @@ namespace BimGo.Game
             if (hintAlpha > 0f)
             {
                 string hint = _tourPaused
-                    ? "PAUSED · SPACE plays · ← → stops · ESC ends the tour"
-                    : "SPACE pause · ← → or click for stops · ESC ends the tour";
+                    ? HINT_TOUR_PAUSED.Text
+                    : HINT_TOUR_PLAYING.Text;
                 float hintW = UiBatch.Measure(f.Body, hint) + S(28);
                 float hx = MathF.Round(width * 0.5f - hintW * 0.5f);
                 float hy = height - S(_uiHidden ? 64 : 112);
@@ -513,7 +512,7 @@ namespace BimGo.Game
             y += S(26);
             if (list.Count == 0)
             {
-                _ui.TextWrapped(f.Body, x, y, w, "No bookmarks yet: press B where you want a stop.", UiTheme.TEXT_MUTED, maxLines: 2);
+                _ui.TextWrapped(f.Body, x, y, w, HINT_TOUR_EMPTY.Text, UiTheme.TEXT_MUTED, maxLines: 2);
                 return;
             }
 

@@ -57,6 +57,14 @@ namespace BimGo.Tests
         }
 
         [TestMethod]
+        public void ClashRowPictures_OnByDefaultAndForOlderSettingsFiles()
+        {
+            Assert.IsTrue(new LaunchSettings().ClashRowPictures);
+            Assert.IsTrue(System.Text.Json.JsonSerializer.Deserialize<LaunchSettings>("{\"Msaa\":2}").ClashRowPictures);
+            Assert.IsFalse(System.Text.Json.JsonSerializer.Deserialize<LaunchSettings>("{\"ClashRowPictures\":false}").ClashRowPictures);
+        }
+
+        [TestMethod]
         public void Sanitise_RepairsNullsAndUndefinedEnums()
         {
             var settings = new LaunchSettings

@@ -4,8 +4,8 @@ using BimGo.Game;
 using BimGo.Live;
 using BimGo.Platform;
 using BimGo.Rendering;
+using BimGo.Scene;
 using Gl = BimGo.Native.Gl;
-using Vk = BimGo.Native.Win32;
 
 // The class belongs to the Shell namespace
 namespace BimGo.Shell
@@ -125,7 +125,7 @@ namespace BimGo.Shell
 
                 InputState input = _window.Input;
                 OpenTarget chosen = null;
-                if (input.IsDown(Vk.VK_CONTROL) && input.IsPressed('O')) { chosen = FileTarget(BrowseForFile()); }
+                if (input.Pressed(InputAction.OpenFile)) { chosen = FileTarget(BrowseForFile()); }
 
                 chosen ??= Draw(input);
                 _window.Swap();

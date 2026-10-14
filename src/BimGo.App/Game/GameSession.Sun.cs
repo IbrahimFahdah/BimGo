@@ -151,7 +151,7 @@ namespace BimGo.Game
             if (!_sun.Enabled) { _sunPlaying = false; }
             SunChanged();
             Sound.Play(SoundId.UiClick);
-            Toast(_sun.Enabled ? $"Shadows on · {DescribeSunTime()} (Shift+O opens the sun panel)" : "Shadows off");
+            Toast(_sun.Enabled ? $"Shadows on · {DescribeSunTime()} ({Key(InputAction.SunPanel)} opens the sun panel)" : "Shadows off");
         }
 
         /// <summary>
@@ -302,7 +302,7 @@ namespace BimGo.Game
             _sunPanelOpen = false;
             _activeSlider = -1;
             _window.Input.ReleaseAll();
-            if (!_paused && _window.IsActive) { _window.SetCaptured(true); }
+            if (!_paused && _window.IsActive && !_clashModeOn) { _window.SetCaptured(true); } // clash mode keeps its cursor
         }
 
         /// <summary>
@@ -318,6 +318,7 @@ namespace BimGo.Game
             }
             if (_sunField != 0)
             {
+                // A text box (month / day): its keys stay outside the action map (input round B2)
                 foreach (char c in input.Chars)
                 {
                     if (c >= '0' && c <= '9')
@@ -352,14 +353,25 @@ namespace BimGo.Game
                 return;
             }
 
-            if (input.IsPressed(Vk.VK_ESCAPE) || input.IsPressed('O'))
+            if (input.Pressed(InputAction.Back) || input.Pressed(InputAction.Shadows) || input.Pressed(InputAction.SunPanel))
             {
                 CloseSunPanel();
                 return;
             }
-            if (input.IsPressedOrRepeated(Vk.VK_OEM_4)) { StepSunTime(input.IsDown(Vk.VK_SHIFT) ? -1 : -TIME_STEP); }
-            if (input.IsPressedOrRepeated(Vk.VK_OEM_6)) { StepSunTime(input.IsDown(Vk.VK_SHIFT) ? 1 : TIME_STEP); }
-            if (input.IsPressed(Vk.VK_SPACE)) { TogglePlay(); }
+            StepSunTimeKeys(input);
+            if (input.Pressed(InputAction.SunPlay)) { TogglePlay(); }
+        }
+
+        /// <summary>
+        /// The sun time keys (walking with shadows on, photo mode, the sun panel): −/+ 5 min, and −/+ 1 min (Shift by
+        /// default), on key repeat too.
+        /// </summary>
+        private void StepSunTimeKeys(InputState input)
+        {
+            if (input.PressedOrRepeated(InputAction.SunEarlier)) { StepSunTime(-TIME_STEP); }
+            if (input.PressedOrRepeated(InputAction.SunEarlierFine)) { StepSunTime(-1); }
+            if (input.PressedOrRepeated(InputAction.SunLater)) { StepSunTime(TIME_STEP); }
+            if (input.PressedOrRepeated(InputAction.SunLaterFine)) { StepSunTime(1); }
         }
 
         private void TogglePlay()
@@ -486,7 +498,7 @@ namespace BimGo.Game
 
             // Header
             _ui.Text(f.Small, ix, cy, "SUN, SHADOWS & LIGHTS", UiTheme.SUN_LABEL, S(2f));
-            _ui.TextRight(f.Small, ix + iw, cy, "ESC · O CLOSE", UiTheme.TEXT_FAINT, S(0.6f));
+            _ui.TextRight(f.Small, ix + iw, cy, HINT_SUN_CLOSE.Text, UiTheme.TEXT_FAINT, S(0.6f));
             cy += S(22);
             float changeW = S(78);
             uint placeColour = HasLocationOverride ? UiTheme.SUN : _locationKnown ? UiTheme.TEXT_MUTED : UiTheme.MEASURE_LABEL;
@@ -520,7 +532,7 @@ namespace BimGo.Game
             float value = Slider(f, input, SLIDER_TIME, ix, cy, sliderW, "Time of day", Text.Span, shownMinutes, 0f, 1439f);
             if (_activeSlider == SLIDER_TIME && input.LeftDown)
             {
-                int step = input.IsDown(Vk.VK_SHIFT) ? 1 : TIME_STEP;
+                int step = input.Down(InputAction.FineAdjust) ? 1 : TIME_STEP;
                 int minutes = Math.Clamp((int)MathF.Round(value / step) * step, 0, 1439);
                 if (_sunPlaying) { _sunPlaying = false; }
                 if (minutes != _sun.Time.Minutes)
@@ -585,7 +597,7 @@ namespace BimGo.Game
                 _lightIntensity = _bloomIntensity = 1f;
                 SunChanged();
             }
-            _ui.TextRight(f.Small, ix + iw, cy + S(8), "[ ] TIME · SPACE PLAY", UiTheme.TEXT_FAINT, S(0.4f));
+            _ui.TextRight(f.Small, ix + iw, cy + S(8), HINT_SUN_KEYS.Text, UiTheme.TEXT_FAINT, S(0.4f));
         }
 
         /// <summary>

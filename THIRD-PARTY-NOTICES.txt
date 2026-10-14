@@ -140,6 +140,20 @@ Rendering and geometry
   D. Salesin, R. Cook, 1987).
 - Section caps: the stencil-buffer capping technique for clipping planes.
 
+Clash detection
+- Triangle / triangle intersection: T. Moller, "A Fast Triangle-Triangle
+  Intersection Test" (Journal of Graphics Tools, 1997): the plane-side and
+  interval-overlap test, with BimGo's own depth estimate on top.
+- Closest points on a triangle and between two segments: the standard region
+  and clamping formulas, as described in C. Ericson, "Real-Time Collision
+  Detection" (2005), chapter 5.
+- Broad phase: sweep and prune over bounding boxes (D. Baraff, 1992;
+  J. Cohen, M. Lin, D. Manocha, M. Ponamgi, "I-COLLIDE", 1995), and a median-
+  split bounding-volume tree per large element.
+- Inside tests: the even-odd (ray parity) rule, with the Moller-Trumbore ray
+  test above.
+- Clash records, statuses and reports are BimGo's own JSON format.
+
 Places and time
 - Place list: Natural Earth (public domain), see "Place list" above.
 - Time zone names: the IANA Time Zone Database identifiers (e.g.

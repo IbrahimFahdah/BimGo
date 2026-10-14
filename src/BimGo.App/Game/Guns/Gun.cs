@@ -121,6 +121,12 @@ namespace BimGo.Game.Guns
         /// </summary>
         public virtual void OnReselect() { }
 
+        /// <summary>
+        /// The mouse wheel (polish round): steps the gun's mode by <paramref name="direction"/> (±1).
+        /// </summary>
+        /// <returns>False when the gun has no modes (nothing happens).</returns>
+        public virtual bool CycleMode(int direction) => false;
+
         /// <summary>Called when deselected.</summary>
         public virtual void OnDeselect() { }
 

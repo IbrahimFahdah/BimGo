@@ -12,6 +12,9 @@ namespace BimGo.Game
     /// The comment list (pause menu → COMMENTS): every comment as an issue, with its thumbnail, status, priority,
     /// assignee and reply count, filtered by level and status; GO (back to the view it was made from), OPEN (the detail
     /// view: status, priority, assignee, the reply thread, SET VIEW HERE, EDIT TEXT) and DELETE; BCF export / import.
+    /// C-B3: a TYPE filter (all / issues / clashes: comments made from clashes), a tick on each row (click; Shift+click
+    /// ticks the run from the last one; Ctrl+click on a row ticks it too), SELECT ALL SHOWN, CLEAR and DELETE SELECTED
+    /// (with a confirm; deleted clash comments are unlinked from their clashes).
     /// </summary>
     internal sealed partial class GameSession
     {
@@ -20,6 +23,14 @@ namespace BimGo.Game
         private static readonly string[] STATUS_FILTERS = { "All", "Open", "In progress", "Closed" };
         private static readonly string[] STATUS_OPTIONS = { "Open", "In progress", "Closed" };
         private static readonly string[] PRIORITY_OPTIONS = { "Low", "Normal", "High" };
+        private static readonly string[] TYPE_FILTERS = { "All", "Issues", "Clashes" };
+
+        // C-B3: the type filter (0 all, 1 issues, 2 clashes), the ticked comments and the last one ticked (Shift runs)
+        private int _commentTypeFilter;
+        private readonly HashSet<CommentRecord> _commentSelected = new();
+        private CommentRecord _commentAnchor;
+        private string _commentSelectedLabel;
+        private int _commentSelectedLabelFor = -1;
 
         private bool _commentsOpen;
         private int _commentLevelFilter = -1;
@@ -54,6 +65,8 @@ namespace BimGo.Game
             _commentsOpen = true;
             _commentScroll = 0;
             _commentDeleteArmed = null;
+            _commentSelected.Clear();
+            _commentAnchor = null;
             _commentsNotice = null;
             _commentDetail = null;
 
@@ -68,6 +81,7 @@ namespace BimGo.Game
         private bool CloseComments()
         {
             if (!_commentsOpen) { return false; }
+            if (CloseOverlay()) { return true; } // C-B3: the bulk delete confirm first
             if (_commentDetail != null)
             {
                 _commentDetail = null;
@@ -180,6 +194,7 @@ namespace BimGo.Game
                 return;
             }
 
+            BeginOverlays(input); // C-B3: the bulk delete confirm takes the click while it is open
             float ix = x + S(24), iw = w - S(48);
             float cy = y + S(20);
             _ui.Text(f.Small, ix, cy, "COMMENTS", UiTheme.COMMENT_LABEL, S(2f));
@@ -197,19 +212,41 @@ namespace BimGo.Game
                 if (SmallButton(f, input, ix + S(284), cy, S(32), S(32), "→")) { StepCommentFilter(+1); }
                 filterX = ix + S(336);
             }
-            int status = Segmented(f, input, filterX, cy, MathF.Min(S(420), ix + iw - filterX), STATUS_FILTERS, _commentStatusFilter);
+            float statusW = MathF.Min(S(340), (ix + iw - filterX - S(12)) * 0.58f);
+            int status = Segmented(f, input, filterX, cy, statusW, STATUS_FILTERS, _commentStatusFilter);
             if (status != _commentStatusFilter)
             {
                 _commentStatusFilter = status;
                 _commentScroll = 0;
+                _commentSelected.Clear();
+            }
+            // C-B3: the type (comments made from clashes are their own type)
+            int type = Segmented(f, input, filterX + statusW + S(12), cy, MathF.Min(S(260), ix + iw - filterX - statusW - S(12)), TYPE_FILTERS, _commentTypeFilter);
+            if (type != _commentTypeFilter)
+            {
+                _commentTypeFilter = type;
+                _commentScroll = 0;
+                _commentSelected.Clear();
             }
             cy += S(46);
 
             float buttonsY = y + h - S(24) - S(48);
-            BuildCommentRows(f, input, ix, cy, iw, buttonsY - S(16));
+            float selectY = buttonsY - S(44);
+            BuildCommentRows(f, input, ix, cy, iw, selectY - S(14));
             if (_commentDetail != null) { return; }
 
-            if (_commentsNotice != null) { _ui.TextWrapped(f.Body, ix, buttonsY - S(30), iw, _commentsNotice, UiTheme.MEASURE_TEXT, maxLines: 1); }
+            // C-B3: the ticked comments: select all shown, clear, delete (a confirm)
+            float sw = S(170), sx = ix;
+            if (SmallButton(f, input, sx, selectY, sw, S(30), "SELECT ALL SHOWN")) { SelectAllShownComments(); }
+            sx += sw + S(8);
+            if (_commentSelected.Count > 0)
+            {
+                if (SmallButton(f, input, sx, selectY, S(90), S(30), "CLEAR")) { _commentSelected.Clear(); }
+                sx += S(98);
+                if (SmallButton(f, input, sx, selectY, S(220), S(30), CommentSelectedLabel(), danger: true)) { ConfirmDeleteSelectedComments(); }
+                sx += S(228);
+            }
+            if (_commentsNotice != null) { _ui.TextWrapped(f.Body, sx + S(6), selectY + S(5), ix + iw - sx - S(6), _commentsNotice, UiTheme.MEASURE_TEXT, maxLines: 1); }
             // EXPORT BCF (the comments shown) · IMPORT BCF · BCF coordinates · CLOSE
             float gap = S(10);
             float bw = MathF.Min(S(230), (iw - gap * 3) / 4f);
@@ -221,6 +258,9 @@ namespace BimGo.Game
             if (MenuButton(f, bx, buttonsY, bw, BcfCoordinateLabel, false, false)) { CycleBcfCoordinates(); }
             bx += bw + gap;
             if (MenuButton(f, bx, buttonsY, bw, "CLOSE", false, false)) { CloseComments(); }
+
+            // The open confirm, on top
+            DrawOverlays(f, input, x, y, w, h);
         }
 
         /// <summary>
@@ -252,11 +292,14 @@ namespace BimGo.Game
             _commentScroll = Math.Clamp(_commentScroll, 0, maxScroll);
             if (_commentDeleteArmed != null && _clock > _commentDeleteArmedUntil) { _commentDeleteArmed = null; }
 
-            CommentRecord go = null, open = null, delete = null;
+            CommentRecord go = null, open = null, delete = null, tick = null;
+            bool tickRun = false;
             int index = -1, drawn = 0;
             float buttonW = S(70), gap = S(6);
             float buttonsW = buttonW * 3 + gap * 2;
             float thumbW = S(120), thumbH = S(68);
+            float tickW = S(30); // C-B3: the tick column
+            bool ctrl = input.IsDown(BimGo.Native.Win32.VK_CONTROL), shift = input.IsDown(BimGo.Native.Win32.VK_SHIFT);
             foreach (CommentRecord record in Comments.Comments)
             {
                 if (!MatchesCommentFilter(record)) { continue; }
@@ -268,14 +311,33 @@ namespace BimGo.Game
                 drawn++;
                 if ((drawn & 1) == 1) { _ui.Rect(x - S(8), ry - S(4), w + S(16), rowH - S(4), Rgba.Hex(0xFFFFFF, 0.03f)); }
 
-                // Status bar on the left edge, then the thumbnail
+                // Status bar on the left edge, the tick (C-B3), then the thumbnail
                 uint statusColour = UiTheme.StatusColour(record.Status);
                 _ui.Rect(x - S(8), ry - S(4), S(3), rowH - S(4), statusColour);
-                DrawCommentThumbnail(f, record, x, ry, thumbW, thumbH);
+                bool ticked = _commentSelected.Contains(record);
+                if (ticked) { _ui.Rect(x - S(5), ry - S(4), w + S(13), rowH - S(4), Rgba.Hex(0x22D3EE, 0.10f)); }
+                float box = S(18), boxY = ry + thumbH * 0.5f - box * 0.5f;
+                bool tickHover = Hover(input, x - S(4), ry - S(4), tickW, rowH - S(4));
+                _ui.Rect(x, boxY, box, box, ticked ? UiTheme.ACCENT : tickHover ? Rgba.Hex(0xFFFFFF, 0.12f) : UiTheme.CONTROL);
+                _ui.Outline(x, boxY, box, box, MathF.Max(1f, UiScale), ticked ? UiTheme.ACCENT : UiTheme.CONTROL_BORDER);
+                if (ticked)
+                {
+                    _ui.Line(x + box * 0.22f, boxY + box * 0.52f, x + box * 0.42f, boxY + box * 0.72f, S(2), Rgba.Hex(0x06232A));
+                    _ui.Line(x + box * 0.42f, boxY + box * 0.72f, x + box * 0.8f, boxY + box * 0.28f, S(2), Rgba.Hex(0x06232A));
+                }
+                if (tickHover && input.LeftPressed)
+                {
+                    input.ConsumeClicks();
+                    Sound.Play(SoundId.UiClick);
+                    tick = record;
+                    tickRun = shift;
+                }
+                DrawCommentThumbnail(f, record, x + tickW, ry, thumbW, thumbH);
 
-                float textX = x + thumbW + S(14);
-                float textW = w - buttonsW - thumbW - S(30);
+                float textX = x + tickW + thumbW + S(14);
+                float textW = w - buttonsW - tickW - thumbW - S(30);
                 Text.Clear().Append(record.Header);
+                if (record.ClashId != null) { Text.Append(" · CLASH"); }
                 if (!string.IsNullOrEmpty(record.Level)) { Text.Append(" · ").Append(record.Level); }
                 _ui.TextWrapped(f.Small, textX, ry + S(2), textW, Text.Span, UiTheme.COMMENT_LABEL, maxLines: 1);
                 _ui.TextWrapped(f.Body, textX, ry + S(20), textW, record.Text, record.Status == CommentStatus.CLOSED ? UiTheme.TEXT_MUTED : UiTheme.TEXT, maxLines: 1);
@@ -286,6 +348,15 @@ namespace BimGo.Game
                 if (SmallButton(f, input, bx + buttonW + gap, by, buttonW, S(30), "OPEN")) { open = record; }
                 bool armed = ReferenceEquals(_commentDeleteArmed, record);
                 if (SmallButton(f, input, bx + (buttonW + gap) * 2, by, buttonW, S(30), armed ? "SURE?" : "DELETE", danger: true)) { delete = record; }
+
+                // Ctrl+click (or Shift+click) on the rest of the row ticks it too (C-B3)
+                if ((ctrl || shift) && input.LeftPressed && Hover(input, x - S(8), ry - S(4), w + S(16), rowH - S(4)))
+                {
+                    input.ConsumeClicks();
+                    Sound.Play(SoundId.UiClick);
+                    tick = record;
+                    tickRun = shift;
+                }
             }
 
             if (maxScroll > 0)
@@ -295,7 +366,8 @@ namespace BimGo.Game
             }
 
             // Act after drawing (the list must not change while it is being walked)
-            if (go != null) { GoToComment(go); }
+            if (tick != null) { TickComment(tick, tickRun); }
+            else if (go != null) { GoToComment(go); }
             else if (open != null)
             {
                 _commentDetail = open;
@@ -304,6 +376,98 @@ namespace BimGo.Game
                 _commentsNotice = null;
             }
             else if (delete != null) { DeleteComment(delete); }
+        }
+
+        /// <summary>
+        /// Ticks or unticks a comment (C-B3); <paramref name="run"/>: ticks every shown comment from the last one ticked
+        /// to this one.
+        /// </summary>
+        private void TickComment(CommentRecord record, bool run)
+        {
+            if (run && _commentAnchor != null && Comments.Comments.Contains(_commentAnchor) && MatchesCommentFilter(_commentAnchor))
+            {
+                bool inside = false;
+                foreach (CommentRecord shown in Comments.Comments)
+                {
+                    if (!MatchesCommentFilter(shown)) { continue; }
+                    bool end = ReferenceEquals(shown, record) || ReferenceEquals(shown, _commentAnchor);
+                    if (end || inside) { _commentSelected.Add(shown); }
+                    if (end && !ReferenceEquals(record, _commentAnchor)) { inside = !inside; }
+                }
+            }
+            else if (!_commentSelected.Remove(record))
+            {
+                _commentSelected.Add(record);
+            }
+            _commentAnchor = record;
+        }
+
+        /// <summary>SELECT ALL SHOWN: ticks every comment the filters show (C-B3).</summary>
+        private void SelectAllShownComments()
+        {
+            foreach (CommentRecord record in Comments.Comments)
+            {
+                if (MatchesCommentFilter(record)) { _commentSelected.Add(record); }
+            }
+        }
+
+        /// <summary>"DELETE SELECTED (12)…" (rebuilt when the count changes).</summary>
+        private string CommentSelectedLabel()
+        {
+            if (_commentSelectedLabelFor != _commentSelected.Count || _commentSelectedLabel == null)
+            {
+                _commentSelectedLabelFor = _commentSelected.Count;
+                _commentSelectedLabel = $"DELETE SELECTED ({_commentSelected.Count})…";
+            }
+            return _commentSelectedLabel;
+        }
+
+        /// <summary>DELETE SELECTED…: a confirm, then the ticked comments go (one save; clash comments unlinked).</summary>
+        private void ConfirmDeleteSelectedComments()
+        {
+            _commentSelected.RemoveWhere(r => !Comments.Comments.Contains(r));
+            int count = _commentSelected.Count;
+            if (count == 0) { return; }
+            int clashes = _commentSelected.Count(r => r.ClashId != null);
+            string fromClashes = clashes > 0 ? $" {clashes} of them were made from clashes: those clashes stay (TO COMMENT makes a new comment)." : string.Empty;
+            OpenConfirm(count == 1 ? "DELETE COMMENT?" : "DELETE COMMENTS?",
+                $"Delete {(count == 1 ? "the ticked comment" : $"the {count} ticked comments")} with their pictures and replies?{fromClashes} This can't be undone.",
+                "DELETE", danger: true, offerSkip: false, _ =>
+                {
+                    var doomed = _commentSelected.ToList();
+                    int removed = Comments.RemoveMany(doomed);
+                    UnlinkClashComments(doomed);
+                    _commentSelected.Clear();
+                    _commentAnchor = null;
+                    _commentDeleteArmed = null;
+                    _commentsNotice = Comments.LastError ?? $"{removed} comment{(removed == 1 ? string.Empty : "s")} deleted";
+                    Sound.Play(SoundId.Remove);
+                });
+        }
+
+        /// <summary>
+        /// Deleted comments made from clashes: their clashes forget them (C-B3; only when clash detection is on, else the
+        /// stale link is harmless: a missing comment reads as none).
+        /// </summary>
+        private void UnlinkClashComments(IReadOnlyCollection<CommentRecord> deleted)
+        {
+            if (_clashDocument == null || deleted.Count == 0) { return; }
+            var ids = new HashSet<string>(deleted.Where(r => r.ClashId != null).Select(r => r.Id), StringComparer.OrdinalIgnoreCase);
+            if (ids.Count == 0) { return; }
+            bool changed = false;
+            foreach (BimGo.Clashes.ClashRecord clash in _clashDocument.Clashes)
+            {
+                if (clash.CommentId != null && ids.Contains(clash.CommentId))
+                {
+                    clash.CommentId = null;
+                    changed = true;
+                }
+            }
+            if (changed)
+            {
+                ClashesChanged();
+                _clashRowsDirty = true;
+            }
         }
 
         /// <summary>
@@ -504,6 +668,8 @@ namespace BimGo.Game
             if (ReferenceEquals(_commentDeleteArmed, record) && _clock <= _commentDeleteArmedUntil)
             {
                 Comments.Remove(record);
+                _commentSelected.Remove(record);
+                UnlinkClashComments(new[] { record });
                 _commentDeleteArmed = null;
                 _commentsNotice = Comments.LastError ?? "Comment deleted";
                 Sound.Play(SoundId.Remove);
@@ -547,11 +713,14 @@ namespace BimGo.Game
             int current = _commentLevelFilter + 1;
             _commentLevelFilter = ((current + direction) % count + count) % count - 1;
             _commentScroll = 0;
+            _commentSelected.Clear();
             _commentDeleteArmed = null;
         }
 
         private bool MatchesCommentFilter(CommentRecord record)
         {
+            if (_commentTypeFilter == 1 && record.ClashId != null) { return false; } // C-B3: issues only
+            if (_commentTypeFilter == 2 && record.ClashId == null) { return false; } // clashes only
             if (_commentStatusFilter > 0 && record.Status != CommentStatus.ALL[_commentStatusFilter - 1]) { return false; }
             if (_commentLevelFilter < 0 || _commentLevelFilter >= Scene.Levels.Length) { return true; }
             return string.Equals(record.Level, Scene.Levels[_commentLevelFilter].Name, StringComparison.Ordinal);

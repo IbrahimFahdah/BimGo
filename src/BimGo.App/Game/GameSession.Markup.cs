@@ -3,10 +3,10 @@ using BimGo.Audio;
 using BimGo.Format;
 using BimGo.Platform;
 using BimGo.Rendering;
+using BimGo.Scene;
 using Gl = BimGo.Native.Gl;
 using SD = System.Drawing;
 using SD2 = System.Drawing.Drawing2D;
-using Vk = BimGo.Native.Win32;
 
 // The class belongs to the Game namespace
 namespace BimGo.Game
@@ -308,8 +308,9 @@ namespace BimGo.Game
         /// </summary>
         private void UpdateMarkupKeys(InputState input)
         {
-            if (input.IsPressed(Vk.VK_F11)) { _window.ToggleFullscreen(); }
+            if (input.Pressed(InputAction.Fullscreen)) { _window.ToggleFullscreen(); }
 
+            // Typing a text shape: the text box has the keys (Enter / Backspace / Esc as typed characters)
             if (_markupTyping)
             {
                 foreach (char c in input.Chars)
@@ -333,26 +334,18 @@ namespace BimGo.Game
                 return;
             }
 
-            if (input.IsDown(Vk.VK_CONTROL))
+            if (input.Pressed(InputAction.MarkupUndo)) { UndoMarkup(); return; }
+            if (input.Pressed(InputAction.MarkupRedo)) { RedoMarkup(); return; }
+            if (input.Pressed(InputAction.Back)) { CloseMarkup(save: false); return; }
+            if (input.Pressed(InputAction.MarkupSave)) { CloseMarkup(save: true); return; }
+            if (input.Pressed(InputAction.MarkupArrow)) { _markupTool = MarkupTool.Arrow; }
+            if (input.Pressed(InputAction.MarkupBox)) { _markupTool = MarkupTool.Box; }
+            if (input.Pressed(InputAction.MarkupEllipse)) { _markupTool = MarkupTool.Ellipse; }
+            if (input.Pressed(InputAction.MarkupPen)) { _markupTool = MarkupTool.Pen; }
+            if (input.Pressed(InputAction.MarkupText)) { _markupTool = MarkupTool.Text; }
+            for (int i = 0; i < MARKUP_COLOURS.Length && i < 5; i++)
             {
-                if (input.IsPressed('Z'))
-                {
-                    if (input.IsDown(Vk.VK_SHIFT)) { RedoMarkup(); } else { UndoMarkup(); }
-                }
-                else if (input.IsPressed('Y')) { RedoMarkup(); }
-                return;
-            }
-
-            if (input.IsPressed(Vk.VK_ESCAPE)) { CloseMarkup(save: false); return; }
-            if (input.IsPressed(Vk.VK_RETURN)) { CloseMarkup(save: true); return; }
-            if (input.IsPressed('A')) { _markupTool = MarkupTool.Arrow; }
-            if (input.IsPressed('R')) { _markupTool = MarkupTool.Box; }
-            if (input.IsPressed('E')) { _markupTool = MarkupTool.Ellipse; }
-            if (input.IsPressed('P')) { _markupTool = MarkupTool.Pen; }
-            if (input.IsPressed('T')) { _markupTool = MarkupTool.Text; }
-            for (int i = 0; i < MARKUP_COLOURS.Length; i++)
-            {
-                if (input.IsPressed('1' + i)) { _markupColour = i; }
+                if (input.Pressed(InputCatalog.MarkupColourAction(i))) { _markupColour = i; }
             }
         }
 
@@ -520,7 +513,7 @@ namespace BimGo.Game
             // Hints
             string hint = _markupTyping
                 ? "Type the text · Enter places it · Esc cancels it"
-                : "Drag on the picture to draw · A arrow · R box · E ellipse · P pen · T text · 1–5 colour · Ctrl+Z / Ctrl+Y · Enter save · Esc cancel";
+                : HINT_MARKUP.Text;
             _ui.TextCentred(f.Body, width * 0.5f, height - S(36), hint, UiTheme.TEXT_MUTED);
         }
 

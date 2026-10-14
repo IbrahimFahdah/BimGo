@@ -2,6 +2,8 @@ using System.Numerics;
 using BimGo.Audio;
 using BimGo.Physics;
 using BimGo.Rendering;
+using BimGo.Platform;
+using BimGo.Scene;
 
 // The class belongs to the Guns namespace
 namespace BimGo.Game.Guns
@@ -230,7 +232,7 @@ namespace BimGo.Game.Guns
             }
             y += S(24);
 
-            TextBuffer history = Session.Text.Clear().Append("Back steps: ").Append(_historyCount).Append(" · X clears");
+            TextBuffer history = Session.Text.Clear().Append("Back steps: ").Append(_historyCount).Append(" · ").Append(Hotkeys.Label(InputAction.ClearMarkers)).Append(" clears");
             ui.Text(f.Body, x, y, history.Span, UiTheme.TEXT_MUTED);
         }
 

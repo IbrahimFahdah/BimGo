@@ -595,6 +595,7 @@ uniform int uWhitecard;
 uniform int uPlan;
 uniform vec2 uClipZ;
 uniform vec4 uOverride;
+uniform float uGhost;
 out vec4 oColor;
 void main()
 {
@@ -713,6 +714,12 @@ void main()
     {
         result.rgb = mix(result.rgb, uOverride.rgb, uOverride.a);
         result.a = max(result.a, 0.85);
+    }
+    // Clash view (Round C-B): everything but the pair as faint grey glass, keeping its shading
+    if (uGhost > 0.0)
+    {
+        float grey = dot(result.rgb, vec3(0.299, 0.587, 0.114));
+        result = vec4(mix(vec3(grey), vec3(0.62), 0.6), uGhost);
     }
     oColor = result;
 }";

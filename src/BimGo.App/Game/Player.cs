@@ -1,7 +1,7 @@
 using System.Numerics;
 using BimGo.Physics;
 using BimGo.Platform;
-using Vk = BimGo.Native.Win32;
+using BimGo.Scene;
 
 // The class belongs to the Game namespace
 namespace BimGo.Game
@@ -74,6 +74,23 @@ namespace BimGo.Game
         /// <summary>
         /// Applies mouse look.
         /// </summary>
+        /// <summary>
+        /// Gamepad sprint (build B): the stick click toggles it while moving; the session clears it when the stick
+        /// comes back to the centre.
+        /// </summary>
+        public bool PadSprint { get; set; }
+
+        /// <summary>
+        /// Turns by angles (radians; gamepad look): positive yaw turns left, positive pitch looks up.
+        /// </summary>
+        public void Turn(float yaw, float pitch)
+        {
+            Yaw += yaw;
+            Pitch = Math.Clamp(Pitch + pitch, -1.55f, 1.55f);
+            if (Yaw > MathF.PI) { Yaw -= MathF.Tau; }
+            if (Yaw < -MathF.PI) { Yaw += MathF.Tau; }
+        }
+
         public void Look(float dx, float dy, float sensitivity, bool invertY)
         {
             Yaw -= dx * LOOK_SCALE * sensitivity;
@@ -131,7 +148,12 @@ namespace BimGo.Game
         /// <summary>
         /// One physics tick from the current keyboard state.
         /// </summary>
-        public void FixedUpdate(float dt, InputState input, bool inputEnabled)
+        /// <param name="dt">Tick length.</param>
+        /// <param name="input">This frame's input.</param>
+        /// <param name="inputEnabled">False freezes the player's own keys.</param>
+        /// <param name="upAction">What flies up (clash mode uses its own keys so the gamepad's A still clicks).</param>
+        /// <param name="downAction">What flies down / crouches.</param>
+        public void FixedUpdate(float dt, InputState input, bool inputEnabled, InputAction upAction = InputAction.Jump, InputAction downAction = InputAction.Crouch)
         {
             _previousFeet = _currentFeet;
 
@@ -139,13 +161,12 @@ namespace BimGo.Game
             bool run = false, up = false, down = false;
             if (inputEnabled)
             {
-                if (input.IsDown('W') || input.IsDown(Vk.VK_UP)) { forward += 1f; }
-                if (input.IsDown('S') || input.IsDown(Vk.VK_DOWN)) { forward -= 1f; }
-                if (input.IsDown('D') || input.IsDown(Vk.VK_RIGHT)) { strafe += 1f; }
-                if (input.IsDown('A') || input.IsDown(Vk.VK_LEFT)) { strafe -= 1f; }
-                run = input.IsDown(Vk.VK_SHIFT);
-                up = input.IsDown(Vk.VK_SPACE);
-                down = input.IsDown(Vk.VK_CONTROL);
+                // Keys read 0 or 1 (as before); a gamepad stick anything in between (build B)
+                forward = input.Axis(InputAction.MoveForward) - input.Axis(InputAction.MoveBack);
+                strafe = input.Axis(InputAction.MoveRight) - input.Axis(InputAction.MoveLeft);
+                run = input.Down(InputAction.Run) || PadSprint;
+                up = input.Down(upAction);
+                down = input.Down(downAction);
             }
 
             float cy = MathF.Cos(Yaw), sy = MathF.Sin(Yaw);

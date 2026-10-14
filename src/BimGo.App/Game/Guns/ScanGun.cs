@@ -2,6 +2,7 @@ using System.Numerics;
 using BimGo.Audio;
 using BimGo.Rendering;
 using BimGo.Scene;
+using BimGo.Platform;
 
 // The class belongs to the Guns namespace
 namespace BimGo.Game.Guns
@@ -53,24 +54,24 @@ namespace BimGo.Game.Guns
             if (_locked >= 0 && !Session.IsTargetPresent(_locked, _lockedDynamic)) { _locked = -1; _lockedDynamic = 0; }
         }
 
+        /// <summary>The panel's "R  REVIT" tag (rebuilt when the key changes).</summary>
+        private static readonly KeyHint HINT_REVIT = new(() => Hotkeys.Label(InputAction.ScanSelectInRevit).ToUpperInvariant() + "  REVIT");
+
         public override void OnKeys(Platform.InputState input)
         {
-            if (input.IsPressed('R') && Target >= 0)
+            if (input.Pressed(InputAction.ScanSelectInRevit) && Target >= 0)
             {
                 Session.ShowInRevit(Target, _locked >= 0 ? _lockedDynamic : _hoverDynamic);
             }
 
             // I: hide the target in the walkthrough only; Shift+I: isolate its category (again: restore)
-            if (input.IsPressed('I'))
+            if (input.Pressed(InputAction.ScanIsolate)) { Session.ToggleIsolateCategory(Target); }
+            else if (input.Pressed(InputAction.ScanHide) && Target >= 0)
             {
-                if (input.IsDown(Native.Win32.VK_SHIFT)) { Session.ToggleIsolateCategory(Target); }
-                else if (Target >= 0)
-                {
-                    int target = Target;
-                    int dynamicId = _locked >= 0 ? _lockedDynamic : _hoverDynamic;
-                    if (_locked >= 0 && dynamicId == 0) { _locked = -1; }
-                    Session.HideElement(target, dynamicId);
-                }
+                int target = Target;
+                int dynamicId = _locked >= 0 ? _lockedDynamic : _hoverDynamic;
+                if (_locked >= 0 && dynamicId == 0) { _locked = -1; }
+                Session.HideElement(target, dynamicId);
             }
         }
 
@@ -122,7 +123,7 @@ namespace BimGo.Game.Guns
             int target = _locked >= 0 ? _locked : _hover;
 
             ui.Text(f.Small, x, y, _locked >= 0 ? "SCAN · TARGET" : "SCAN · HOVER", UiTheme.SCAN_LABEL, S(1.1f));
-            if (Session.IsLiveConnected) { ui.TextRight(f.Small, x + width, y, "R  REVIT", UiTheme.TEXT_MUTED, S(1f)); }
+            if (Session.IsLiveConnected) { ui.TextRight(f.Small, x + width, y, HINT_REVIT.Text, UiTheme.TEXT_MUTED, S(1f)); }
             y += S(20);
 
             if (target < 0)

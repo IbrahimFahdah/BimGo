@@ -56,6 +56,9 @@ namespace BimGo.Format
         /// <summary>The visibility sidecar suffix used beside a Revit model (next to the comments sidecar).</summary>
         public const string VISIBILITY_SIDECAR_SUFFIX = ".bimgo-visibility.json";
 
+        /// <summary>Suffix of the clash sidecar beside a Revit model when sharing is on (Round C; <c>clashes.json</c> in the model folder).</summary>
+        public const string CLASH_SIDECAR_SUFFIX = ".bimgo-clashes.json";
+
         /// <summary>The pre-BimGo sidecar suffix (migrated on first use).</summary>
         public const string LEGACY_SIDECAR_SUFFIX = ".rvtgo.json";
 
@@ -81,6 +84,9 @@ namespace BimGo.Format
 
         /// <summary>Optional picture of the view at the last save (review tools round: the start screen's card).</summary>
         internal const string ENTRY_THUMBNAIL = "thumbnail.jpg";
+
+        /// <summary>Optional (Round C): clash sets, tests, results and history (<c>Clashes.ClashDocument</c>).</summary>
+        internal const string ENTRY_CLASHES = "clashes.json";
 
         /// <summary>Largest thumbnail read back (bytes).</summary>
         internal const long MAX_THUMBNAIL_BYTES = 2L * 1024 * 1024;

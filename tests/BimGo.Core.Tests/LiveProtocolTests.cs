@@ -117,6 +117,46 @@ namespace BimGo.Tests
         }
 
         [TestMethod]
+        public void ShowClash_TravelsInsideSelect_OlderAddInsStillSelect()
+        {
+            // Round C-B2: SHOW IN REVIT rides on select.elements (additive fields); an older add-in reads ElementIds only
+            using var pair = new ChannelPair();
+            var view = new ClashViewRequest
+            {
+                SectionBox = false,
+                MinX = 1, MinY = 2, MinZ = 3, MaxX = 4, MaxY = 5, MaxZ = 6,
+                EyeX = 0, EyeY = -2.5, EyeZ = 4, DirectionX = 0, DirectionY = 0.94, DirectionZ = -0.34
+            };
+            pair.App.Send(MessageTypes.SELECT, new SelectPayload
+            {
+                ElementIds = new long[] { 11, 900 },
+                Hosts = new long[] { 11 },
+                Linked = new[] { new LinkedElementRef { LinkInstanceId = 900, ElementId = 22 } },
+                ClashView = view
+            });
+            SelectPayload received = Receive(pair.Revit)[0].Read<SelectPayload>();
+            CollectionAssert.AreEqual(new long[] { 11, 900 }, received.ElementIds);
+            CollectionAssert.AreEqual(new long[] { 11 }, received.Hosts);
+            Assert.AreEqual(22L, received.Linked[0].ElementId);
+            Assert.AreEqual(ClashViewRequest.DEFAULT_NAME, received.ClashView.Name);
+            Assert.IsFalse(received.ClashView.SectionBox);
+            Assert.AreEqual(6.0, received.ClashView.MaxZ);
+            Assert.IsTrue(received.ClashView.HasRegion);
+            Assert.IsTrue(received.ClashView.HasDirection);
+
+            // A plain selection carries none of it
+            pair.App.Send(MessageTypes.SELECT, new SelectPayload { ElementIds = new long[] { 1 } });
+            SelectPayload plain = Receive(pair.Revit)[0].Read<SelectPayload>();
+            Assert.IsNull(plain.ClashView);
+            Assert.IsNull(plain.Hosts);
+
+            // Flat or straight-down requests don't turn the view; an empty box isn't a region
+            Assert.IsFalse(new ClashViewRequest { DirectionZ = -1 }.HasDirection);
+            Assert.IsFalse(new ClashViewRequest().HasDirection);
+            Assert.IsFalse(new ClashViewRequest { MinX = 1, MaxX = 1, MaxY = 1, MaxZ = 1 }.HasRegion);
+        }
+
+        [TestMethod]
         public void Messages_ArriveInSendOrder()
         {
             using var pair = new ChannelPair();

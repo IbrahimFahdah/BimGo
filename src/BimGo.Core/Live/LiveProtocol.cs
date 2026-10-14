@@ -411,6 +411,67 @@ namespace BimGo.Live
         /// then holds their link instances, which is what an older add-in selects instead.
         /// </summary>
         public LinkedElementRef[] Linked { get; set; }
+
+        /// <summary>
+        /// Optional (Round C-B2, additive): host elements that join a <see cref="Linked"/> selection (a host + linked
+        /// clash pair is selected together). <see cref="ElementIds"/> holds them too, for older add-ins.
+        /// </summary>
+        public long[] Hosts { get; set; }
+
+        /// <summary>
+        /// Optional (Round C-B2, additive): SHOW IN REVIT. A 3D view to make (or reuse), give the clash's section box,
+        /// turn and make active before the selection. Older add-ins ignore it and just select.
+        /// </summary>
+        public ClashViewRequest ClashView { get; set; }
+    }
+
+    /// <summary>
+    /// SHOW IN REVIT (Round C-B2): the clash 3D view's name, section box and camera. Coordinates are Revit internal
+    /// coordinates in metres (like comments and clashes); the add-in converts to feet.
+    /// </summary>
+    public sealed class ClashViewRequest
+    {
+        /// <summary>The view BimGo makes once and reuses.</summary>
+        public const string DEFAULT_NAME = "BimGo clash";
+
+        /// <summary>The 3D view's name (empty = <see cref="DEFAULT_NAME"/>).</summary>
+        public string Name { get; set; } = DEFAULT_NAME;
+
+        /// <summary>True to switch the view's section box on (the box is set either way).</summary>
+        public bool SectionBox { get; set; } = true;
+
+        /// <summary>The clash region (section box) corners.</summary>
+        public double MinX { get; set; }
+        public double MinY { get; set; }
+        public double MinZ { get; set; }
+        public double MaxX { get; set; }
+        public double MaxY { get; set; }
+        public double MaxZ { get; set; }
+
+        /// <summary>Where BimGo looks from (the clash framing's eye).</summary>
+        public double EyeX { get; set; }
+        public double EyeY { get; set; }
+        public double EyeZ { get; set; }
+
+        /// <summary>The look direction (unit vector; zero = keep the view's own orientation).</summary>
+        public double DirectionX { get; set; }
+        public double DirectionY { get; set; }
+        public double DirectionZ { get; set; }
+
+        /// <summary>True when the region has a size in every direction.</summary>
+        [JsonIgnore]
+        public bool HasRegion => MaxX > MinX && MaxY > MinY && MaxZ > MinZ;
+
+        /// <summary>True when the direction can turn the view (finite, not zero, not straight up or down).</summary>
+        [JsonIgnore]
+        public bool HasDirection
+        {
+            get
+            {
+                double length = Math.Sqrt(DirectionX * DirectionX + DirectionY * DirectionY + DirectionZ * DirectionZ);
+                return double.IsFinite(length) && length > 1e-6 && Math.Abs(DirectionZ / length) < 0.999;
+            }
+        }
     }
 
     /// <summary>

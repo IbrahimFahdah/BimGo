@@ -97,7 +97,7 @@ namespace BimGo.Format
 
     /// <summary>
     /// A set of bookmarks (bookmarks.json inside a .bimgo, or the sidecar beside a Revit model). Order is the user's
-    /// order: Ctrl+1..9 jump to the first nine.
+    /// order: Shift+1..9 (by default) jump to the first nine.
     /// </summary>
     public sealed class BookmarkDocument
     {

@@ -36,6 +36,11 @@ namespace BimGo.Game
         // Comment issue text boxes (opened from the comment panel): a reply, or the assignee
         private CommentRecord _editReplyFor, _editAssigneeFor;
 
+        // Any other text (Round C-B: clash test / set names, rule values, clash assignee and notes): what Enter does.
+        // Cleared whenever the box closes, so the other text boxes never see it.
+        private Action<string> _editCustom;
+        private string _editCustomTitle;
+
         /// <summary>Longest assignee name.</summary>
         private const int MAX_ASSIGNEE = 60;
 
@@ -174,6 +179,31 @@ namespace BimGo.Game
         }
 
         /// <summary>
+        /// Opens the text box for any short text (Round C-B): <paramref name="commit"/> gets the trimmed text on Enter;
+        /// Esc leaves everything as it was.
+        /// </summary>
+        /// <param name="title">The box's heading ("TEST NAME").</param>
+        /// <param name="initial">The text to start from.</param>
+        /// <param name="max">Longest text.</param>
+        /// <param name="commit">What Enter does with the text.</param>
+        /// <param name="level">The second part of the heading (default: an em dash).</param>
+        private void BeginTextEdit(string title, string initial, int max, Action<string> commit, string level = null)
+        {
+            _editing = true;
+            _editSunStudy = false;
+            _editRecord = null;
+            _editBookmark = null;
+            _editReplyFor = _editAssigneeFor = null;
+            _editCustom = commit;
+            _editCustomTitle = title;
+            _editMax = Math.Clamp(max, 1, _editChars.Length);
+            _editLevel = level;
+            _editLength = Math.Min(initial?.Length ?? 0, _editMax);
+            initial?.CopyTo(0, _editChars, 0, _editLength);
+            _window.Input.ReleaseAll();
+        }
+
+        /// <summary>
         /// Consumes typed characters: Enter saves, Esc cancels, Backspace deletes.
         /// </summary>
         private void UpdateCommentEditor(InputState input)
@@ -192,6 +222,12 @@ namespace BimGo.Game
 
                     case (char)27:
                         _editing = false;
+                        if (_editCustom != null)
+                        {
+                            _editCustom = null;
+                            Toast("Not changed");
+                            return;
+                        }
                         if (_editBookmark != null)
                         {
                             if (_editBookmarkIsNew && _thumbnailFor == _editBookmark) { _thumbnailFor = null; }
@@ -226,6 +262,13 @@ namespace BimGo.Game
         {
             _editing = false;
             string text = new string(_editChars, 0, _editLength).Trim();
+            if (_editCustom != null)
+            {
+                Action<string> commit = _editCustom;
+                _editCustom = null;
+                commit(text);
+                return;
+            }
             CommentRecord editing = _editRecord;
             BookmarkRecord bookmark = _editBookmark;
             CommentRecord replyTo = _editReplyFor, assignFor = _editAssigneeFor;
@@ -309,11 +352,12 @@ namespace BimGo.Game
             float h = S(96) + textHeight;
             float x = _window.Width * 0.5f - w * 0.5f, y = _window.Height * 0.5f + S(48);
 
-            bool naming = _editBookmark != null;
+            bool naming = _editBookmark != null || _editCustom != null;
             uint frame = _editSunStudy ? UiTheme.SUN : naming ? UiTheme.BOOKMARK : UiTheme.COMMENT;
             uint label = _editSunStudy ? UiTheme.SUN_LABEL : naming ? UiTheme.BOOKMARK_LABEL : UiTheme.COMMENT_LABEL;
             _ui.Panel(x, y, w, h, UiTheme.PANEL_STRONG, frame);
-            Text.Clear().Append(_editSunStudy ? "SUN STUDY NAME (same name replaces) · "
+            Text.Clear().Append(_editCustom != null ? _editCustomTitle + " · "
+                : _editSunStudy ? "SUN STUDY NAME (same name replaces) · "
                 : naming ? "BOOKMARK NAME · "
                 : _editReplyFor != null ? "REPLY · "
                 : _editAssigneeFor != null ? "ASSIGN TO (empty = unassigned) · "
@@ -393,10 +437,20 @@ namespace BimGo.Game
                 BuildRoomsPanel();
                 return;
             }
+            if (IsClashesPanelOpen)
+            {
+                BuildClashesPanel();
+                return;
+            }
 
             if (IsGeometryPanelOpen)
             {
                 BuildGeometryPanel();
+                return;
+            }
+            if (IsControlsPanelOpen)
+            {
+                BuildControlsPanel();
                 return;
             }
 
@@ -433,8 +487,8 @@ namespace BimGo.Game
             bool texturesButton = HasTexturePanel;
             bool libraryButton = HasLibrary;
             bool roomsButton = Scene.Rooms.Length > 0;
-            int sessionButtons = 3 + (IsFileMode ? 3 : 1);
-            int reviewButtons = 4 + (hiddenThings > 0 ? 1 : 0) + (texturesButton ? 1 : 0) + (libraryButton ? 1 : 0) + (roomsButton ? 1 : 0);
+            int sessionButtons = 4 + (IsFileMode ? 3 : 1); // + CONTROLS (input round B2)
+            int reviewButtons = 5 + (hiddenThings > 0 ? 1 : 0) + (texturesButton ? 1 : 0) + (libraryButton ? 1 : 0) + (roomsButton ? 1 : 0);
             int rows = twoStacks ? Math.Max(sessionButtons, reviewButtons) : sessionButtons + reviewButtons;
             float step = Math.Clamp((endY - S(12) - buttonsTop) / rows, S(40), S(54));
             float buttonH = step - S(6);
@@ -466,6 +520,10 @@ namespace BimGo.Game
                 y += step;
             }
 
+            // Keys, mouse buttons and the wheel: every binding, rebindable (input round B2)
+            if (MenuButton(f, x, y, stackW, "CONTROLS", false, false, height: buttonH)) { OpenControls(); return; }
+            y += step;
+
             // Stack 2: review tools and panels (beside the first, or below it)
             if (twoStacks)
             {
@@ -487,6 +545,8 @@ namespace BimGo.Game
                 y += step;
             }
             if (MenuButton(f, x, y, stackW, "SUN HOURS STUDY", false, false, height: buttonH)) { OpenSunHours(); return; }
+            y += step;
+            if (MenuButton(f, x, y, stackW, ClashesMenuLabel(), false, false, height: buttonH)) { OpenClashes(); return; }
             y += step;
             if (libraryButton)
             {

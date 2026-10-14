@@ -3,12 +3,13 @@ using BimGo.Audio;
 using BimGo.Format;
 using BimGo.Platform;
 using BimGo.Rendering;
+using BimGo.Scene;
 
 // The class belongs to the Game namespace
 namespace BimGo.Game
 {
     /// <summary>
-    /// Viewpoint bookmarks: B saves where the player stands and looks (then asks for a name), Ctrl+1..9 jump to the
+    /// Viewpoint bookmarks: B saves where the player stands and looks (then asks for a name), Shift+1..9 (by default) jump to the
     /// first nine, and the pause menu's BOOKMARKS list has Go, Rename, Set here (update), reorder and Delete.
     /// Bookmarks are saved inside a .bimgo (bookmarks.json) or, in a live Revit session, beside the model.
     /// </summary>
@@ -69,7 +70,7 @@ namespace BimGo.Game
         }
 
         /// <summary>
-        /// Ctrl+1..9: jumps to the bookmark at that place in the list.
+        /// Shift+1..9 (by default): jumps to the bookmark at that place in the list.
         /// </summary>
         /// <param name="index">0-based list index.</param>
         private void GoToBookmarkAt(int index)
@@ -77,7 +78,7 @@ namespace BimGo.Game
             if (index < 0 || index >= Bookmarks.Bookmarks.Count)
             {
                 Toast(Bookmarks.Bookmarks.Count == 0
-                    ? "No bookmarks yet: press B to save this viewpoint"
+                    ? $"No bookmarks yet: press {Key(InputAction.AddBookmark)} to save this viewpoint"
                     : $"Only {Bookmarks.Bookmarks.Count} bookmark{(Bookmarks.Bookmarks.Count == 1 ? string.Empty : "s")} (Esc → BOOKMARKS lists them)");
                 return;
             }
@@ -90,7 +91,7 @@ namespace BimGo.Game
         private string BookmarkHotkey(BookmarkRecord record)
         {
             int index = Bookmarks.Bookmarks.IndexOf(record);
-            return index >= 0 && index < 9 ? $"Ctrl+{index + 1}" : "Esc → BOOKMARKS";
+            return index >= 0 && index < 9 && !Hotkeys.Map.IsUnbound(InputCatalog.BookmarkAction(index)) ? Key(InputCatalog.BookmarkAction(index)) : "Esc → BOOKMARKS";
         }
 
         /// <summary>
@@ -191,8 +192,8 @@ namespace BimGo.Game
             _ui.TextRight(f.Small, ix + iw, cy, Text.Span, UiTheme.TEXT_MUTED, S(0.6f));
             cy += S(30);
             _ui.Text(f.Body, ix, cy, _tourSettingsOpen
-                ? "The tour plays the ticked bookmarks in list order · SPACE pause · ← → stops · ESC ends it"
-                : "B saves where you stand · CTRL+1–9 jump to the first nine · PLAY TOUR plays them all", UiTheme.TEXT_MUTED);
+                ? HINT_BOOKMARKS_TOUR.Text
+                : HINT_BOOKMARKS_KEYS.Text, UiTheme.TEXT_MUTED);
             cy += S(34);
 
             float buttonsY = y + h - S(24) - S(48);
@@ -236,7 +237,7 @@ namespace BimGo.Game
 
             if (list.Count == 0)
             {
-                _ui.TextWrapped(f.Body, x, y + S(8), w, "No bookmarks yet. Resume, stand where you want and press B (or use ADD THIS VIEW below).", UiTheme.TEXT_MUTED, maxLines: 2);
+                _ui.TextWrapped(f.Body, x, y + S(8), w, HINT_BOOKMARKS_EMPTY.Text, UiTheme.TEXT_MUTED, maxLines: 2);
                 return;
             }
 

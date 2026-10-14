@@ -81,6 +81,12 @@ namespace BimGo.Format
         /// </summary>
         public string SnapshotOriginal { get; set; }
 
+        /// <summary>
+        /// The clash this comment was made from (Round C-B2: TO COMMENT), or null. BCF exports such a comment as a
+        /// "Clash" topic with both elements as components.
+        /// </summary>
+        public string ClashId { get; set; }
+
         /// <summary>The unmarked picture's JPEG bytes in memory, or null.</summary>
         [JsonIgnore]
         public byte[] SnapshotOriginalData { get; set; }
@@ -120,6 +126,7 @@ namespace BimGo.Format
             View?.Section?.Clean();
             if (string.IsNullOrWhiteSpace(Thumbnail)) { Thumbnail = null; }
             if (string.IsNullOrWhiteSpace(ElementUniqueId)) { ElementUniqueId = null; }
+            if (string.IsNullOrWhiteSpace(ClashId)) { ClashId = null; }
             if (!CommentSnapshots.IsValidName(Snapshot)) { Snapshot = null; }
             if (!CommentSnapshots.IsValidName(SnapshotOriginal) || Snapshot == null) { SnapshotOriginal = null; }
             return this;

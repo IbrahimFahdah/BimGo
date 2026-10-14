@@ -2,6 +2,8 @@ using System.Numerics;
 using BimGo.Audio;
 using BimGo.Physics;
 using BimGo.Rendering;
+using BimGo.Platform;
+using BimGo.Scene;
 
 // The class belongs to the Guns namespace
 namespace BimGo.Game.Guns
@@ -240,6 +242,9 @@ namespace BimGo.Game.Guns
             }
         }
 
+        /// <summary>The linked portals' hint (rebuilt when the key changes).</summary>
+        private static readonly KeyHint HINT_LINKED = new(() => $"Connected. Walk into one to come out of the other. {Hotkeys.Label(InputAction.ClearMarkers)} clears both.");
+
         public override void DrawPanel(UiBatch ui, float x, float y, float width)
         {
             FontAtlas f = ui.Atlas;
@@ -264,7 +269,7 @@ namespace BimGo.Game.Guns
 
             bool linked = _portals[0].Active && _portals[1].Active;
             ui.TextWrapped(f.Body, x, y + S(2), width,
-                linked ? "Connected. Walk into one to come out of the other. X clears both." : "Place both portals to connect them.",
+                linked ? HINT_LINKED.Text : "Place both portals to connect them.",
                 UiTheme.TEXT_MUTED, maxLines: 2);
         }
 

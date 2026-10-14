@@ -8,7 +8,6 @@ using BimGo.Physics;
 using BimGo.Platform;
 using BimGo.Rendering;
 using BimGo.Scene;
-using Vk = BimGo.Native.Win32;
 
 // The class belongs to the Game namespace
 namespace BimGo.Game
@@ -118,7 +117,7 @@ namespace BimGo.Game
         private bool _invertY;
         private bool _vsync;
         private bool _showFps;
-        private bool _showHelp = true;
+        private bool _showHelp; // off by default: a small "F1: Help" note in the corner
         private bool _showMap = true;
         private float _groundZ;
         private float _groundDefault;
@@ -227,8 +226,13 @@ namespace BimGo.Game
             _sectionNotice = null;
             InitialiseLights(settings);
             ReadEyeSettings(settings);
+            _clashInstant = settings.ClashInstantFly;
+            _clashThumbsOn = settings.ClashRowPictures;
+            _showGunBar = settings.ShowGunBar;
             ReadVideoSettings(settings);
             UnitFormat.Read(settings);
+            Hotkeys.Read(settings);
+            Gamepad.Read(settings);
         }
 
         #region Setup
@@ -313,7 +317,7 @@ namespace BimGo.Game
                 new ScanGun(this), new MeasureGun(this), _portalGun, _commentGun,
                 new TeleportGun(this), new HammerGun(this), new GizmoGun(this), new CloneGun(this), _placeGun
             };
-            for (int i = 0; i < _guns.Length; i++) { _guns[i].Key = (i + 1).ToString(); }
+            RefreshGunKeys();
 
             // Re-apply the file's edits (demolitions, moves, clones) on top of the untouched geometry
             int replayFailures = ReplayJournal();
@@ -331,7 +335,7 @@ namespace BimGo.Game
             {
                 string edits = _journal.Count > 0 ? $" · {_journal.Count} edit{(_journal.Count == 1 ? string.Empty : "s")}" : string.Empty;
                 string links = Scene.Links.Length > 0 ? $" · {Scene.Links.Length} linked model{(Scene.Links.Length == 1 ? string.Empty : "s")}" : string.Empty;
-                string start = _startedAtSavedHome ? " Starting at your saved home (Shift+H sets it)." : string.Empty;
+                string start = _startedAtSavedHome ? $" Starting at your saved home ({Key(InputAction.SetHome)} sets it)." : string.Empty;
                 Toast($"{Scene.Elements.Length:N0} elements · {Scene.TriangleCount:N0} triangles{links}{edits}.{start} Click to look around.", _startedAtSavedHome ? 4f : 2.6f);
             }
         }
@@ -575,6 +579,10 @@ namespace BimGo.Game
                 _target.Ensure(_window.Width, _window.Height, _msaa);
             }
 
+            // The gamepad's cursor (menus, editors) follows what is open (build B; used from the next frame's poll)
+            _window.PadCursor = CurrentPadCursorMode();
+            if (_paused || _tourActive) { CloseGunWheel(pick: false); }
+
             // A bookmark tour has the keys (it carries on when the window loses focus)
             if (_tourActive)
             {
@@ -586,6 +594,20 @@ namespace BimGo.Game
             {
                 _window.FocusLost = false;
                 if (!_paused && !IsEditingComment) { SetPaused(true); }
+            }
+
+            // CONTROLS → MAP BUTTONS has the generic controller (and Esc); the mouse still clicks SKIP / CANCEL
+            if (IsMappingPad)
+            {
+                UpdatePadMapping(input);
+                return;
+            }
+
+            // CONTROLS is waiting for a key: it has every key (Esc cancels)
+            if (IsCapturingKey)
+            {
+                UpdateKeyCapture(input);
+                return;
             }
 
             // A comment picture just taken opens the markup editor; while it is open it has the keys
@@ -626,8 +648,15 @@ namespace BimGo.Game
             // The sun panel has the cursor: the player stands still and its keys take over
             if (_sunPanelOpen && !_paused)
             {
-                if (input.IsPressed(Vk.VK_F11)) { _window.ToggleFullscreen(); }
+                if (input.Pressed(InputAction.Fullscreen)) { _window.ToggleFullscreen(); }
                 UpdateSunPanelKeys(input);
+                return;
+            }
+
+            // Clash mode (Round C-B): the docked clash list has the cursor; the move keys fly, RMB-drag looks
+            if (_clashModeOn && !_paused)
+            {
+                UpdateClashMode(input, dt);
                 return;
             }
 
@@ -637,8 +666,9 @@ namespace BimGo.Game
             bool captured = !_paused && current.CapturesInput;
 
             // Global keys. While the UI is hidden, Esc only brings it back (even when a gun has the keys); the next
-            // Esc cancels the gun or pauses as usual.
-            bool escape = input.IsPressed(Vk.VK_ESCAPE);
+            // Esc cancels the gun or pauses as usual. (Every key below is an action: Hotkeys / CONTROLS rebind them;
+            // InputCatalog.Situations mirrors what is live where, so keep the two in step.)
+            bool escape = input.Pressed(InputAction.Back);
             if (escape && _uiHidden)
             {
                 ShowUi();
@@ -646,51 +676,55 @@ namespace BimGo.Game
             }
             if (escape)
             {
-                if (captured) { current.OnCancel(); }
-                else if (_paused && (ClosePush() || CloseComments() || CloseBookmarks() || CloseTextures() || CloseLibrary() || CloseRooms() || CloseGeometry())) { /* back to the pause menu */ }
+                if (_wheelOpen) { CloseGunWheel(pick: false); }
+                else if (captured) { current.OnCancel(); }
+                else if (_paused && (ClosePush() || CloseComments() || CloseBookmarks() || CloseTextures() || CloseLibrary() || CloseRooms() || CloseClashes() || CloseGeometry() || CloseControls())) { /* back to the pause menu */ }
                 else { SetPaused(!_paused); }
             }
-            if (input.IsPressed(Vk.VK_F1)) { _showHelp = !_showHelp; }
-            if (input.IsPressed(Vk.VK_F5) && !captured) { RefreshFromRevit(); }
-            if (input.IsPressed(Vk.VK_F11)) { _window.ToggleFullscreen(); }
-            if (input.IsPressed(Vk.VK_F12)) { RequestScreenshot(); }
+            if (input.Pressed(InputAction.Help)) { _showHelp = !_showHelp; }
+            if (input.Pressed(InputAction.Refresh) && !captured) { RefreshFromRevit(); }
+            if (input.Pressed(InputAction.Fullscreen)) { _window.ToggleFullscreen(); }
+            if (input.Pressed(InputAction.Screenshot)) { RequestScreenshot(); }
 
-            // Document shortcuts (Ctrl+S save, Ctrl+Shift+S save as, Ctrl+Z undo, Ctrl+Y / Ctrl+Shift+Z redo in files)
-            if (input.IsDown(Vk.VK_CONTROL) && !captured)
+            // Document shortcuts (save, save as, undo / redo in files; also while paused) and, walking, find room, clear
+            // the cuts and go to bookmarks 1–9
+            if (!captured)
             {
-                if (input.IsPressed('S'))
+                if (input.Pressed(InputAction.Save))
                 {
-                    Save(saveAs: input.IsDown(Vk.VK_SHIFT) || !IsFileMode);
+                    Save(saveAs: !IsFileMode);
                     return;
                 }
-                if (input.IsPressed('Z'))
+                if (input.Pressed(InputAction.SaveAs))
                 {
-                    if (input.IsDown(Vk.VK_SHIFT)) { Redo(); }
-                    else { Undo(); }
+                    Save(saveAs: true);
                     return;
                 }
-                if (input.IsPressed('Y'))
+                if (input.Pressed(InputAction.Undo))
+                {
+                    Undo();
+                    return;
+                }
+                if (input.Pressed(InputAction.Redo))
                 {
                     Redo();
                     return;
                 }
-                if (input.IsPressed('F') && !_paused)
-                {
-                    OpenRooms();
-                    return;
-                }
-                if (input.IsPressed('P') && !_paused)
-                {
-                    ClearSection();
-                    return;
-                }
-
-                // Ctrl+1..9: jump to a bookmark (instead of selecting a gun)
                 if (!_paused)
                 {
+                    if (input.Pressed(InputAction.FindRoom))
+                    {
+                        OpenRooms();
+                        return;
+                    }
+                    if (input.Pressed(InputAction.SectionClear))
+                    {
+                        ClearSection();
+                        return;
+                    }
                     for (int i = 0; i < 9; i++)
                     {
-                        if (input.IsPressed('1' + i))
+                        if (input.Pressed(InputCatalog.BookmarkAction(i)))
                         {
                             GoToBookmarkAt(i);
                             return;
@@ -700,83 +734,98 @@ namespace BimGo.Game
             }
             if (_paused) { return; }
 
-            // Hide-UI mode (works while a gun has the movement keys too: none of them uses U)
-            if (input.IsPressed('U')) { ToggleUiHidden(); }
+            // Hide-UI mode (works while a gun has the movement keys too)
+            if (input.Pressed(InputAction.HideUi)) { ToggleUiHidden(); }
 
             UpdateRoom();
 
             if (captured)
             {
                 current.OnKeys(input);
-                if (input.IsPressed(Vk.VK_TAB)) { _showMap = !_showMap; }
+                if (input.Pressed(InputAction.Minimap)) { _showMap = !_showMap; }
                 UpdateMouseLook(input);
                 return;
             }
 
-            if (input.IsPressed(Vk.VK_TAB)) { _showMap = !_showMap; }
-            if (input.IsPressed('V'))
+            // The gun wheel (MMB / the gamepad's stick click): while it is open the walking keys wait
+            UpdatePadSprint(input);
+            if (UpdateGunWheel(input)) { return; }
+
+            if (input.Pressed(InputAction.Minimap)) { _showMap = !_showMap; }
+            if (input.Pressed(InputAction.Fly))
             {
                 _player.ToggleFly();
                 Toast(_player.Flying ? "Fly mode (no-clip)" : "Walk mode");
             }
-            if (input.IsPressed('H'))
-            {
-                if (input.IsDown(Vk.VK_SHIFT)) { SetHomeHere(); }
-                else
-                {
-                    _player.GoHome();
-                }
-            }
-            if (input.IsPressed(Vk.VK_PRIOR)) { TeleportLevel(+1); }
-            if (input.IsPressed(Vk.VK_NEXT)) { TeleportLevel(-1); }
-            if (input.IsPressed('X')) { _guns[_activeGun].ClearMarkers(); }
-            if (input.IsPressed('B'))
+            if (input.Pressed(InputAction.GoHome)) { _player.GoHome(); }
+            if (input.Pressed(InputAction.SetHome)) { SetHomeHere(); }
+            if (input.Pressed(InputAction.LevelUp)) { TeleportLevel(+1); }
+            if (input.Pressed(InputAction.LevelDown)) { TeleportLevel(-1); }
+            if (input.Pressed(InputAction.ClearMarkers) && !_unarmed) { _guns[_activeGun].ClearMarkers(); }
+            if (input.Pressed(InputAction.AddBookmark))
             {
                 AddBookmarkHere();
                 return;
             }
-            if (input.IsPressed('L')) { CycleCoordinateReadout(); }
-            if (input.IsPressed('J'))
+            if (input.Pressed(InputAction.Coordinates)) { CycleCoordinateReadout(); }
+            if (input.Pressed(InputAction.SunStudy))
             {
                 OpenSunHours();
                 return;
             }
-            if (input.IsPressed('M'))
+            if (input.Pressed(InputAction.ClashMode))
+            {
+                // Clash detection stays dormant until this (or pause menu → CLASHES) switches it on
+                ToggleClashMode();
+                return;
+            }
+            if (input.Pressed(InputAction.PhotoMode))
             {
                 OpenPhotoMode();
                 return;
             }
-            if (input.IsPressed('P'))
+            if (input.Pressed(InputAction.SectionBox))
             {
-                if (input.IsDown(Vk.VK_SHIFT)) { QuickSectionPlane(); }
-                else { OpenSectionEditor(); }
+                OpenSectionEditor();
                 return;
             }
-            if (input.IsPressed('K')) { CycleLightMode(); }
-            if (input.IsPressed('O'))
+            if (input.Pressed(InputAction.SectionPlane))
             {
-                if (input.IsDown(Vk.VK_SHIFT)) { OpenSunPanel(); }
-                else { ToggleShadows(); }
+                QuickSectionPlane();
                 return;
             }
-            if (ShadowsOn && input.IsPressedOrRepeated(Vk.VK_OEM_4)) { StepSunTime(input.IsDown(Vk.VK_SHIFT) ? -1 : -TIME_STEP); }
-            if (ShadowsOn && input.IsPressedOrRepeated(Vk.VK_OEM_6)) { StepSunTime(input.IsDown(Vk.VK_SHIFT) ? 1 : TIME_STEP); }
-            if (input.IsPressed(Vk.VK_SPACE) && !_player.Flying) { _player.QueueJump(); }
+            if (input.Pressed(InputAction.Lights)) { CycleLightMode(); }
+            if (input.Pressed(InputAction.Shadows))
+            {
+                ToggleShadows();
+                return;
+            }
+            if (input.Pressed(InputAction.SunPanel))
+            {
+                OpenSunPanel();
+                return;
+            }
+            if (ShadowsOn) { StepSunTimeKeys(input); }
+            if (input.Pressed(InputAction.Jump) && !_player.Flying) { _player.QueueJump(); }
 
             for (int i = 0; i < _guns.Length; i++)
             {
-                if (!input.IsPressed('1' + i)) { continue; }
-                // The selected gun's own key again: the gun may cycle a mode (Measure: distance → area → angle → clearance)
-                if (i == _activeGun) { _guns[i].OnReselect(); }
+                if (!input.Pressed(InputCatalog.GunAction(i))) { continue; }
+                // The selected gun's own key again: the gun may cycle a mode (Measure: distance → area → angle → clearance);
+                // unarmed, any gun key arms that gun
+                if (i == _activeGun && !_unarmed) { _guns[i].OnReselect(); }
                 else { SelectGun(i); }
             }
-            if (input.Wheel != 0)
-            {
-                int next = ((_activeGun - Math.Sign(input.Wheel)) % _guns.Length + _guns.Length) % _guns.Length;
-                SelectGun(next);
-            }
+            if (input.Pressed(InputAction.Unarmed)) { SetUnarmed(!_unarmed); }
+            else if (_unarmed) { /* no gun: the wheel and gun keys below wait */ }
+            else if (input.Pressed(InputAction.PreviousGun)) { SelectGun((_activeGun - 1 + _guns.Length) % _guns.Length); }
+            else if (input.Pressed(InputAction.NextGun)) { SelectGun((_activeGun + 1) % _guns.Length); }
+            // The mouse wheel (polish round): the selected gun's modes (Measure: distance / area / angle / clearance;
+            // Demolish: demolish / delete); guns without modes ignore it
+            else if (input.Pressed(InputAction.GunModeNext)) { _guns[_activeGun].CycleMode(+1); }
+            else if (input.Pressed(InputAction.GunModePrevious)) { _guns[_activeGun].CycleMode(-1); }
 
-            _guns[_activeGun].OnKeys(input);
+            if (!_unarmed) { _guns[_activeGun].OnKeys(input); }
             UpdateMouseLook(input);
         }
 
@@ -801,6 +850,7 @@ namespace BimGo.Game
             {
                 _player.Look(input.MouseDeltaX, input.MouseDeltaY, _sensitivity, _invertY);
             }
+            if (_window.IsActive) { PadLook(input); } // the look actions (gamepad stick; any key bound to them)
         }
 
         /// <summary>
@@ -810,8 +860,16 @@ namespace BimGo.Game
         {
             if (_tourActive) { return; } // the tour places the player itself
             _player.Controller.GroundZ = _groundZ;
-            bool frozen = IsEditingComment || _sunPanelOpen || _sunHoursOpen || !_window.IsActive || _guns[_activeGun].CapturesInput;
-            _player.FixedUpdate(dt, _window.Input, inputEnabled: !frozen);
+            bool frozen = IsEditingComment || _sunPanelOpen || _sunHoursOpen || !_window.IsActive || _guns[_activeGun].CapturesInput || ClashFreezesPlayer;
+            if (_clashModeOn)
+            {
+                // Clash mode flies with its own up / down keys (the gamepad's A and B click and go back there)
+                _player.FixedUpdate(dt, _window.Input, inputEnabled: !frozen, InputAction.ClashFlyUp, InputAction.ClashFlyDown);
+            }
+            else
+            {
+                _player.FixedUpdate(dt, _window.Input, inputEnabled: !frozen);
+            }
             _portalGun.CheckTeleport(_player, dt);
         }
 
@@ -859,14 +917,22 @@ namespace BimGo.Game
             foreach (Gun gun in _guns) { gun.Tick(dt); }
             if (_paused || IsEditingComment || _tourActive) { return; }
 
+            if (_unarmed) { return; } // no gun out: nothing aims or fires
             Gun active = _guns[_activeGun];
             active.Update(dt, _aim);
 
             InputState input = _window.Input;
+            if (_wheelOpen) { return; }
             if (_window.IsCaptured)
             {
-                if (input.LeftPressed) { active.OnPrimary(_aim); }
-                if (input.RightPressed) { active.OnSecondary(_aim); }
+                if (input.Pressed(InputAction.GunPrimary)) { active.OnPrimary(_aim); }
+                if (input.Pressed(InputAction.GunSecondary)) { active.OnSecondary(_aim); }
+            }
+            else if (input.PadConnected && CurrentPadCursorMode() == PadCursorMode.Off)
+            {
+                // Walking with the gamepad while the mouse isn't captured: only the triggers fire (a mouse click captures first)
+                if (input.PressedByPad(InputAction.GunPrimary)) { active.OnPrimary(_aim); }
+                if (input.PressedByPad(InputAction.GunSecondary)) { active.OnSecondary(_aim); }
             }
         }
 
@@ -887,22 +953,54 @@ namespace BimGo.Game
 
         #region Actions
 
+        /// <summary>True when no gun is out (polish round: 0 or the gun wheel): no gun panel, hints, aiming or firing.</summary>
+        private bool _unarmed;
+
+        /// <summary>0 / the gun wheel's UNARMED slot: puts the gun away, or takes the last one out again.</summary>
+        private void SetUnarmed(bool unarmed)
+        {
+            if (unarmed == _unarmed || _guns[_activeGun].CapturesInput) { return; }
+            if (unarmed) { _guns[_activeGun].OnDeselect(); }
+            _unarmed = unarmed;
+            Sound.Play(SoundId.UiClick);
+            Toast(unarmed ? $"Unarmed ({Hotkeys.Label(InputAction.Unarmed)} or a gun key takes a gun out)" : _guns[_activeGun].Name, 1.6f);
+        }
+
         private void SelectGun(int index)
         {
-            if (index == _activeGun || _guns[_activeGun].CapturesInput) { return; }
+            if (_guns[_activeGun].CapturesInput) { return; }
+            if (_unarmed)
+            {
+                // Unarmed: picking a gun takes it out (the same gun included)
+                _unarmed = false;
+                if (index == _activeGun)
+                {
+                    Sound.Play(SoundId.UiClick);
+                    return;
+                }
+            }
+            if (index == _activeGun) { return; }
             _guns[_activeGun].OnDeselect();
             _activeGun = index;
             Sound.Play(SoundId.UiClick);
         }
 
         /// <summary>
-        /// Pauses (releases the mouse) or resumes.
+        /// True while a mode that works with a free cursor is on (sun panel, sun hours study, photo mode, the section box
+        /// editor, clash mode): resuming must not capture the mouse then.
+        /// </summary>
+        private bool CursorModeOpen => _sunPanelOpen || _sunHoursOpen || _photoOpen || _sectionOpen || _clashModeOn;
+
+        /// <summary>
+        /// Pauses (releases the mouse) or resumes (captures it again, unless a free-cursor mode is on: C-B1 fixes, the
+        /// cursor vanished coming back to clash mode).
         /// </summary>
         private void SetPaused(bool paused)
         {
             _paused = paused;
+            CloseOverlay(); // a dropdown / confirm belongs to the screen it was opened on
             if (paused) { ShowUi(); } // e.g. focus lost while hidden: come back to a normal HUD
-            _window.SetCaptured(!paused && _window.IsActive && !_sunPanelOpen && !_sunHoursOpen);
+            _window.SetCaptured(!paused && _window.IsActive && !CursorModeOpen);
             _window.Input.ReleaseAll();
         }
 
@@ -919,8 +1017,8 @@ namespace BimGo.Game
             Sound.Play(SoundId.Commit);
             Flash(UiTheme.BOOKMARK, 0.2f);
             if (Bookmarks?.LastError != null) { Toast(Bookmarks.LastError, 4f, important: true); }
-            else if (IsFileMode) { Toast("Home set here: H returns here, and this file opens here once saved (Ctrl+S)", 3.5f); }
-            else { Toast("Home set here: H returns here, and this model opens here next time", 3.5f); }
+            else if (IsFileMode) { Toast($"Home set here: {Key(InputAction.GoHome)} returns here, and this file opens here once saved ({Key(InputAction.Save)})", 3.5f); }
+            else { Toast($"Home set here: {Key(InputAction.GoHome)} returns here, and this model opens here next time", 3.5f); }
         }
 
         /// <summary>
@@ -1001,7 +1099,7 @@ namespace BimGo.Game
             }
             _uiHidden = true;
             Sound.Play(SoundId.UiClick);
-            Toast("UI hidden · Esc or U to show it", 1.8f, important: true);
+            Toast($"UI hidden · Esc or {Key(InputAction.HideUi)} to show it", 1.8f, important: true);
         }
 
         /// <summary>
@@ -1108,6 +1206,9 @@ namespace BimGo.Game
             settings.BloomIntensity = _bloomIntensity;
             settings.FieldOfView = _fov;
             settings.MouseSensitivity = _sensitivity;
+            settings.ClashInstantFly = _clashInstant;
+            settings.ClashRowPictures = _clashThumbsOn;
+            settings.ShowGunBar = _showGunBar;
             settings.InvertY = _invertY;
             settings.VSync = _vsync;
             settings.ShowFps = _showFps;
@@ -1121,6 +1222,8 @@ namespace BimGo.Game
             WriteEyeSettings(settings);
             WriteVideoSettings(settings);
             UnitFormat.Write(settings);
+            Hotkeys.Write(settings);
+            Gamepad.Write(settings);
             settings.Save();
         }
 
@@ -1131,6 +1234,7 @@ namespace BimGo.Game
         {
             try { AbortVideo(); } catch (Exception ex) { Utilities.Log_Utils.Write($"Video stop failed: {ex.Message}"); }
             if (_tourActive) { try { StopTour(finished: false); } catch (Exception ex) { Utilities.Log_Utils.Write($"Tour stop failed: {ex.Message}"); } }
+            _window.PadCursor = PadCursorMode.Menu; // the start screen
             try { SaveSettings(); } catch { /* logged inside */ }
             try { FlushSunSidecar(); } catch { /* logged inside */ }
             try { FlushVisibilitySidecar(); } catch { /* logged inside */ }

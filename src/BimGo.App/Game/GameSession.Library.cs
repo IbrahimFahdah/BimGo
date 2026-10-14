@@ -79,7 +79,7 @@ namespace BimGo.Game
             {
                 Sound.Play(SoundId.Error);
                 Toast(_live != null
-                    ? "No family library in this snapshot: tick Options → Load → “Family library” in Revit, then press Go (or F5)"
+                    ? $"No family library in this snapshot: tick Options → Load → “Family library” in Revit, then press Go (or {Key(InputAction.Refresh)})"
                     : "This file has no family library (it comes with live Revit sessions: Options → Load → “Family library”)", 5f);
                 return;
             }
@@ -216,7 +216,7 @@ namespace BimGo.Game
             // Footer: notice and CLOSE
             float buttonsY = y + h - S(24) - S(44);
             if (_libraryNotice != null) { _ui.TextWrapped(f.Body, ix, buttonsY - S(28), iw, _libraryNotice, UiTheme.MEASURE_TEXT, maxLines: 1); }
-            _ui.Text(f.Small, ix + S(176), buttonsY + S(14), "Pick a card: it appears in front of you on the Place gun (9) · RMB commits · Esc discards", UiTheme.TEXT_MUTED);
+            _ui.Text(f.Small, ix + S(176), buttonsY + S(14), HINT_LIBRARY_PICK.Text, UiTheme.TEXT_MUTED);
             if (MenuButton(f, ix, buttonsY, S(160), "CLOSE", false, false, height: S(44))) { CloseLibrary(); return; }
 
             // Families on the left, cards on the right

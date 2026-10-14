@@ -4,7 +4,6 @@ using BimGo.Platform;
 using BimGo.Rendering;
 using BimGo.Scene;
 using Gl = BimGo.Native.Gl;
-using Vk = BimGo.Native.Win32;
 
 // The class belongs to the Game namespace
 namespace BimGo.Game
@@ -134,12 +133,12 @@ namespace BimGo.Game
         /// </summary>
         private void UpdateVideo(InputState input)
         {
-            if (input.IsPressed(Vk.VK_ESCAPE))
+            if (input.Pressed(InputAction.Back))
             {
                 CancelVideo();
                 return;
             }
-            if (input.IsPressed(Vk.VK_F11)) { _window.ToggleFullscreen(); }
+            if (input.Pressed(InputAction.Fullscreen)) { _window.ToggleFullscreen(); }
             if (_video.Error != null && !_videoFinishing)
             {
                 _video.Cancel();

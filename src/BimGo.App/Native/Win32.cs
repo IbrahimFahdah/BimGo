@@ -29,6 +29,9 @@ namespace BimGo.Native
         public const uint WM_SYSKEYDOWN = 0x0104, WM_SYSKEYUP = 0x0105, WM_SYSCOMMAND = 0x0112;
         public const uint WM_MOUSEMOVE = 0x0200, WM_LBUTTONDOWN = 0x0201, WM_LBUTTONUP = 0x0202;
         public const uint WM_RBUTTONDOWN = 0x0204, WM_RBUTTONUP = 0x0205, WM_MOUSEWHEEL = 0x020A;
+        public const uint WM_MBUTTONDOWN = 0x0207, WM_MBUTTONUP = 0x0208, WM_XBUTTONDOWN = 0x020B, WM_XBUTTONUP = 0x020C;
+        public const int XBUTTON1 = 0x0001, XBUTTON2 = 0x0002;
+        public const uint MAPVK_VK_TO_CHAR = 2;
         public const uint WM_DPICHANGED = 0x02E0, WM_APP = 0x8000;
 
         public const int SC_KEYMENU = 0xF100;
@@ -204,6 +207,10 @@ namespace BimGo.Native
         [DllImport("user32.dll")]
         public static extern bool SetForegroundWindow(nint hwnd);
 
+        /// <summary>Translates a virtual key (MAPVK_VK_TO_CHAR: the unshifted character on the current layout; 0 if none).</summary>
+        [DllImport("user32.dll", EntryPoint = "MapVirtualKeyW")]
+        public static extern uint MapVirtualKeyW(uint code, uint mapType);
+
         /// <summary>The do-nothing message.</summary>
         public const uint WM_NULL = 0x0000;
 
@@ -242,6 +249,18 @@ namespace BimGo.Native
 
         [DllImport("user32.dll")]
         public static extern bool ClientToScreen(nint hwnd, ref POINT point);
+
+        /// <summary>Screen → client coordinates (gamepad cursor).</summary>
+        [DllImport("user32.dll")]
+        public static extern bool ScreenToClient(nint hwnd, ref POINT point);
+
+        /// <summary>The cursor's screen position (gamepad cursor).</summary>
+        [DllImport("user32.dll")]
+        public static extern bool GetCursorPos(out POINT point);
+
+        /// <summary>Moves the cursor (screen coordinates; gamepad cursor).</summary>
+        [DllImport("user32.dll")]
+        public static extern bool SetCursorPos(int x, int y);
 
         [DllImport("user32.dll")]
         public static extern bool ClipCursor(RECT* rect);

@@ -307,7 +307,7 @@ namespace BimGo.Game
             for (int c = 0; c < _categoryVisible.Length; c++) { _categoryVisible[c] = c == category && Scene.CategoryLoaded[c]; }
             RefreshMasks();
             VisibilityChanged();
-            Toast($"Showing only {CategoryCatalog.All[category].Label} (Shift+I again shows the rest)");
+            Toast($"Showing only {CategoryCatalog.All[category].Label} ({Key(InputAction.ScanIsolate)} again shows the rest)");
         }
 
         /// <summary>

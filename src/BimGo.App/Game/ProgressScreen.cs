@@ -1,8 +1,8 @@
 using BimGo.Platform;
 using BimGo.Rendering;
+using BimGo.Scene;
 using BimGo.Utilities;
 using Gl = BimGo.Native.Gl;
-using Vk = BimGo.Native.Win32;
 
 // The class belongs to the Game namespace
 namespace BimGo.Game
@@ -38,7 +38,7 @@ namespace BimGo.Game
                 // Closing the window, Esc or the button cancels; the loop keeps drawing until the work has stopped
                 if (!window.PumpMessages() && cancelOnClose) { progress.Cancel(); }
                 InputState input = window.Input;
-                if (input.IsPressed(Vk.VK_ESCAPE)) { progress.Cancel(); }
+                if (input.Pressed(InputAction.Back)) { progress.Cancel(); }
 
                 if (window.Width > 0 && window.Height > 0 && !window.IsMinimised)
                 {

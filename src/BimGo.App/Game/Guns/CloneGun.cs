@@ -85,7 +85,7 @@ namespace BimGo.Game.Guns
             DynamicInstance clone = Session.CreateClone(aim.Hit.Element, source);
             _gizmo.Begin(clone);
             Session.Sound.Play(SoundId.Grab);
-            Session.Toast("Clone made: move it, then RMB commits it (Esc discards it)");
+            Session.Toast($"Clone made: move it, then {Platform.Hotkeys.Label(InputAction.GunSecondary)} commits it (Esc discards it)");
         }
 
         public override void OnSecondary(in AimInfo aim)

@@ -294,7 +294,7 @@ namespace BimGo.Game
             if (MenuButton(f, ix, buttonsY, S(260), "FIND IN FOLDER…", false, false)) { StartScan(); }
             if (MenuButton(f, ix + S(276), buttonsY, S(160), "CLOSE", false, false)) { _texturesOpen = false; }
             _ui.TextRight(f.Small, ix + iw, buttonsY + S(18), IsFileMode
-                ? (IsDirty ? "Save (Ctrl+S) embeds the picked images in the file" : "Picked images are embedded in the file when you save")
+                ? (IsDirty ? HINT_TEXTURES_SAVE.Text : "Picked images are embedded in the file when you save")
                 : "Choices are remembered for this model: the next Go in Revit uses them", UiTheme.TEXT_FAINT, S(0.4f));
         }
 

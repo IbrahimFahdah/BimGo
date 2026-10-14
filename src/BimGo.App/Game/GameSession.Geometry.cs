@@ -41,7 +41,7 @@ namespace BimGo.Game
             return true;
         }
 
-        /// <summary>"CATEGORIES & LINKS", with the number of loaded categories and links switched off (rebuilt on change).</summary>
+        /// <summary>"CATEGORIES & LINKS", with a * when a loaded category or link is switched off (rebuilt on change).</summary>
         private string GeometryMenuLabel()
         {
             int off = 0;
@@ -56,7 +56,7 @@ namespace BimGo.Game
             if (off != _geometryMenuLabelFor || _geometryMenuLabel == null)
             {
                 _geometryMenuLabelFor = off;
-                _geometryMenuLabel = off == 0 ? "CATEGORIES & LINKS" : $"CATEGORIES & LINKS ({off} OFF)";
+                _geometryMenuLabel = off == 0 ? "CATEGORIES & LINKS" : "CATEGORIES & LINKS *"; // * = something is switched off
             }
             return _geometryMenuLabel;
         }
