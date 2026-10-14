@@ -39,6 +39,50 @@ export const EyeHeights = {
   }
 };
 
+/** Gamepad tuning defaults. */
+export const PAD_DEFAULTS: { readonly DEAD_ZONE: number; readonly TRIGGER: number } = { DEAD_ZONE: 0.24, TRIGGER: 0.15 };
+
+/** Most binding entries kept (guards against a damaged store; there are fewer actions than this). */
+const MAX_KEY_BINDING_ENTRIES = 400;
+
+/**
+ * Stored key bindings cleaned (port of LaunchSettings.CleanKeyBindings): empty ids and non-lists dropped, ids trimmed,
+ * the first of duplicate ids kept, at most three keys per action (the keys themselves are checked by the map).
+ */
+export function cleanKeyBindings(value: unknown): Record<string, string[]> {
+  const clean: Record<string, string[]> = {};
+  if (!value || typeof value !== 'object' || Array.isArray(value)) { return clean; }
+  let count = 0;
+  for (const [key, list] of Object.entries(value as Record<string, unknown>)) {
+    if (count >= MAX_KEY_BINDING_ENTRIES) { break; }
+    const id = key.trim();
+    if (!id || !Array.isArray(list) || Object.prototype.hasOwnProperty.call(clean, id)) { continue; }
+    clean[id] = list.slice(0, 3).map(k => (typeof k === 'string' ? k.trim() : ''));
+    count++;
+  }
+  return clean;
+}
+
+/** Stored gamepad bindings (or a generic pad map) cleaned: id → trimmed text (empty values dropped when keepEmpty is false). */
+export function cleanPadBindings(value: unknown, max = MAX_KEY_BINDING_ENTRIES, keepEmpty = true): Record<string, string> {
+  const clean: Record<string, string> = {};
+  if (!value || typeof value !== 'object' || Array.isArray(value)) { return clean; }
+  let count = 0;
+  for (const [key, text] of Object.entries(value as Record<string, unknown>)) {
+    if (count >= max) { break; }
+    const id = key.trim();
+    const v = typeof text === 'string' ? text.trim() : '';
+    if (!id || Object.prototype.hasOwnProperty.call(clean, id) || (!keepEmpty && !v)) { continue; }
+    clean[id] = v;
+    count++;
+  }
+  return clean;
+}
+
+function cleanNumber(value: unknown, min: number, max: number, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) ? clamp(value, min, max) : fallback;
+}
+
 /** Colour mode (port of ColourMode). */
 export enum ColourMode {
   Whitecard = 0,
@@ -98,6 +142,28 @@ export class ViewerSettings {
   videoSize = VideoSize.FullHd;
   /** Walkthrough video frames per second: 30 or 60. */
   videoFps = 30;
+  /** Clash mode: jump straight to a clash instead of a quick flight. */
+  clashInstantFly = false;
+  /** Clash mode's list shows a picture on each row (PICTURES switches it). */
+  clashRowPictures = true;
+  /** The gun bar at the bottom of the screen (off by default; the gun wheel's bottom slot switches it). */
+  showGunBar = false;
+  /** Key bindings changed from the defaults: action id → bindings ("Ctrl+Shift+S", "" for an empty slot). */
+  keyBindings: Record<string, string[]> = {};
+  /** Gamepad bindings changed from the defaults: action id → chord ("" = none). */
+  padBindings: Record<string, string> = {};
+  /** Gamepad look speed (1 = about 170° a second at full tilt). */
+  padLookSensitivity = 1;
+  /** Gamepad: invert the look stick's up / down. */
+  padInvertY = false;
+  /** Gamepad stick dead zone (share of full tilt ignored around the centre). */
+  padDeadZone = PAD_DEFAULTS.DEAD_ZONE;
+  /** Gamepad trigger threshold (share of the travel before a trigger counts as pressed). */
+  padTriggerThreshold = PAD_DEFAULTS.TRIGGER;
+  /** A generic (non-standard) controller's button map: gamepad code name ("PadA") → its input ("B1", "A1-"). */
+  genericPadMap: Record<string, string> = {};
+  /** The name of the generic controller the map was recorded with. */
+  genericPadName = '';
 
   /** The eye height of a preset (m). */
   eyeHeightFor(preset: EyePreset): number {
@@ -150,6 +216,16 @@ export class ViewerSettings {
     s.eyeHeightChild = EyeHeights.clean(raw.eyeHeightChild, EyeHeights.DEFAULT_CHILD);
     if (typeof raw.videoSize === 'number' && [0, 1, 2].includes(raw.videoSize)) { s.videoSize = raw.videoSize; }
     if (typeof raw.videoFps === 'number') { s.videoFps = raw.videoFps >= 45 ? 60 : 30; }
+    for (const key of ['clashInstantFly', 'clashRowPictures', 'showGunBar', 'padInvertY'] as const) {
+      if (typeof raw[key] === 'boolean') { s[key] = raw[key] as boolean; }
+    }
+    s.keyBindings = cleanKeyBindings(raw.keyBindings);
+    s.padBindings = cleanPadBindings(raw.padBindings);
+    s.genericPadMap = cleanPadBindings(raw.genericPadMap, 64, false);
+    if (typeof raw.genericPadName === 'string') { s.genericPadName = raw.genericPadName.trim().slice(0, 120); }
+    s.padLookSensitivity = cleanNumber(raw.padLookSensitivity, 0.2, 3, 1);
+    s.padDeadZone = cleanNumber(raw.padDeadZone, 0.05, 0.6, PAD_DEFAULTS.DEAD_ZONE);
+    s.padTriggerThreshold = cleanNumber(raw.padTriggerThreshold, 0.05, 0.9, PAD_DEFAULTS.TRIGGER);
     return s;
   }
 
@@ -184,7 +260,18 @@ export class ViewerSettings {
       eyeHeightSeated: this.eyeHeightSeated,
       eyeHeightChild: this.eyeHeightChild,
       videoSize: this.videoSize,
-      videoFps: this.videoFps
+      videoFps: this.videoFps,
+      clashInstantFly: this.clashInstantFly,
+      clashRowPictures: this.clashRowPictures,
+      showGunBar: this.showGunBar,
+      keyBindings: this.keyBindings,
+      padBindings: this.padBindings,
+      padLookSensitivity: this.padLookSensitivity,
+      padInvertY: this.padInvertY,
+      padDeadZone: this.padDeadZone,
+      padTriggerThreshold: this.padTriggerThreshold,
+      genericPadMap: this.genericPadMap,
+      genericPadName: this.genericPadName
     });
   }
 }

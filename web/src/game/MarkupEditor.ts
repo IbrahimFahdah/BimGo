@@ -5,6 +5,7 @@ import { Rgba } from '../engine/ui/Rgba';
 import type { FontAtlas } from '../engine/ui/UiFont';
 import { UiTheme } from '../engine/ui/UiTheme';
 import { SoundId } from '../platform/audio';
+import { InputAction, InputCatalog } from '../core/scene/InputCatalog';
 import { type InputState, Vk } from '../platform/input';
 import type { GameSession } from './GameSession';
 import type { Widgets } from './Menus';
@@ -266,8 +267,9 @@ export class MarkupEditor {
    * cancels. Mouse drawing happens with the panel (build).
    */
   updateKeys(input: InputState): void {
-    if (input.isPressed(Vk.F11)) { this.session.toggleFullscreen(); }
+    if (input.pressed(InputAction.Fullscreen)) { this.session.toggleFullscreen(); }
 
+    // Text typing keeps its own keys (outside the action map)
     if (this.typing) {
       if (input.isPressed(Vk.RETURN)) { this.commitText(); return; }
       if (input.isPressed(Vk.ESCAPE)) { this.cancelText(); return; }
@@ -278,22 +280,18 @@ export class MarkupEditor {
       return;
     }
 
-    if (input.isDown(Vk.CONTROL)) {
-      if (input.isPressedOrRepeated(Vk.key('Z'))) {
-        if (input.isDown(Vk.SHIFT)) { this.redoOp(); } else { this.undo(); }
-      } else if (input.isPressedOrRepeated(Vk.key('Y'))) { this.redoOp(); }
-      return;
-    }
-
-    if (input.isPressed(Vk.ESCAPE)) { this.close(false); return; }
-    if (input.isPressed(Vk.RETURN)) { this.close(true); return; }
-    if (input.isPressed(Vk.key('A'))) { this.tool = MarkupTool.Arrow; }
-    if (input.isPressed(Vk.key('R'))) { this.tool = MarkupTool.Box; }
-    if (input.isPressed(Vk.key('E'))) { this.tool = MarkupTool.Ellipse; }
-    if (input.isPressed(Vk.key('P'))) { this.tool = MarkupTool.Pen; }
-    if (input.isPressed(Vk.key('T'))) { this.tool = MarkupTool.Text; }
-    for (let i = 0; i < MARKUP_COLOURS.length; i++) {
-      if (input.isPressed(0x31 + i)) { this.colour = i; }
+    // (Extra modifiers don't stop a key: Ctrl+letter picks that tool, Ctrl+Esc / Ctrl+Enter cancel / save)
+    if (input.pressedOrRepeated(InputAction.MarkupUndo)) { this.undo(); }
+    if (input.pressedOrRepeated(InputAction.MarkupRedo)) { this.redoOp(); }
+    if (input.pressed(InputAction.Back)) { this.close(false); return; }
+    if (input.pressed(InputAction.MarkupSave)) { this.close(true); return; }
+    if (input.pressed(InputAction.MarkupArrow)) { this.tool = MarkupTool.Arrow; }
+    if (input.pressed(InputAction.MarkupBox)) { this.tool = MarkupTool.Box; }
+    if (input.pressed(InputAction.MarkupEllipse)) { this.tool = MarkupTool.Ellipse; }
+    if (input.pressed(InputAction.MarkupPen)) { this.tool = MarkupTool.Pen; }
+    if (input.pressed(InputAction.MarkupText)) { this.tool = MarkupTool.Text; }
+    for (let i = 0; i < MARKUP_COLOURS.length && i < 5; i++) {
+      if (input.pressed(InputCatalog.markupColourAction(i))) { this.colour = i; }
     }
   }
 

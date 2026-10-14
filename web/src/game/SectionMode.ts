@@ -6,9 +6,12 @@ import { Rgba } from '../engine/ui/Rgba';
 import type { FontAtlas } from '../engine/ui/UiFont';
 import { UiTheme } from '../engine/ui/UiTheme';
 import { SoundId } from '../platform/audio';
-import { type InputState, Vk } from '../platform/input';
+import { InputAction } from '../core/scene/InputCatalog';
+import type { InputState } from '../platform/input';
 import type { GameSession } from './GameSession';
 import { Widgets } from './Menus';
+import { Hints } from './Hints';
+import { keyOf } from '../platform/Hotkeys';
 
 /** The default cap colour (dark grey). */
 export const DEFAULT_CAP_COLOUR = 0x3d4045;
@@ -80,7 +83,7 @@ export class SectionMode {
   apply(cut: SectionCut | null, announce = true): void {
     this.cut = (cut ?? new SectionCut()).clone().clean();
     this.changed();
-    if (announce) { this.session.toast(this.cut.isActive ? 'Section cut on (P edits, Ctrl+P clears)' : 'Section cut off', 3); }
+    if (announce) { this.session.toast(this.cut.isActive ? `Section cut on (${keyOf(InputAction.SectionBox)} edits, ${keyOf(InputAction.SectionClear)} clears)` : 'Section cut off', 3); }
   }
 
   /** Restores the cut saved with the model (no save is triggered). */
@@ -131,7 +134,7 @@ export class SectionMode {
     const session = this.session, aim = session.aim;
     if (!aim.hasHit || !aim.hit) {
       session.sound.play(SoundId.Error);
-      session.toast('Aim at a surface to cut there (Shift+P)', 3);
+      session.toast(`Aim at a surface to cut there (${keyOf(InputAction.SectionPlane)})`, 3);
       return;
     }
     // The hit normal faces the eye: the cut-away side is the eye's. Follow the view ray through the aimed element (a
@@ -151,7 +154,7 @@ export class SectionMode {
     this.cut.clean();
     this.changed();
     session.sound.play(SoundId.UiClick);
-    session.toast('Plane cut at the aimed surface (P to drag it, Ctrl+P clears)', 3);
+    session.toast(`Plane cut at the aimed surface (${keyOf(InputAction.SectionBox)} to drag it, ${keyOf(InputAction.SectionClear)} clears)`, 3);
   }
 
   /** Fits the box to the level the player stands on: model footprint, level to just under the next. */
@@ -222,11 +225,16 @@ export class SectionMode {
   /** Keys and mouse while the editor is open: P / Esc close, RMB-drag looks, LMB drags a handle along its axis. */
   updateMode(input: InputState): void {
     const session = this.session;
-    if (input.isPressed(Vk.ESCAPE) || (input.isPressed(Vk.key('P')) && !input.isDown(Vk.CONTROL))) {
+    // (Clear all cuts is live here so it doesn't also close the editor)
+    if (input.pressed(InputAction.Back) || input.pressed(InputAction.SectionBox)) {
       this.close();
       return;
     }
-    if (input.rightDown) { session.player.look(input.mouseDeltaX, input.mouseDeltaY, session.settings.mouseSensitivity, session.settings.invertY); }
+    if (input.pressed(InputAction.SectionClear)) { this.clear(); }
+    if (input.pressed(InputAction.Fullscreen)) { session.toggleFullscreen(); }
+    if (input.pressed(InputAction.Screenshot)) { session.requestScreenshot(); }
+    if (input.down(InputAction.DragLook)) { session.player.look(input.mouseDeltaX, input.mouseDeltaY, session.settings.mouseSensitivity, session.settings.invertY); }
+    session.padEditorLook(input);
 
     const mx = input.mouseX, my = input.mouseY;
     const [px, py, pw, ph] = this.panelRect;
@@ -237,7 +245,7 @@ export class SectionMode {
         session.sound.play(SoundId.UiClick);
         return;
       }
-      this.dragHandle(mx, my, input.isDown(Vk.SHIFT));
+      this.dragHandle(mx, my, input.down(InputAction.SectionFreeDrag));
       return;
     }
     this.hover = overPanel ? -1 : this.handleUnder(mx, my);
@@ -400,7 +408,7 @@ export class SectionMode {
     let cy = y + this.s(14);
     ui.text(f.small, ix, cy, 'SECTION BOX', UiTheme.ACCENT, this.s(1.4));
     cy += this.s(26);
-    ui.textWrapped(f.small, ix, cy, iw, 'Drag a handle along its arrow (Shift: no snap) · RMB-drag to look', UiTheme.TEXT_MUTED, 2);
+    ui.textWrapped(f.small, ix, cy, iw, Hints.sectionDrag.text, UiTheme.TEXT_MUTED, 2);
     cy += this.s(38);
 
     const half = (iw - this.s(8)) * 0.5;
@@ -408,7 +416,7 @@ export class SectionMode {
       if (cut.boxOn) { cut.boxOn = false; this.changed(); } else { this.fitToLevel(); }
     }
     if (w.smallButton(f, ix + half + this.s(8), cy, half, this.s(30), cut.planeOn ? 'PLANE: ON' : 'PLANE: OFF')) {
-      if (cut.planeOn) { cut.planeOn = false; this.changed(); } else { this.notice = 'Aim at a surface and press Shift+P for a plane'; }
+      if (cut.planeOn) { cut.planeOn = false; this.changed(); } else { this.notice = `Aim at a surface and press ${keyOf(InputAction.SectionPlane)} for a plane`; }
     }
     cy += this.s(40);
 
@@ -429,10 +437,10 @@ export class SectionMode {
     if (w.smallButton(f, ix + this.s(52) + buttonW + this.s(8), cy, buttonW, this.s(30), 'RESET')) { this.setCapColour(DEFAULT_CAP_COLOUR, true); }
     cy += this.s(42);
 
-    if (w.smallButton(f, ix, cy, iw, this.s(30), 'CLEAR ALL CUTS (Ctrl+P)', true)) { this.clear(); }
+    if (w.smallButton(f, ix, cy, iw, this.s(30), Hints.sectionClear.text, true)) { this.clear(); }
     cy += this.s(40);
     if (this.notice) { ui.textWrapped(f.small, ix, cy, iw, this.notice, UiTheme.MEASURE_TEXT, 2); }
-    if (w.smallButton(f, ix, y + ph - this.s(44), iw, this.s(30), 'CLOSE (P / ESC) · cut stays')) { this.close(); }
+    if (w.smallButton(f, ix, y + ph - this.s(44), iw, this.s(30), Hints.sectionClose.text)) { this.close(); }
   }
 
   // #endregion

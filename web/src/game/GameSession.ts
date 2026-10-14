@@ -34,7 +34,11 @@ import { UiTheme } from '../engine/ui/UiTheme';
 import { SoundId, SoundSystem } from '../platform/audio';
 import { downloadBlob, safeFileName } from '../platform/files';
 import { IfcGuid } from '../core/format/IfcGuid';
-import { type InputState, Vk } from '../platform/input';
+import { InputAction, InputCatalog } from '../core/scene/InputCatalog';
+import type { KeyMap } from '../core/scene/KeyMap';
+import { PadCursorMode, PadInput } from '../platform/gamepad';
+import { Hotkeys, KeyHint, keyOf } from '../platform/Hotkeys';
+import type { InputState } from '../platform/input';
 import type { GameWindow } from '../platform/window';
 import { CommentGun } from './guns/CommentGun';
 import { CloneGun, type EditHost, GizmoGun, HammerGun, PlaceGun } from './guns/EditGuns';
@@ -51,6 +55,7 @@ import { Player } from './Player';
 import { BookmarkStore, CommentStore } from './Stores';
 import { CommentsBcf, SNAPSHOT_MAX_WIDTH } from './CommentsBcf';
 import { EyeHeightControl } from './EyeHeight';
+import { GunWheel } from './GunWheel';
 import { MarkupEditor } from './MarkupEditor';
 import { PhotoMode, PhotoTarget } from './PhotoMode';
 import { SectionMode } from './SectionMode';
@@ -81,36 +86,61 @@ export interface SessionPose {
   showMap: boolean;
 }
 
-const HELP_ROWS: [string, string][] = [
-  ['WASD', 'Move'],
-  ['SPACE / CTRL', 'Jump / Crouch'],
-  ['SHIFT', 'Run'],
-  ['V', 'Fly / walk (no-clip)'],
-  ['PGUP / PGDN', 'Level up / down'],
-  ['H · SHIFT+H', 'Go home · Set home here'],
-  ['1–9 · WHEEL', 'Select tool (9 Place: family library)'],
-  ['2 AGAIN', 'Measure: distance / area / angle / clearance'],
-  ['6 · 7 · 8', 'Demolish · Gizmo · Clone'],
-  ['F', 'Gizmo / Clone / Place: drop onto the surface below'],
-  ['I · SHIFT+I', 'Scan: hide target · isolate its category'],
-  ['X', "Clear this tool's markers"],
-  ['B · ALT+1–9', 'Bookmark this view · Go to bookmark'],
-  ['ESC → BOOKMARKS', 'Play the bookmark tour (eye height: pause menu)'],
-  ['U', 'Hide the UI (Esc or U shows it)'],
-  ['L', 'Coordinate readout'],
-  ['K', 'Artificial lights: off / glow / light'],
-  ['O · SHIFT+O', 'Shadows on/off · Sun panel'],
-  ['J', 'Sun / daylight study (click surfaces, RMB-drag looks)'],
-  ['P · SHIFT+P · CTRL+P', 'Section box · cut at aimed surface · clear'],
-  ['[ ]', 'Sun time −/+ 5 min (Shift: 1 min)'],
-  ['TAB · ESC', 'Minimap · Pause menu'],
-  ['CTRL+F', 'Find a room and go there'],
-  ['CTRL+S · Z · Y', 'Save · Undo · Redo'],
-  ['F5 · R (SCAN)', 'Live: refresh · Show in Revit'],
-  ['M', 'Photo mode: hi-res stills and 360° panoramas'],
-  ['F11 · SHIFT+F12', 'Fullscreen · Screenshot'],
-  ['F1', 'Hide help · BimGo Web ' + __BIMGO_VERSION__]
-];
+/**
+ * The F1 help rows with the keys currently bound (the descriptions are fixed; the keys come from the map; port of
+ * GameSession.Render.HelpRows). The browser adds nothing of its own except the version line.
+ */
+function helpRows(m: KeyMap, pad: boolean): [string, string][] {
+  const j = (separator: string, ...actions: InputAction[]) => m.describeJoined(separator, false, ...actions).toUpperCase();
+  const rows: [string, string][] = [
+    [m.describeJoined(' ', true, InputAction.MoveForward, InputAction.MoveLeft, InputAction.MoveBack, InputAction.MoveRight).toUpperCase(), 'Move'],
+    [j(' / ', InputAction.Jump, InputAction.Crouch), 'Jump / Crouch'],
+    [j(' ', InputAction.Run), 'Run'],
+    [j(' ', InputAction.Fly), 'Fly / walk (no-clip)'],
+    [j(' / ', InputAction.LevelUp, InputAction.LevelDown), 'Level up / down'],
+    [j(' · ', InputAction.GoHome, InputAction.SetHome), 'Go home · Set home here'],
+    [(m.describeRange(InputAction.Gun1, 9) + ' · ' + m.describeJoined(' · ', false, InputAction.PreviousGun, InputAction.NextGun)).toUpperCase(), 'Select gun (9 Place: family library)'],
+    [j(' / ', InputAction.GunModePrevious, InputAction.GunModeNext), 'Gun mode (Measure, Demolish)'],
+    [j(' ', InputAction.GunWheel), 'Gun wheel (hold, steer, let go)'],
+    [j(' ', InputAction.Unarmed), 'Unarmed: no gun, no gun panel or hints (again takes it out)'],
+    [m.label(InputAction.Gun2).toUpperCase() + ' AGAIN', 'Measure: distance / area / angle / clearance'],
+    [j(' ', InputAction.GizmoDrop), 'Gizmo / Clone / Place: drop onto the surface below'],
+    [j(' · ', InputAction.ScanHide, InputAction.ScanIsolate), 'Scan gun: hide target · isolate its category'],
+    [j(' ', InputAction.ClearMarkers), "Clear this gun's markers"],
+    [(m.label(InputAction.AddBookmark) + ' · ' + m.describeRange(InputAction.Bookmark1, 9)).toUpperCase(), 'Bookmark this view · Go to bookmark'],
+    ['ESC → BOOKMARKS', 'Play the bookmark tour (eye height: pause menu)'],
+    [j(' ', InputAction.Coordinates), 'Coordinate readout'],
+    [j(' ', InputAction.Lights), 'Artificial lights: off / glow / light'],
+    [j(' · ', InputAction.Shadows, InputAction.SunPanel), 'Shadows on/off · Sun panel'],
+    [j(' ', InputAction.SunStudy), 'Sun / daylight study (click surfaces, RMB-drag looks)'],
+    [j(' · ', InputAction.SectionBox, InputAction.SectionPlane, InputAction.SectionClear), 'Section box · cut at aimed surface · clear'],
+    [j(' ', InputAction.SunEarlier, InputAction.SunLater), `Sun time −/+ 5 min (${m.describeModifierVariant(InputAction.SunEarlier, InputAction.SunEarlierFine)}: 1 min)`],
+    [j(' · ', InputAction.Save, InputAction.Undo, InputAction.Redo), 'Save · Undo · Redo (files)'],
+    [j(' ', InputAction.FindRoom), 'Find a room and go there'],
+    [j(' ', InputAction.ClashMode), 'Clash mode: review clashes (Esc → CLASHES: tests and sets)'],
+    [j(' ', InputAction.Refresh) + ' · ' + j(' ', InputAction.ScanSelectInRevit) + ' (SCAN)', 'Live: refresh · Show in Revit'],
+    [j(' ', InputAction.Minimap) + ' · ESC', 'Minimap · Pause menu'],
+    [j(' ', InputAction.HideUi), `Hide the UI (Esc or ${m.label(InputAction.HideUi)} shows it)`],
+    [j(' ', InputAction.PhotoMode), 'Photo mode: hi-res stills and 360° panoramas'],
+    [j(' · ', InputAction.Fullscreen, InputAction.Screenshot), 'Fullscreen · Screenshot'],
+    ['ESC → CONTROLS', 'Every key, and changing them'],
+    [j(' ', InputAction.Help), 'Hide help · BimGo Web ' + __BIMGO_VERSION__]
+  ];
+  if (pad) {
+    // A gamepad is connected: two rows of its main buttons, before the last row
+    const p = (action: InputAction) => m.padLabel(action) || '—';
+    const stickOf = (label: string) => (label.startsWith('LS ') || label.startsWith('RS ') ? label.slice(0, 2) : label);
+    rows.splice(rows.length - 1, 0,
+      ['GAMEPAD', `${stickOf(p(InputAction.LookUp))} look · ${stickOf(p(InputAction.MoveForward))} move · ${p(InputAction.Jump)} jump · ${p(InputAction.Crouch)} crouch · ${p(InputAction.Fly)} fly · ${p(InputAction.Run)} sprint`],
+      ['', `${p(InputAction.GunPrimary)} / ${p(InputAction.GunSecondary)} gun · ${p(InputAction.GunWheel)} gun wheel · LB / RB + D-pad: views and tools · ${p(InputAction.Back)} menu`]);
+  }
+  return rows;
+}
+
+const HINT_HELP = new KeyHint(() => `${keyOf(InputAction.Help)}: Help`);
+const HINT_NO_GUN_BAR = new KeyHint(() =>
+  `${keyOf(InputAction.GunWheel)} (hold): gun wheel · ${Hotkeys.map.describeJoined(' / ', false, InputAction.GunModePrevious, InputAction.GunModeNext)}: gun mode · the wheel's bottom slot shows the gun bar`);
+const HINT_MAP_KEY = new KeyHint(() => keyOf(InputAction.Minimap).toUpperCase());
 
 const THUMB_WIDTH = 192, THUMB_HEIGHT = 108;
 /** The .bimgo's start-screen thumbnail (thumbnail.jpg): rendered at 640 × 360, stored at 384 × 216. */
@@ -166,6 +196,16 @@ export class GameSession implements GunHost, EditHost {
   readonly video: VideoMode;
   /** Snapshot markup on comment pictures. */
   readonly markup: MarkupEditor;
+  /** The gun wheel (MMB / the gamepad's stick click). */
+  readonly wheel: GunWheel;
+  /** True when no gun is out (0 or the gun wheel): no gun panel, hints, aiming or firing. */
+  unarmed = false;
+  /** This frame's length (gamepad look). */
+  private frameTime = 0;
+  /** Clash mode is on (the docked clash list). */
+  clashModeOn = false;
+  /** True while a clash flight moves the player (the player's own keys wait). */
+  clashFreezesPlayer = false;
   textures!: Textures;
   /** Bumped by every change that Save would write (comments, bookmarks, materials, edits…). */
   dirtyRevision = 0;
@@ -235,7 +275,8 @@ export class GameSession implements GunHost, EditHost {
 
   // #region State
 
-  showHelp = true;
+  /** F1 help (off by default: a small "F1: Help" note in the corner). */
+  showHelp = false;
   showMap = true;
   groundZ = 0;
   groundDefault = 0;
@@ -265,6 +306,10 @@ export class GameSession implements GunHost, EditHost {
   private helpScale = -1;
   private helpKeyWidth = 0;
   private helpActionWidth = 0;
+  private helpRowsCache: [string, string][] = [];
+  private helpRowsVersion = Number.MIN_SAFE_INTEGER;
+  private helpRowsPad = false;
+  private gunKeysVersion = Number.MIN_SAFE_INTEGER;
 
   // Coordinates
   private shared: SharedTransform | null = null;
@@ -331,6 +376,9 @@ export class GameSession implements GunHost, EditHost {
     this.tour = new TourPlayer(this);
     this.video = new VideoMode(this);
     this.markup = new MarkupEditor(this);
+    this.wheel = new GunWheel(this);
+    Hotkeys.read(settings);
+    PadInput.read(settings);
     UnitFormat.set(settings.displayUnits, settings.decimalFeet);
     this.editor = new TextEditor(this);
     this.reflections = new Reflections(this);
@@ -423,7 +471,7 @@ export class GameSession implements GunHost, EditHost {
     this.placeGun = new PlaceGun(this);
     this.guns = [new ScanGun(this), new MeasureGun(this), this.portalGun, this.commentGun, new TeleportGun(this),
       new HammerGun(this), new GizmoGun(this), new CloneGun(this), this.placeGun];
-    this.guns.forEach((g, i) => { g.key = String(i + 1); });
+    this.refreshGunKeys();
 
     this.spawn();
     this.markSaved();
@@ -433,7 +481,7 @@ export class GameSession implements GunHost, EditHost {
     const links = this.scene.links.length > 0 ? ` · ${this.scene.links.length} linked model${this.scene.links.length === 1 ? '' : 's'}` : '';
     const count = this.journal.count;
     const edits = count > 0 ? ` · ${count} edit${count === 1 ? '' : 's'}${skipped > 0 ? ` (${skipped} not applied: their elements are missing)` : ''}` : '';
-    const start = this.startedAtSavedHome ? ' Starting at your saved home (Shift+H sets it).' : '';
+    const start = this.startedAtSavedHome ? ` Starting at your saved home (${keyOf(InputAction.SetHome)} sets it).` : '';
     if (this.scene.phaseNote) { this.toast(this.scene.phaseNote, 6); }
     else {
       this.toast(`${this.scene.elements.length.toLocaleString('en')} elements · ${(this.scene.geometry.indices.length / 3).toLocaleString('en')} triangles${links}${edits}.${start} Click to look around.`,
@@ -595,6 +643,11 @@ export class GameSession implements GunHost, EditHost {
 
   private updateFrame(dt: number): void {
     const input = this.window.input;
+    this.frameTime = dt;
+
+    // The gamepad's cursor (menus, editors) follows what is open (used from the next frame's poll)
+    this.window.padCursor = this.currentPadCursorMode();
+    if (this.paused || this.tour.active) { this.wheel.close(false); }
 
     // A bookmark tour (or its recording) has the keys; it carries on when the page loses focus
     if (this.tour.active) {
@@ -603,6 +656,18 @@ export class GameSession implements GunHost, EditHost {
     }
 
     if (this.window.isMinimised && !this.paused && !this.editor.active) { this.setPaused(true); }
+
+    // CONTROLS → MAP BUTTONS has the generic controller (and Esc); the mouse still clicks SKIP / CANCEL
+    if (this.menu.controls.mappingPad) {
+      this.menu.controls.updatePadMapping(input);
+      return;
+    }
+
+    // CONTROLS is waiting for a key: it has every key (Esc cancels)
+    if (this.menu.controls.capturing) {
+      this.menu.controls.updateKeyCapture(input);
+      return;
+    }
 
     // A comment picture just taken opens the markup editor; while it is open it has the keys
     if (this.markup.pending) { this.markup.openPending(); }
@@ -616,146 +681,196 @@ export class GameSession implements GunHost, EditHost {
       return;
     }
 
-    // Photo mode has the cursor: RMB-drag looks, Enter shoots
+    // Photo mode has the cursor: RMB-drag looks, the take key shoots
     if (this.photo.open && !this.paused) {
-      if (input.isPressed(Vk.F11)) { toggleFullscreen(); }
       this.photo.updateMode(input);
       return;
     }
 
     // The section box editor has the cursor: RMB-drag looks, handles drag the cut
     if (this.section.open && !this.paused) {
-      if (input.isPressed(Vk.F11)) { toggleFullscreen(); }
-      if (input.isPressed(Vk.F12) && input.isDown(Vk.SHIFT)) { this.screenshotRequested = true; }
       this.section.updateMode(input);
       return;
     }
 
     // The sun hours study has the cursor: the player stands still, RMB-drag looks, clicks pick surfaces
     if (this.sunHours.open && !this.paused) {
-      if (input.isPressed(Vk.F11)) { toggleFullscreen(); }
-      if (input.isPressed(Vk.F12) && input.isDown(Vk.SHIFT)) { this.screenshotRequested = true; }
       this.sunHours.updateMode(input);
       return;
     }
 
     // The sun panel has the cursor: the player stands still and its keys take over
     if (this.sunPanel.open && !this.paused) {
-      if (input.isPressed(Vk.F11)) { toggleFullscreen(); }
+      if (input.pressed(InputAction.Fullscreen)) { toggleFullscreen(); }
       this.sunPanel.updateKeys(input);
       return;
     }
 
-    // While the UI is hidden, Esc only brings it back (even when a gun has the keys); the next Esc acts as usual
-    if (input.isPressed(Vk.ESCAPE) && this.uiHidden) {
+    // A gun that has taken over the movement keys (Gizmo / Clone / Place): Esc cancels it instead of pausing, and the
+    // walking keys wait until it lets go
+    const current = this.guns[this.activeGun];
+    const captured = !this.paused && current.capturesInput;
+
+    // Global keys (every key below is an action: CONTROLS rebinds them; InputCatalog.situations mirrors what is live
+    // where, so keep the two in step). While the UI is hidden, Esc only brings it back; the next Esc acts as usual.
+    // The browser's Esc also frees the mouse (onCaptureLost pauses); Esc toggles while it is free, and first closes an
+    // open list
+    const escape = input.pressed(InputAction.Back);
+    if (escape && this.uiHidden) {
       this.showUi();
       this.editCancelledAt = this.clock;
-    }
-
-    // Esc releases the mouse in the browser (onCaptureLost pauses); P and Esc toggle while it is free, and Esc
-    // first closes an open list (comments / bookmarks)
-    if (input.isPressed(Vk.ESCAPE) && !this.paused && this.guns[this.activeGun].capturesInput) {
+    } else if (escape && this.wheel.open) {
+      this.wheel.close(false);
+    } else if (escape && captured) {
       this.cancelEdit();
-    } else if (input.isPressed(Vk.ESCAPE) && this.clock - this.editCancelledAt < 0.5) {
+    } else if (escape && this.clock - this.editCancelledAt < 0.5) {
       // The same Esc already cancelled an edit (the browser released the mouse first)
-    } else if (input.isPressed(Vk.ESCAPE)) {
+    } else if (escape) {
       if (!(this.paused && this.menu.closePanels())) { this.setPaused(!this.paused); }
     }
-    if (input.isPressed(Vk.F1)) { this.showHelp = !this.showHelp; }
-    if (input.isPressed(Vk.F11)) { toggleFullscreen(); }
-    if (input.isPressed(Vk.F12) && input.isDown(Vk.SHIFT)) { this.screenshotRequested = true; }
-    if (input.isPressed(Vk.F5) || (input.isPressed(Vk.key('R')) && input.isDown(Vk.SHIFT) && !this.paused)) { this.refreshFromRevit(); }
+    if (input.pressed(InputAction.Help)) { this.showHelp = !this.showHelp; }
+    if (input.pressed(InputAction.Refresh) && !captured) { this.refreshFromRevit(); }
+    if (input.pressed(InputAction.Fullscreen)) { toggleFullscreen(); }
+    if (input.pressed(InputAction.Screenshot)) { this.requestScreenshot(); }
 
-    // Ctrl+S save (Shift: save as), Ctrl+Z undo, Ctrl+Y / Ctrl+Shift+Z redo
-    if (input.isDown(Vk.CONTROL)) {
-      if (input.isPressed(Vk.key('S'))) {
-        void this.save(input.isDown(Vk.SHIFT));
+    // Document shortcuts (save, save as, undo / redo in files; also while paused) and, walking, find room, clear the
+    // cuts and go to bookmarks 1–9
+    if (!captured) {
+      if (input.pressed(InputAction.Save)) {
+        void this.save(false);
         return;
       }
-      if (!this.paused && input.isPressedOrRepeated(Vk.key('Z'))) {
-        if (input.isDown(Vk.SHIFT)) { this.redo(); } else { this.undo(); }
+      if (input.pressed(InputAction.SaveAs)) {
+        void this.save(true);
         return;
       }
-      if (!this.paused && input.isPressedOrRepeated(Vk.key('Y'))) {
+      if (input.pressed(InputAction.Undo)) {
+        this.undo();
+        return;
+      }
+      if (input.pressed(InputAction.Redo)) {
         this.redo();
         return;
       }
-      if (!this.paused && input.isPressed(Vk.key('F'))) {
-        this.menu.rooms.show();
-        return;
-      }
-      if (!this.paused && input.isPressed(Vk.key('P'))) {
-        this.section.clear();
-        return;
-      }
-    }
-
-    // Alt+1..9 (Ctrl+1..9 in fullscreen, where the browser lets the page have it): jump to a bookmark
-    if (!this.paused && (input.isDown(Vk.MENU) || input.isDown(Vk.CONTROL))) {
-      for (let i = 0; i < 9; i++) {
-        if (input.isPressed(0x31 + i)) {
-          this.goToBookmarkAt(i);
+      if (!this.paused) {
+        if (input.pressed(InputAction.FindRoom)) {
+          this.menu.rooms.show();
           return;
+        }
+        if (input.pressed(InputAction.SectionClear)) {
+          this.section.clear();
+          return;
+        }
+        for (let i = 0; i < 9; i++) {
+          if (input.pressed(InputCatalog.bookmarkAction(i))) {
+            this.goToBookmarkAt(i);
+            return;
+          }
         }
       }
     }
     if (this.paused) { return; }
 
-    // Hide-UI mode (works while a gun has the movement keys too: none of them uses U)
-    if (input.isPressed(Vk.key('U'))) { this.toggleUiHidden(); }
+    // Hide-UI mode (works while a gun has the movement keys too)
+    if (input.pressed(InputAction.HideUi)) { this.toggleUiHidden(); }
 
     this.updateRoom();
 
-    if (input.isPressed(Vk.TAB)) { this.showMap = !this.showMap; }
-    if (input.isPressed(Vk.key('V'))) {
+    if (captured) {
+      current.onKeys(input);
+      if (input.pressed(InputAction.Minimap)) { this.showMap = !this.showMap; }
+      this.updateMouseLook(input);
+      return;
+    }
+
+    // The gun wheel (MMB / the gamepad's stick click): while it is open the walking keys wait
+    this.updatePadSprint(input);
+    if (this.wheel.update(input)) { return; }
+
+    if (input.pressed(InputAction.Minimap)) { this.showMap = !this.showMap; }
+    if (input.pressed(InputAction.Fly)) {
       this.player.toggleFly();
       this.toast(this.player.flying ? 'Fly mode (no-clip)' : 'Walk mode');
     }
-    if (input.isPressed(Vk.key('H'))) {
-      if (input.isDown(Vk.SHIFT)) { this.setHomeHere(); }
-      else { this.player.goHome(); }
-    }
-    if (input.isPressed(Vk.PRIOR)) { this.teleportLevel(+1); }
-    if (input.isPressed(Vk.NEXT)) { this.teleportLevel(-1); }
-    if (input.isPressed(Vk.key('X')) && !this.guns[this.activeGun].capturesInput) { this.guns[this.activeGun].clearMarkers(); }
-    if (input.isPressed(Vk.key('B'))) {
+    if (input.pressed(InputAction.GoHome)) { this.player.goHome(); }
+    if (input.pressed(InputAction.SetHome)) { this.setHomeHere(); }
+    if (input.pressed(InputAction.LevelUp)) { this.teleportLevel(+1); }
+    if (input.pressed(InputAction.LevelDown)) { this.teleportLevel(-1); }
+    if (input.pressed(InputAction.ClearMarkers) && !this.unarmed) { current.clearMarkers(); }
+    if (input.pressed(InputAction.AddBookmark)) {
       this.addBookmarkHere();
       return;
     }
-    if (input.isPressed(Vk.key('L'))) { this.cycleCoordinateReadout(); }
-    if (input.isPressed(Vk.key('J'))) {
+    if (input.pressed(InputAction.Coordinates)) { this.cycleCoordinateReadout(); }
+    if (input.pressed(InputAction.SunStudy)) {
       this.sunHours.show();
       return;
     }
-    if (input.isPressed(Vk.key('M'))) {
+    if (input.pressed(InputAction.ClashMode)) {
+      // Clash detection stays dormant until this (or pause menu → CLASHES) switches it on
+      this.toggleClashMode();
+      return;
+    }
+    if (input.pressed(InputAction.PhotoMode)) {
       this.photo.show();
       return;
     }
-    if (input.isPressed(Vk.key('P'))) {
-      if (input.isDown(Vk.SHIFT)) { this.section.quickPlane(); } else { this.section.show(); }
+    if (input.pressed(InputAction.SectionBox)) {
+      this.section.show();
       return;
     }
-    if (input.isPressed(Vk.key('K'))) { this.cycleLightMode(); }
-    if (input.isPressed(Vk.key('O'))) {
-      if (input.isDown(Vk.SHIFT)) { this.sunPanel.show(); } else { this.toggleShadows(); }
+    if (input.pressed(InputAction.SectionPlane)) {
+      this.section.quickPlane();
       return;
     }
-    if (this.sun.enabled && input.isPressedOrRepeated(Vk.OEM_4)) { this.stepSunTime(input.isDown(Vk.SHIFT) ? -1 : -5); }
-    if (this.sun.enabled && input.isPressedOrRepeated(Vk.OEM_6)) { this.stepSunTime(input.isDown(Vk.SHIFT) ? 1 : 5); }
-    if (input.isPressed(Vk.SPACE) && !this.player.flying) { this.player.queueJump(); }
+    if (input.pressed(InputAction.Lights)) { this.cycleLightMode(); }
+    if (input.pressed(InputAction.Shadows)) {
+      this.toggleShadows();
+      return;
+    }
+    if (input.pressed(InputAction.SunPanel)) {
+      this.sunPanel.show();
+      return;
+    }
+    if (this.sun.enabled) { this.stepSunTimeKeys(input); }
+    if (input.pressed(InputAction.Jump) && !this.player.flying) { this.player.queueJump(); }
 
     for (let i = 0; i < this.guns.length; i++) {
-      if (!input.isPressed(0x31 + i) || input.isDown(Vk.MENU) || input.isDown(Vk.CONTROL)) { continue; }
-      // The selected gun's own key again: the gun may cycle a mode (Measure: distance → area → angle → clearance)
-      if (i === this.activeGun) { this.guns[i].onReselect(); } else { this.selectGun(i); }
+      if (!input.pressed(InputCatalog.gunAction(i))) { continue; }
+      // The selected gun's own key again: the gun may cycle a mode (Measure: distance → area → angle → clearance);
+      // unarmed, any gun key arms that gun
+      if (i === this.activeGun && !this.unarmed) { this.guns[i].onReselect(); } else { this.selectGun(i); }
     }
-    if (input.wheel !== 0) {
-      const n = this.guns.length;
-      this.selectGun(((this.activeGun - Math.sign(input.wheel)) % n + n) % n);
-    }
+    const n = this.guns.length;
+    if (input.pressed(InputAction.Unarmed)) { this.setUnarmed(!this.unarmed); }
+    else if (this.unarmed) { /* no gun: the wheel and gun keys below wait */ }
+    else if (input.pressed(InputAction.PreviousGun)) { this.selectGun((this.activeGun - 1 + n) % n); }
+    else if (input.pressed(InputAction.NextGun)) { this.selectGun((this.activeGun + 1) % n); }
+    // The mouse wheel: the selected gun's modes (Measure: distance / area / angle / clearance; Demolish: demolish /
+    // delete); guns without modes ignore it
+    else if (input.pressed(InputAction.GunModeNext)) { this.guns[this.activeGun].cycleMode(1); }
+    else if (input.pressed(InputAction.GunModePrevious)) { this.guns[this.activeGun].cycleMode(-1); }
 
-    this.guns[this.activeGun].onKeys(input);
+    if (!this.unarmed) { this.guns[this.activeGun].onKeys(input); }
     this.updateMouseLook(input);
+  }
+
+  /** Y / pause menu → CLASHES: clash mode on or off. */
+  toggleClashMode(): void {
+    this.toast('Clash detection is coming to the web viewer');
+  }
+
+  /** The sun time keys (walking with shadows on, photo mode, the sun panel): −/+ 5 min and −/+ 1 min, on key repeat too. */
+  stepSunTimeKeys(input: InputState): void {
+    if (input.pressedOrRepeated(InputAction.SunEarlier)) { this.stepSunTime(-5); }
+    if (input.pressedOrRepeated(InputAction.SunEarlierFine)) { this.stepSunTime(-1); }
+    if (input.pressedOrRepeated(InputAction.SunLater)) { this.stepSunTime(5); }
+    if (input.pressedOrRepeated(InputAction.SunLaterFine)) { this.stepSunTime(1); }
+  }
+
+  /** Shift+F12 (by default): a screenshot of the 3D view at the end of this frame. */
+  requestScreenshot(): void {
+    this.screenshotRequested = true;
   }
 
   private updateMouseLook(input: InputState): void {
@@ -772,13 +887,68 @@ export class GameSession implements GunHost, EditHost {
     if (this.window.isCaptured) {
       this.player.look(input.mouseDeltaX, input.mouseDeltaY, this.settings.mouseSensitivity, this.settings.invertY);
     }
+    if (document.hasFocus()) { this.padLook(input); } // the look actions (gamepad stick; any key bound to them)
   }
+
+  // #region Gamepad (port of GameSession.Gamepad.cs)
+
+  /**
+   * What the gamepad does with the free cursor this frame: menus, panels and text boxes → Menu; the free-cursor editors
+   * → Editor; walking, a tour, a video and a key capture → Off.
+   */
+  private currentPadCursorMode(): PadCursorMode {
+    if (this.tour.active || this.video.active || this.menu.controls.capturing || this.menu.controls.mappingPad) { return PadCursorMode.Off; }
+    if (this.paused || this.editor.active || this.markup.open) { return PadCursorMode.Menu; }
+    if (this.cursorModeOpen) { return PadCursorMode.Editor; }
+    return PadCursorMode.Off;
+  }
+
+  /**
+   * Walking: the look actions turn the camera at a rate (gamepad stick: analog with a squared response; a key bound to
+   * them turns at full rate), scaled by the gamepad look speed and invert Y. Nothing when they rest.
+   */
+  private padLook(input: InputState): void {
+    let x = input.axis(InputAction.LookRight) - input.axis(InputAction.LookLeft);
+    let y = input.axis(InputAction.LookUp) - input.axis(InputAction.LookDown);
+    if (x === 0 && y === 0) { return; }
+    const length = Math.hypot(x, y);
+    if (length > 1) { x /= length; y /= length; }
+    [x, y] = PadInput.curve(x, y);
+    const rate = PadInput.LOOK_RADIANS_PER_SECOND * PadInput.lookSensitivity * this.frameTime;
+    this.player.turn(-x * rate, (PadInput.invertY ? -y : y) * rate);
+  }
+
+  /** The free-cursor editors (photo, section box, study, clash mode): the move stick looks around instead. */
+  padEditorLook(input: InputState): void {
+    if (!input.padConnected) { return; }
+    const [sx, sy] = PadInput.moveStick(input);
+    const [x, y] = PadInput.curve(sx, sy);
+    if (x === 0 && y === 0) { return; }
+    const rate = PadInput.LOOK_RADIANS_PER_SECOND * PadInput.lookSensitivity * this.frameTime;
+    this.player.turn(-x * rate, (PadInput.invertY ? -y : y) * rate);
+  }
+
+  /** Gamepad sprint: the run binding's gamepad button toggles it; it ends when movement stops. */
+  private updatePadSprint(input: InputState): void {
+    if (input.pressedByPad(InputAction.Run)) { this.player.padSprint = !this.player.padSprint; }
+    const moving = Math.abs(input.axis(InputAction.MoveForward) - input.axis(InputAction.MoveBack))
+      + Math.abs(input.axis(InputAction.MoveRight) - input.axis(InputAction.MoveLeft));
+    if (moving < 0.2) { this.player.padSprint = false; }
+  }
+
+  // #endregion
 
   private fixedUpdate(dt: number): void {
     if (this.tour.active) { return; } // the tour places the player itself
     this.player.controller.groundZ = this.groundZ;
-    const frozen = this.editor.active || this.cursorModeOpen || this.window.isMinimised || this.guns[this.activeGun].capturesInput;
-    this.player.fixedUpdate(dt, this.window.input, !frozen);
+    const frozen = this.editor.active || (this.cursorModeOpen && !this.clashModeOn) || this.window.isMinimised
+      || this.guns[this.activeGun].capturesInput || this.clashFreezesPlayer;
+    if (this.clashModeOn) {
+      // Clash mode flies with its own up / down keys (the gamepad's A and B click and go back there)
+      this.player.fixedUpdate(dt, this.window.input, !frozen, InputAction.ClashFlyUp, InputAction.ClashFlyDown);
+    } else {
+      this.player.fixedUpdate(dt, this.window.input, !frozen);
+    }
     this.portalGun.checkTeleport(this.player, dt);
   }
 
@@ -811,12 +981,18 @@ export class GameSession implements GunHost, EditHost {
     for (const gun of this.guns) { gun.tick(dt); }
     if (this.paused || this.editor.active || this.cursorModeOpen || this.tour.active) { return; }
 
+    if (this.unarmed) { return; } // no gun out: nothing aims or fires
     const active = this.guns[this.activeGun];
     active.update(dt, this.aim);
     const input = this.window.input;
+    if (this.wheel.open) { return; }
     if (this.window.isCaptured) {
-      if (input.leftPressed) { active.onPrimary(this.aim); }
-      if (input.rightPressed) { active.onSecondary(this.aim); }
+      if (input.pressed(InputAction.GunPrimary)) { active.onPrimary(this.aim); }
+      if (input.pressed(InputAction.GunSecondary)) { active.onSecondary(this.aim); }
+    } else if (input.padConnected && this.currentPadCursorMode() === PadCursorMode.Off) {
+      // Walking with the gamepad while the mouse isn't captured: only the triggers fire (a mouse click captures first)
+      if (input.pressedByPad(InputAction.GunPrimary)) { active.onPrimary(this.aim); }
+      if (input.pressedByPad(InputAction.GunSecondary)) { active.onSecondary(this.aim); }
     }
   }
 
@@ -837,19 +1013,48 @@ export class GameSession implements GunHost, EditHost {
   // #region Actions
 
   selectGun(index: number): void {
-    if (index === this.activeGun || this.guns[this.activeGun].capturesInput) { return; }
+    if (this.guns[this.activeGun].capturesInput) { return; }
+    if (this.unarmed) {
+      // Unarmed: picking a gun takes it out (the same gun included)
+      this.unarmed = false;
+      if (index === this.activeGun) {
+        this.sound.play(SoundId.UiClick);
+        return;
+      }
+    }
+    if (index === this.activeGun) { return; }
     this.guns[this.activeGun].onDeselect();
     this.activeGun = index;
     this.sound.play(SoundId.UiClick);
   }
 
+  /** 0 / the gun wheel's UNARMED slot: puts the gun away, or takes the last one out again. */
+  setUnarmed(unarmed: boolean): void {
+    if (unarmed === this.unarmed || this.guns[this.activeGun].capturesInput) { return; }
+    if (unarmed) { this.guns[this.activeGun].onDeselect(); }
+    this.unarmed = unarmed;
+    this.sound.play(SoundId.UiClick);
+    this.toast(unarmed ? `Unarmed (${keyOf(InputAction.Unarmed)} or a gun key takes a gun out)` : this.guns[this.activeGun].name, 1.6);
+  }
+
+  /** Gives each gun its selection key's label (the gun bar's corner number). */
+  private refreshGunKeys(): void {
+    this.guns.forEach((gun, i) => {
+      const chord = Hotkeys.map.primary(InputCatalog.gunAction(i));
+      gun.key = chord.isEmpty ? '' : Hotkeys.map.display(chord);
+    });
+    this.gunKeysVersion = Hotkeys.version;
+  }
+
   setPaused(paused: boolean): void {
     this.paused = paused;
+    this.menu.closeOverlay(); // a dropdown / confirm belongs to the screen it was opened on
     if (paused) {
       this.sunPanel.close();
       this.showUi(); // e.g. focus lost while hidden: come back to a normal HUD
     }
-    this.window.setCaptured(!paused);
+    // Resuming captures the mouse again, unless a free-cursor mode is on (clash mode keeps its cursor)
+    this.window.setCaptured(!paused && !this.cursorModeOpen);
     this.window.input.releaseAll();
   }
 
@@ -886,6 +1091,8 @@ export class GameSession implements GunHost, EditHost {
   /** Writes the eye-height presets and the units into the viewer settings and saves them. */
   settingsChanged(): void {
     this.eye.write(this.settings);
+    Hotkeys.write(this.settings);
+    PadInput.write(this.settings);
     this.settings.displayUnits = UnitFormat.current;
     this.settings.decimalFeet = UnitFormat.decimalFeet;
     this.settings.save();
@@ -910,7 +1117,7 @@ export class GameSession implements GunHost, EditHost {
     this.homeSetUntil = this.clock + 2;
     this.sound.play(SoundId.Commit);
     this.flash(UiTheme.BOOKMARK, 0.2);
-    this.toast('Home set here: H returns here (saved with the file: Ctrl+S)', 3.5);
+    this.toast(`Home set here: ${keyOf(InputAction.GoHome)} returns here (saved with the file: ${keyOf(InputAction.Save)})`, 3.5);
   }
 
   private teleportLevel(direction: number): void {
@@ -965,7 +1172,7 @@ export class GameSession implements GunHost, EditHost {
     }
     this.uiHidden = true;
     this.sound.play(SoundId.UiClick);
-    this.toast('UI hidden · Esc or U to show it', 1.8, true);
+    this.toast(`UI hidden · Esc or ${keyOf(InputAction.HideUi)} to show it`, 1.8, true);
   }
 
   /** Leaves hide-UI mode (Esc, U, the pause menu, the sun panel). */
@@ -1125,7 +1332,7 @@ export class GameSession implements GunHost, EditHost {
   toggleShadows(): void {
     this.sun.toggle();
     this.sound.play(SoundId.UiClick);
-    this.toast(this.sun.enabled ? `Shadows on · ${this.sun.describeTime()} (Shift+O opens the sun panel)` : 'Shadows off');
+    this.toast(this.sun.enabled ? `Shadows on · ${this.sun.describeTime()} (${keyOf(InputAction.SunPanel)} opens the sun panel)` : 'Shadows off');
   }
 
   stepSunTime(minutes: number): void {
@@ -1281,7 +1488,7 @@ export class GameSession implements GunHost, EditHost {
     const list = this.bookmarks.bookmarks;
     if (index < 0 || index >= list.length) {
       this.toast(list.length === 0
-        ? 'No bookmarks yet: press B to save this viewpoint'
+        ? `No bookmarks yet: press ${keyOf(InputAction.AddBookmark)} to save this viewpoint`
         : `Only ${list.length} bookmark${list.length === 1 ? '' : 's'} (Esc → BOOKMARKS lists them)`);
       return;
     }
@@ -1307,7 +1514,7 @@ export class GameSession implements GunHost, EditHost {
 
   bookmarkHotkey(record: BookmarkRecord): string {
     const index = this.bookmarks.bookmarks.indexOf(record);
-    return index >= 0 && index < 9 ? `Alt+${index + 1}` : 'Esc → BOOKMARKS';
+    return index >= 0 && index < 9 && !Hotkeys.map.isUnbound(InputCatalog.bookmarkAction(index)) ? keyOf(InputCatalog.bookmarkAction(index)) : 'Esc → BOOKMARKS';
   }
 
   /**
@@ -1861,7 +2068,7 @@ export class GameSession implements GunHost, EditHost {
     const feet = this.player.feet;
     const levelIndex = this.levelIndexAt(feet.z);
     ui.text(f.small, x + this.s(8), y + this.s(9), 'MAP · ' + (this.levelNamesUpper[levelIndex] ?? '—'), UiTheme.TEXT_MUTED, this.s(1));
-    ui.textRight(f.small, x + w - this.s(8), y + this.s(9), 'TAB', UiTheme.TEXT_MUTED, this.s(1));
+    ui.textRight(f.small, x + w - this.s(8), y + this.s(9), HINT_MAP_KEY.text, UiTheme.TEXT_MUTED, this.s(1));
 
     const metresPerPixel = GameSession.MAP_METRES_ACROSS / mapW;
     const cx = mapX + mapW * 0.5, cy = mapY + mapH * 0.5;
@@ -2049,7 +2256,7 @@ export class GameSession implements GunHost, EditHost {
     }
 
     // World-anchored labels
-    this.guns.forEach((gun, i) => gun.drawLabels(ui, i === this.activeGun));
+    if (!this.unarmed) { this.guns.forEach((gun, i) => gun.drawLabels(ui, i === this.activeGun)); }
 
     // Crosshair
     const cx = roundEven(width * 0.5), cy = roundEven(height * 0.5);
@@ -2073,7 +2280,7 @@ export class GameSession implements GunHost, EditHost {
     // Minimap and the gun's context panel beneath it
     if (this.showMap) { this.drawMinimapOverlay(mapX, mapY); }
     // (hidden while the sun panel is open: the two would overlap on smaller screens)
-    if (!this.sunPanel.open && !this.sunHours.open && !this.section.open) {
+    if (!this.sunPanel.open && !this.sunHours.open && !this.section.open && !this.unarmed) {
       const panelTop = this.showMap ? mapY + this.s(208) + this.s(12) : this.s(20);
       const panelWidth = this.s(260), panelX = width - this.s(20) - panelWidth;
       ui.panel(panelX, panelTop, panelWidth, this.s(active.panelHeight) + this.s(24), UiTheme.PANEL, UiTheme.PANEL_BORDER);
@@ -2089,6 +2296,7 @@ export class GameSession implements GunHost, EditHost {
     this.buildHelp(f, height);
     this.buildGunBar(f, width, height, active);
     this.buildRoomBanner(f, width);
+    this.wheel.build(f, width, height);
     this.buildToast(f, width);
   }
 
@@ -2152,70 +2360,99 @@ export class GameSession implements GunHost, EditHost {
     }
   }
 
+  /** The F1 help rows for the current bindings (rebuilt when a binding changes or a gamepad comes or goes). */
+  private helpRows(): [string, string][] {
+    const pad = PadInput.connected;
+    if (this.helpRowsVersion !== Hotkeys.version || this.helpRowsPad !== pad || this.helpRowsCache.length === 0) {
+      this.helpRowsCache = helpRows(Hotkeys.map, pad);
+      this.helpRowsVersion = Hotkeys.version;
+      this.helpRowsPad = pad;
+      this.helpScale = -1; // re-measure the columns
+    }
+    return this.helpRowsCache;
+  }
+
   private buildHelp(f: FontAtlas, height: number): void {
     const ui = this.ui;
     const x = this.s(20);
     if (!this.showHelp) {
-      ui.text(f.mono, x, height - this.s(36), 'F1  Help', UiTheme.TEXT_MUTED);
+      ui.text(f.small, x, height - this.s(30), HINT_HELP.text, UiTheme.TEXT_MUTED); // help is off by default: a small note
       return;
     }
+    const rows = this.helpRows();
     if (this.helpScale !== ui.scale) {
       this.helpScale = ui.scale;
-      this.helpKeyWidth = Math.max(...HELP_ROWS.map(([key]) => UiBatch.measure(f.mono, key)));
-      this.helpActionWidth = Math.max(...HELP_ROWS.map(([, action]) => UiBatch.measure(f.body, action)));
+      this.helpKeyWidth = Math.max(...rows.map(([key]) => UiBatch.measure(f.mono, key)));
+      this.helpActionWidth = Math.max(...rows.map(([, action]) => UiBatch.measure(f.body, action)));
     }
 
     const row = this.s(17);
-    const h = HELP_ROWS.length * row + this.s(20);
+    const h = rows.length * row + this.s(20);
     const y = height - this.s(20) - h;
     const keyWidth = this.helpKeyWidth + this.s(16);
     ui.panel(x, y, this.s(12) + keyWidth + this.helpActionWidth + this.s(14), h, Rgba.hex(0x0c0e12, 0.66), Rgba.hex(0xffffff, 0.1));
 
     let rowY = y + this.s(10);
-    HELP_ROWS.forEach(([key, action], i) => {
-      const last = i === HELP_ROWS.length - 1;
+    rows.forEach(([key, action], i) => {
+      const last = i === rows.length - 1;
       ui.text(f.mono, x + this.s(12), rowY, key, last ? UiTheme.TEXT_MUTED : UiTheme.TEXT);
       ui.text(f.body, x + this.s(12) + keyWidth, rowY - this.s(1), action, last ? UiTheme.TEXT_MUTED : UiTheme.TEXT_SOFT);
       rowY += row;
     });
   }
 
+  /**
+   * Bottom-centre gun bar (off by default: a one-line hint instead; the gun wheel's bottom slot shows it), with the
+   * selected gun's name and its LMB / RMB hints above (none while unarmed).
+   */
   private buildGunBar(f: FontAtlas, width: number, height: number, active: Gun): void {
+    if (this.gunKeysVersion !== Hotkeys.version) { this.refreshGunKeys(); }
     const ui = this.ui;
     const slot = this.s(52), gap = this.s(6), iconSize = this.s(30);
     const total = this.guns.length * slot + (this.guns.length - 1) * gap;
     const x = roundEven(width * 0.5 - total * 0.5);
-    const y = height - this.s(20) - slot;
+    let y = height - this.s(20) - slot;
+    const showBar = this.settings.showGunBar;
+    if (!showBar) {
+      // No bar (the default): a one-line hint where it would be; the name and hints row drops to just above it
+      y = height - this.s(20) - this.s(16);
+      ui.textCentred(f.small, width * 0.5, y, HINT_NO_GUN_BAR.text, UiTheme.TEXT_FAINT);
+    } else {
+      this.guns.forEach((gun, i) => {
+        const selected = i === this.activeGun && !this.unarmed;
+        const bx = x + i * (slot + gap);
+        ui.rect(bx, y, slot, slot, Rgba.hex(0x0c0e12, selected ? 0.9 : 0.6));
+        ui.outline(bx, y, slot, slot, this.s(2), selected ? gun.colour : Rgba.hex(0xffffff, 0.14));
+        gun.drawIcon(ui, bx + slot * 0.5, y + slot * 0.5 + this.s(2), iconSize, selected ? gun.colour : UiTheme.TEXT_MUTED);
+        ui.text(f.small, bx + this.s(5), y + this.s(3), gun.key, selected ? gun.colour : UiTheme.TEXT_FAINT);
+      });
+    }
+    if (this.unarmed) { return; } // unarmed: no gun name or LMB / RMB hints
 
-    this.guns.forEach((gun, i) => {
-      const selected = i === this.activeGun;
-      const bx = x + i * (slot + gap);
-      ui.rect(bx, y, slot, slot, Rgba.hex(0x0c0e12, selected ? 0.9 : 0.6));
-      ui.outline(bx, y, slot, slot, this.s(2), selected ? gun.colour : Rgba.hex(0xffffff, 0.14));
-      gun.drawIcon(ui, bx + slot * 0.5, y + slot * 0.5 + this.s(2), iconSize, selected ? gun.colour : UiTheme.TEXT_MUTED);
-      ui.text(f.small, bx + this.s(5), y + this.s(3), gun.key, selected ? gun.colour : UiTheme.TEXT_FAINT);
-    });
-
-    // Selected gun name, then the hints, on one row above the bar
+    // Selected gun name, then the hints, on one row above the bar (the gamepad's triggers when it was used last)
+    const input = this.window.input;
+    const pad = input.lastInputWasPad && input.padConnected;
+    const primary = pad && Hotkeys.map.padLabel(InputAction.GunPrimary) ? Hotkeys.map.padLabel(InputAction.GunPrimary) : keyOf(InputAction.GunPrimary);
+    const secondary = pad && Hotkeys.map.padLabel(InputAction.GunSecondary) ? Hotkeys.map.padLabel(InputAction.GunSecondary) : keyOf(InputAction.GunSecondary);
     const rowY = y - this.s(8) - this.s(24);
     const nameWidth = UiBatch.measure(f.bold, active.name, this.s(1)) + this.s(20);
-    const lmbWidth = this.hintWidth(f, active.hintPrimary);
-    const rmbWidth = this.hintWidth(f, active.hintSecondary);
+    const lmbWidth = this.hintWidth(f, primary, active.hintPrimary);
+    const rmbWidth = this.hintWidth(f, secondary, active.hintSecondary);
     let rowX = roundEven(width * 0.5 - (nameWidth + this.s(10) + lmbWidth + this.s(10) + rmbWidth) * 0.5);
 
     ui.rect(rowX, rowY, nameWidth, this.s(24), Rgba.withAlpha(active.colour, 0.9));
     ui.text(f.bold, rowX + this.s(10), rowY + this.s(4), active.name, UiTheme.SCAN_TAG_TEXT, this.s(1));
     rowX += nameWidth + this.s(10);
-    this.hint(f, rowX, rowY, 'LMB', active.hintPrimary, active.colour);
-    this.hint(f, rowX + lmbWidth + this.s(10), rowY, 'RMB', active.hintSecondary, active.colour);
+    this.hint(f, rowX, rowY, primary, active.hintPrimary, active.colour);
+    this.hint(f, rowX + lmbWidth + this.s(10), rowY, secondary, active.hintSecondary, active.colour);
   }
 
-  private hintWidth(f: FontAtlas, text: string): number {
-    return UiBatch.measure(f.mono, 'LMB') + this.s(6) + UiBatch.measure(f.body, text) + this.s(16);
+  private hintWidth(f: FontAtlas, button: string, text: string): number {
+    return UiBatch.measure(f.mono, button) + this.s(6) + UiBatch.measure(f.body, text) + this.s(16);
   }
 
   private hint(f: FontAtlas, x: number, y: number, button: string, text: string, colour: number): void {
-    this.ui.rect(x, y, this.hintWidth(f, text), this.s(24), Rgba.hex(0x0c0e12, 0.7));
+    this.ui.rect(x, y, this.hintWidth(f, button, text), this.s(24), Rgba.hex(0x0c0e12, 0.7));
     const used = this.ui.text(f.mono, x + this.s(8), y + this.s(5), button, colour);
     this.ui.text(f.body, x + this.s(8) + used + this.s(6), y + this.s(4), text, Rgba.hex(0xe5e7eb));
   }
@@ -2244,6 +2481,7 @@ export class GameSession implements GunHost, EditHost {
       ui.rect(0, 0, width, this.window.height, Rgba.withAlpha(this.flashColour, 0.35 * t));
     }
     if (this.editor.active) { this.editor.build(); }
+    this.wheel.build(f, width, this.window.height);
     if (this.toastImportant) { this.buildToast(f, width); }
   }
 
@@ -2941,6 +3179,9 @@ export class GameSession implements GunHost, EditHost {
     if (this.comments) { this.flushSidecars(); }
     this.saving?.abort.abort();
     this.window.setCaptured(false);
+    this.window.padCursor = PadCursorMode.Menu; // the start screen
+    Hotkeys.write(this.settings);
+    PadInput.write(this.settings);
     this.settings.save();
     for (const { texture } of this.thumbnailTextures.values()) { if (texture) { gl.deleteTexture(texture); } }
     this.thumbnailTextures.clear();

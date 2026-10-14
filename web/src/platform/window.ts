@@ -1,4 +1,9 @@
+import { KeyCodes } from '../core/scene/KeyChord';
+import { PadCursorMode } from './gamepad';
 import { blocksBrowserDefault, genericModifier, InputState, vkFromCode } from './input';
+
+/** MouseEvent.button → virtual-key code for the buttons other than left / right. */
+const BUTTON_CODES: Record<number, number> = { 1: KeyCodes.MIDDLE_MOUSE, 3: KeyCodes.MOUSE4, 4: KeyCodes.MOUSE5 };
 
 /**
  * The browser stand-in for BimGo.App/Platform/GameWindow.cs: a full-page canvas sized in device pixels, keyboard and
@@ -11,6 +16,9 @@ export class GameWindow {
   private _width = 1;
   private _height = 1;
   private _dpiScale = 1;
+
+  /** What the gamepad does with the free cursor (set by the session each frame; the home screen: menus). */
+  padCursor = PadCursorMode.Menu;
 
   /** Called when Pointer Lock ends without {@link setCaptured}(false): Esc, focus loss (opens the pause menu). */
   onCaptureLost: (() => void) | null = null;
@@ -132,11 +140,27 @@ export class GameWindow {
       this.canvas.focus();
       if (e.button === 0) { input.onLeft(true); }
       else if (e.button === 2) { input.onRight(true); }
+      else {
+        // Middle (autoscroll) and the side buttons (back / forward) are bindable: the browser's own use is blocked
+        const code = BUTTON_CODES[e.button];
+        if (code) {
+          e.preventDefault();
+          input.onButton(code, true);
+        }
+      }
     });
     window.addEventListener('mouseup', e => {
       if (e.button === 0) { input.onLeft(false); }
       else if (e.button === 2) { input.onRight(false); }
+      else {
+        const code = BUTTON_CODES[e.button];
+        if (code) {
+          if (e.target === this.canvas || this.isCaptured) { e.preventDefault(); }
+          input.onButton(code, false);
+        }
+      }
     });
+    this.canvas.addEventListener('auxclick', e => e.preventDefault());
     this.canvas.addEventListener('contextmenu', e => e.preventDefault());
     this.canvas.addEventListener('wheel', e => {
       e.preventDefault();

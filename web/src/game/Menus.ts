@@ -12,11 +12,14 @@ import { SoundId } from '../platform/audio';
 import { type InputState, Vk } from '../platform/input';
 import type { GameSession } from './GameSession';
 import { QualityProfile, QualityProfiles } from './QualityProfiles';
+import { ControlsPanel } from './ControlsPanel';
 import { LibraryPanel } from './LibraryPanel';
+import { Overlays } from './Overlays';
 import { RoomFinder } from './RoomFinder';
 import { BookmarkStore, shortDate } from './Stores';
 import { UnitFormat } from './UnitFormat';
 import { ColourMode } from './ViewerSettings';
+import { Hints } from './Hints';
 
 const COLOUR_OPTIONS = ['Whitecard', 'Material', 'Realistic'];
 const STATUS_FILTERS = ['All', 'Open', 'In progress', 'Closed'];
@@ -217,12 +220,23 @@ export class PauseMenu {
   readonly rooms: RoomFinder;
   /** FAMILY LIBRARY (Place gun). */
   readonly library: LibraryPanel;
+  /** CONTROLS (every key binding, rebindable). */
+  readonly controls: ControlsPanel;
+  /** Dropdowns and confirms over the panels. */
+  readonly overlays: Overlays;
 
   constructor(private readonly session: GameSession) {
     this.w = new Widgets(session);
     this.rooms = new RoomFinder(session, this.w);
     this.library = new LibraryPanel(session, this.w);
     this.library.onPick = entry => session.pickFromLibrary(entry);
+    this.controls = new ControlsPanel(session, this.w);
+    this.overlays = new Overlays(session);
+  }
+
+  /** Closes an open dropdown or confirm (a new screen, Esc); false when none was open. */
+  closeOverlay(): boolean {
+    return this.overlays.close();
   }
 
   /** The menus' widgets (shared with panels drawn elsewhere: the video progress). */
@@ -230,13 +244,14 @@ export class PauseMenu {
 
   /** True while a panel with a search box has the keyboard (letters must not act as shortcuts, e.g. P). */
   get capturesTyping(): boolean {
-    return this.session.paused && (this.rooms.open || this.library.open);
+    return this.session.paused && (this.rooms.open || this.library.open || this.controls.open);
   }
 
   private s(v: number): number { return this.session.s(v); }
 
   /** Closes an open list (Esc); false when none was open. */
   closePanels(): boolean {
+    if (this.overlays.close()) { return true; }
     if (this.session.textures?.close()) { return true; }
     if (this.rooms.close()) { return true; }
     if (this.library.close()) { return true; }
@@ -244,6 +259,7 @@ export class PauseMenu {
     if (this.commentsOpen) { this.commentsOpen = false; this.commentDeleteArmed = null; return true; }
     if (this.closeBookmarks()) { return true; }
     if (this.geometryOpen) { this.geometryOpen = false; return true; }
+    if (this.controls.close()) { return true; }
     return false;
   }
 
@@ -258,6 +274,7 @@ export class PauseMenu {
     if (this.rooms.open) { this.rooms.build(); return; }
     if (this.library.open) { this.library.build(); return; }
     if (this.geometryOpen) { this.buildGeometryPanel(); return; }
+    if (this.controls.open) { this.controls.build(); return; }
 
     const session = this.session, ui = session.ui, f = ui.atlas, w = this.w;
     const input = session.input;
@@ -291,7 +308,7 @@ export class PauseMenu {
     const texturesButton = session.textures?.available ?? false;
     const roomsButton = session.scene.rooms.length > 0;
     const libraryButton = this.library.available;
-    const sessionButtons = 4;
+    const sessionButtons = 5; // + CONTROLS
     const reviewButtons = 5 + (hiddenThings > 0 ? 1 : 0) + (texturesButton ? 1 : 0) + (libraryButton ? 1 : 0) + (roomsButton ? 1 : 0);
     const rows = twoStacks ? Math.max(sessionButtons, reviewButtons) : sessionButtons + reviewButtons;
     const step = Math.min(Math.max((endY - this.s(12) - buttonsTop) / rows, this.s(40)), this.s(54));
@@ -309,6 +326,9 @@ export class PauseMenu {
     const half = (stackW - this.s(6)) / 2;
     if (w.menuButton(f, x, y, half, session.isDirty ? 'SAVE *' : 'SAVE', false, false, true, buttonH)) { void session.save(false); return; }
     if (w.menuButton(f, x + half + this.s(6), y, half, 'SAVE AS', false, false, true, buttonH)) { void session.save(true); return; }
+    y += step;
+    // Keys, mouse buttons, the wheel and the gamepad: every binding, rebindable
+    if (w.menuButton(f, x, y, stackW, 'CONTROLS', false, false, true, buttonH)) { this.controls.show(); return; }
     y += step;
 
     // Stack 2: review tools and panels (beside the first, or below it)
@@ -363,7 +383,7 @@ export class PauseMenu {
     const scene = session.scene;
     const journal = session.journal.count;
     ui.textRight(f.small, width - this.s(56), height - this.s(28),
-      `${session.document.name} · ${scene.elements.length.toLocaleString('en')} elements · ${(scene.geometry.indices.length / 3).toLocaleString('en')} tris · ${journal} ${journal === 1 ? 'edit' : 'edits'}${session.isDirty ? ' · unsaved changes (Ctrl+S)' : ''}`,
+      `${session.document.name} · ${scene.elements.length.toLocaleString('en')} elements · ${(scene.geometry.indices.length / 3).toLocaleString('en')} tris · ${journal} ${journal === 1 ? 'edit' : 'edits'}${session.isDirty ? Hints.unsaved.text : ''}`,
       UiTheme.TEXT_FAINT, this.s(0.5));
   }
 
@@ -373,7 +393,7 @@ export class PauseMenu {
     let off = 0;
     session.categoryVisible.forEach((visible, c) => { if (session.scene.categoryLoaded[c] && !visible) { off++; } });
     for (let l = 1; l < session.linkVisible.length; l++) { if (!session.linkVisible[l]) { off++; } }
-    return off === 0 ? 'CATEGORIES & LINKS' : `CATEGORIES & LINKS (${off} OFF)`;
+    return off === 0 ? 'CATEGORIES & LINKS' : 'CATEGORIES & LINKS *';
   }
 
   /**
@@ -1067,8 +1087,8 @@ export class PauseMenu {
     ui.textRight(f.small, ix + iw, cy, `${count.toLocaleString('en')} ${count === 1 ? 'viewpoint' : 'viewpoints'} · kept in ${session.bookmarks.fileName}`, UiTheme.TEXT_MUTED, this.s(0.6));
     cy += this.s(30);
     ui.text(f.body, ix, cy, tour.settingsOpen
-      ? 'The tour plays the ticked bookmarks in list order · SPACE pause · ← → stops · ESC ends it'
-      : 'B saves where you stand · ALT+1–9 jump to the first nine · PLAY TOUR plays them all', UiTheme.TEXT_MUTED);
+      ? Hints.bookmarksTour.text
+      : Hints.bookmarksKeys.text, UiTheme.TEXT_MUTED);
     cy += this.s(34);
 
     const buttonsY = y + ph - this.s(24) - this.s(48);
@@ -1103,7 +1123,7 @@ export class PauseMenu {
     const visible = Math.max(1, Math.trunc((bottom - y) / rowH));
 
     if (list.length === 0) {
-      ui.textWrapped(f.body, x, y + this.s(8), width, 'No bookmarks yet. Resume, stand where you want and press B (or use ADD THIS VIEW below).', UiTheme.TEXT_MUTED, 2);
+      ui.textWrapped(f.body, x, y + this.s(8), width, Hints.bookmarksEmpty.text, UiTheme.TEXT_MUTED, 2);
       return;
     }
 

@@ -8,7 +8,8 @@ import type { FontAtlas } from '../engine/ui/UiFont';
 import { UiTheme } from '../engine/ui/UiTheme';
 import { SoundId } from '../platform/audio';
 import { downloadBlob, safeFileName } from '../platform/files';
-import { type InputState, Vk } from '../platform/input';
+import { InputAction } from '../core/scene/InputCatalog';
+import type { InputState } from '../platform/input';
 import type { GameSession } from './GameSession';
 import type { Widgets } from './Menus';
 import { PhotoTarget } from './PhotoMode';
@@ -205,11 +206,11 @@ export class VideoMode {
   update(input: InputState): void {
     const recording = this.recording;
     if (!recording) { return; }
-    if (input.isPressed(Vk.ESCAPE)) {
+    if (input.pressed(InputAction.Back)) {
       this.cancel();
       return;
     }
-    if (input.isPressed(Vk.F11)) { this.session.toggleFullscreen(); }
+    if (input.pressed(InputAction.Fullscreen)) { this.session.toggleFullscreen(); }
     if (recording.error && !recording.finishing) {
       this.end(`The video couldn't be made: ${recording.error}`);
       this.session.sound.play(SoundId.Error);

@@ -1,16 +1,38 @@
+import type { InputAction } from '../core/scene/InputCatalog';
+import { KeyCodes, type KeyState } from '../core/scene/KeyChord';
+import { KeyMap } from '../core/scene/KeyMap';
+import { Hotkeys } from './Hotkeys';
+
 /**
- * Keyboard and mouse state for one frame (port of BimGo.App/Platform/InputState.cs).
+ * Keyboard, mouse and gamepad state for one frame (port of BimGo.App/Platform/InputState.cs).
  *
- * Keys are Win32 virtual-key codes so ported code reads the same as the desktop (input.isPressed(Vk.O)); browser
- * KeyboardEvent.code values are mapped onto them by {@link vkFromCode}, which is layout-independent like the
- * desktop's scan-code-driven bindings.
+ * Keys are Win32 virtual-key codes so ported code reads the same as the desktop; browser KeyboardEvent.code values are
+ * mapped onto them by {@link vkFromCode}, which is layout-independent like the desktop's bindings. Input round B2:
+ * game code asks for actions ({@link InputState.pressed}, {@link InputState.down}), which the key map resolves to keys;
+ * raw keys ({@link InputState.isPressed}) are left for text boxes. Mouse buttons live in the key arrays under their
+ * virtual-key codes (LMB 1, RMB 2, MMB 4, Mouse 4 / 5 = 5 / 6), the wheel reads as two codes of its own, the gamepad
+ * as codes from 0x200.
  */
-export class InputState {
-  private readonly down = new Array<boolean>(256).fill(false);
-  private readonly pressed = new Array<boolean>(256).fill(false);
-  private readonly repeated = new Array<boolean>(256).fill(false);
+export class InputState implements KeyState {
+  private readonly downKeys = new Array<boolean>(256).fill(false);
+  private readonly pressedKeys = new Array<boolean>(256).fill(false);
+  private readonly repeatedKeys = new Array<boolean>(256).fill(false);
   private chars = '';
   private pastedText = '';
+  private released = false;
+
+  // Gamepad: digital state, edges, auto-repeat and analog amount per gamepad code (gamepad.ts fills them)
+  private readonly padDown = new Array<boolean>(KeyCodes.PAD_COUNT).fill(false);
+  private readonly padPressed = new Array<boolean>(KeyCodes.PAD_COUNT).fill(false);
+  private readonly padRepeated = new Array<boolean>(KeyCodes.PAD_COUNT).fill(false);
+  private readonly padAnalog = new Float32Array(KeyCodes.PAD_COUNT);
+  private readonly padRepeatAt = new Float32Array(KeyCodes.PAD_COUNT);
+  private readonly padHeld = new Float32Array(KeyCodes.PAD_COUNT);
+  private injectingClick = false;
+
+  /** Gamepad held this long starts auto-repeating; then every interval. */
+  private static readonly PAD_REPEAT_DELAY = 0.4;
+  private static readonly PAD_REPEAT_INTERVAL = 0.1;
 
   /** Raw mouse movement this frame (device pixels, Pointer Lock). */
   mouseDeltaX = 0;
@@ -21,11 +43,21 @@ export class InputState {
   mouseX = 0;
   mouseY = 0;
 
-  leftDown = false;
-  rightDown = false;
-  leftPressed = false;
-  rightPressed = false;
-  leftReleased = false;
+  /** A gamepad is connected. */
+  padConnected = false;
+  /** The gamepad's sticks after the dead zone (x right, y up; length 0–1). */
+  padLeftX = 0;
+  padLeftY = 0;
+  padRightX = 0;
+  padRightY = 0;
+  /** The last thing used was the gamepad (hints show gamepad buttons then). */
+  lastInputWasPad = false;
+
+  get leftDown(): boolean { return this.downKeys[KeyCodes.LEFT_MOUSE]; }
+  get rightDown(): boolean { return this.downKeys[KeyCodes.RIGHT_MOUSE]; }
+  get leftPressed(): boolean { return this.pressedKeys[KeyCodes.LEFT_MOUSE]; }
+  get rightPressed(): boolean { return this.pressedKeys[KeyCodes.RIGHT_MOUSE]; }
+  get leftReleased(): boolean { return this.released; }
 
   /** Characters typed this frame (text entry). */
   get typed(): string {
@@ -37,27 +69,82 @@ export class InputState {
     return this.pastedText;
   }
 
+  /** Key held (raw virtual-key code: text boxes and the key capture only). */
   isDown(vk: number): boolean {
-    return vk >= 0 && vk < 256 && this.down[vk];
+    return vk >= 0 && vk < 256 && this.downKeys[vk];
   }
 
+  /** Key pressed this frame, no auto-repeat (raw: text boxes and the key capture only). */
   isPressed(vk: number): boolean {
-    return vk >= 0 && vk < 256 && this.pressed[vk];
+    return vk >= 0 && vk < 256 && this.pressedKeys[vk];
   }
 
   isPressedOrRepeated(vk: number): boolean {
-    return vk >= 0 && vk < 256 && (this.pressed[vk] || this.repeated[vk]);
+    return vk >= 0 && vk < 256 && (this.pressedKeys[vk] || this.repeatedKeys[vk]);
   }
+
+  // #region Actions (input round B2)
+
+  /** The action fired this frame (one of its keys went down; see KeyMap for modifiers). */
+  pressed(action: InputAction): boolean {
+    return Hotkeys.map.pressed(action, this);
+  }
+
+  /** The action fired this frame or its key auto-repeated (stepping keys). */
+  pressedOrRepeated(action: InputAction): boolean {
+    return Hotkeys.map.pressedOrRepeated(action, this);
+  }
+
+  /** One of the action's keys is held (with its modifiers). */
+  down(action: InputAction): boolean {
+    return Hotkeys.map.down(action, this);
+  }
+
+  /** How far the action is held, 0–1 (gamepad sticks and triggers in between; keys 0 or 1). */
+  axis(action: InputAction): number {
+    return Hotkeys.map.axis(action, this);
+  }
+
+  /** The action fired this frame from its gamepad binding. */
+  pressedByPad(action: InputAction): boolean {
+    return Hotkeys.map.pressedSlot(action, this) === KeyMap.PAD_SLOT;
+  }
+
+  isKeyDown(code: number): boolean {
+    if (code < 256) { return code >= 0 && this.downKeys[code]; }
+    if (KeyCodes.isPad(code)) { return this.padDown[code - KeyCodes.GAMEPAD_FIRST]; }
+    return code === KeyCodes.WHEEL_UP ? this.wheel > 0 : code === KeyCodes.WHEEL_DOWN && this.wheel < 0;
+  }
+
+  isKeyPressed(code: number): boolean {
+    if (code < 256) { return code >= 0 && this.pressedKeys[code]; }
+    if (KeyCodes.isPad(code)) { return this.padPressed[code - KeyCodes.GAMEPAD_FIRST]; }
+    return code === KeyCodes.WHEEL_UP ? this.wheel > 0 : code === KeyCodes.WHEEL_DOWN && this.wheel < 0;
+  }
+
+  isKeyRepeated(code: number): boolean {
+    if (code < 256) { return code >= 0 && this.repeatedKeys[code]; }
+    return KeyCodes.isPad(code) && this.padRepeated[code - KeyCodes.GAMEPAD_FIRST];
+  }
+
+  keyAnalog(code: number): number {
+    if (code < 256) { return code >= 0 && this.downKeys[code] ? 1 : 0; }
+    if (KeyCodes.isPad(code)) { return this.padAnalog[code - KeyCodes.GAMEPAD_FIRST]; }
+    return this.isKeyPressed(code) ? 1 : 0;
+  }
+
+  // #endregion
 
   // #region Event handlers
 
   onKey(vk: number, isDown: boolean, wasDown: boolean): void {
     if (vk < 0 || vk >= 256) { return; }
     if (isDown) {
-      if (!wasDown) { this.pressed[vk] = true; }
-      else { this.repeated[vk] = true; }
+      this.lastInputWasPad = false;
+      if (!wasDown) { this.pressedKeys[vk] = true; }
+      else { this.repeatedKeys[vk] = true; }
     }
-    this.down[vk] = isDown;
+    this.downKeys[vk] = isDown;
   }
 
   onChar(c: string): void {
@@ -69,11 +156,19 @@ export class InputState {
   }
 
   onRawMouse(dx: number, dy: number): void {
+    if (Math.abs(dx) + Math.abs(dy) > 2) { this.lastInputWasPad = false; }
     this.mouseDeltaX += dx;
     this.mouseDeltaY += dy;
   }
 
   onMouseMove(x: number, y: number): void {
+    if (Math.abs(x - this.mouseX) + Math.abs(y - this.mouseY) > 2) { this.lastInputWasPad = false; }
+    this.mouseX = x;
+    this.mouseY = y;
+  }
+
+  /** The gamepad's cursor moved (menus, editors): no switch to mouse hints. */
+  movePadCursor(x: number, y: number): void {
     this.mouseX = x;
     this.mouseY = y;
   }
@@ -83,39 +178,112 @@ export class InputState {
   }
 
   onLeft(isDown: boolean): void {
-    if (isDown && !this.leftDown) { this.leftPressed = true; }
-    if (!isDown && this.leftDown) { this.leftReleased = true; }
-    this.leftDown = isDown;
+    if (!isDown && this.downKeys[KeyCodes.LEFT_MOUSE]) { this.released = true; }
+    this.onButton(KeyCodes.LEFT_MOUSE, isDown);
   }
 
   onRight(isDown: boolean): void {
-    if (isDown && !this.rightDown) { this.rightPressed = true; }
-    this.rightDown = isDown;
+    this.onButton(KeyCodes.RIGHT_MOUSE, isDown);
+  }
+
+  /** A mouse button (LMB, RMB, MMB, Mouse 4, Mouse 5 by virtual-key code) went down or up. */
+  onButton(code: number, isDown: boolean): void {
+    if (code < 0 || code >= 256) { return; }
+    if (isDown && !this.injectingClick) { this.lastInputWasPad = false; }
+    if (isDown && !this.downKeys[code]) { this.pressedKeys[code] = true; }
+    this.downKeys[code] = isDown;
+  }
+
+  // #endregion
+
+  // #region Gamepad
+
+  /**
+   * This frame's gamepad: per gamepad code whether it is down and how far (0–1), and the dead-zoned sticks. Works out
+   * the edges and the auto-repeat.
+   */
+  setPad(connected: boolean, down: ArrayLike<boolean>, analog: ArrayLike<number>, lx: number, ly: number, rx: number, ry: number, dt: number): void {
+    this.padConnected = connected;
+    this.padLeftX = lx;
+    this.padLeftY = ly;
+    this.padRightX = rx;
+    this.padRightY = ry;
+    let any = false;
+    for (let i = 0; i < KeyCodes.PAD_COUNT; i++) {
+      const now = down[i];
+      this.padAnalog[i] = analog[i];
+      if (now && !this.padDown[i]) {
+        this.padPressed[i] = true;
+        this.padHeld[i] = 0;
+        this.padRepeatAt[i] = InputState.PAD_REPEAT_DELAY;
+        any = true;
+      } else if (now) {
+        this.padHeld[i] += dt;
+        if (this.padHeld[i] >= this.padRepeatAt[i]) {
+          this.padRepeated[i] = true;
+          this.padRepeatAt[i] += InputState.PAD_REPEAT_INTERVAL;
+        }
+      }
+      this.padDown[i] = now;
+    }
+    if (any || lx * lx + ly * ly > 0.25 || rx * rx + ry * ry > 0.25) { this.lastInputWasPad = true; }
+  }
+
+  /** The gamepad's click (A in menus) as the left button, without counting as mouse use. */
+  injectLeft(isDown: boolean): void {
+    this.injectingClick = true;
+    this.onLeft(isDown);
+    this.injectingClick = false;
+  }
+
+  /** The gamepad's back (B in menus): an Esc press and the Esc character text boxes read. */
+  injectEscape(): void {
+    this.pressedKeys[KeyCodes.ESCAPE] = true;
+    this.onChar('\u001b');
   }
 
   // #endregion
 
   /** Clears the per-frame edges. */
   endFrame(): void {
-    this.pressed.fill(false);
-    this.repeated.fill(false);
+    this.pressedKeys.fill(false);
+    this.repeatedKeys.fill(false);
+    this.padPressed.fill(false);
+    this.padRepeated.fill(false);
     this.mouseDeltaX = this.mouseDeltaY = 0;
     this.wheel = 0;
-    this.leftPressed = this.rightPressed = this.leftReleased = false;
+    this.released = false;
     this.chars = '';
     this.pastedText = '';
   }
 
-  /** Releases everything (focus lost, dialogs). */
+  /** Releases everything (focus lost, dialogs). The gamepad is polled, so its held state stays (Start would repeat). */
   releaseAll(): void {
-    this.down.fill(false);
-    this.leftDown = this.rightDown = false;
+    this.downKeys.fill(false);
     this.endFrame();
+  }
+
+  /** Consumes everything this frame's keys, buttons, wheel and typing did (after a key capture took one). */
+  consumeFrame(): void {
+    this.pressedKeys.fill(false);
+    this.repeatedKeys.fill(false);
+    this.padPressed.fill(false);
+    this.padRepeated.fill(false);
+    this.wheel = 0;
+    this.released = false;
+    this.chars = '';
+    this.pastedText = '';
+  }
+
+  /** Consumes the wheel so nothing else scrolls this frame (an open dropdown took it). */
+  consumeWheel(): void {
+    this.wheel = 0;
   }
 
   /** Swallows this frame's clicks so one click doesn't hit two controls. */
   consumeClicks(): void {
-    this.leftPressed = this.rightPressed = this.leftReleased = false;
+    for (const code of [KeyCodes.LEFT_MOUSE, KeyCodes.RIGHT_MOUSE, KeyCodes.MIDDLE_MOUSE, KeyCodes.MOUSE4, KeyCodes.MOUSE5]) { this.pressedKeys[code] = false; }
+    this.released = false;
   }
 }
 
@@ -181,7 +349,12 @@ export function blocksBrowserDefault(vk: number, ctrl: boolean, alt: boolean): b
     case Vk.LEFT: case Vk.UP: case Vk.RIGHT: case Vk.DOWN: case Vk.LMENU: case Vk.RMENU:
       return true;
   }
-  if (ctrl && (vk === Vk.key('S') || vk === Vk.key('O') || vk === Vk.key('F') || vk === Vk.key('P'))) { return true; } // Ctrl+F: find room, Ctrl+P: clear cuts
-  if (alt && vk >= 0x31 && vk <= 0x39) { return true; } // Alt+1–9: bookmarks
+  // Ctrl+letters the browser would act on (save, open, find, print, select all, history…) go to the page: any of them
+  // may be bound. Copy / cut / paste stay the browser's (text boxes read the paste); reload too (CONTROLS refuses it,
+  // like Ctrl+W / T / N, which never reach a page)
+  if (ctrl && vk >= 0x41 && vk <= 0x5a) { return !'CVXR'.includes(String.fromCharCode(vk)); }
+  if (ctrl && (vk === Vk.OEM_4 || vk === Vk.OEM_6 || vk === Vk.OEM_PLUS || vk === Vk.OEM_MINUS)) { return true; }
+  // Alt: the browser's menus and back / forward
+  if (alt && ((vk >= 0x30 && vk <= 0x39) || (vk >= 0x41 && vk <= 0x5a) || vk === Vk.LEFT || vk === Vk.RIGHT)) { return true; }
   return false;
 }

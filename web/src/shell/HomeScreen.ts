@@ -1,9 +1,10 @@
+import { InputAction } from '../core/scene/InputCatalog';
 import { gl } from '../engine/gl/Gl';
 import { Rgba } from '../engine/ui/Rgba';
 import { UiBatch } from '../engine/ui/UiBatch';
 import type { FontAtlas } from '../engine/ui/UiFont';
 import { UiTheme } from '../engine/ui/UiTheme';
-import { Vk, type InputState } from '../platform/input';
+import type { InputState } from '../platform/input';
 import type { GameWindow } from '../platform/window';
 import { LastLive, type LastLiveSession, type RecentFile, type RecentFiles } from './RecentFiles';
 
@@ -55,7 +56,7 @@ export class HomeScreen {
   frame(): HomeAction {
     const input = this.window.input;
     let action: HomeAction = null;
-    if (input.isDown(Vk.CONTROL) && input.isPressed(Vk.key('O'))) { action = { kind: 'browse' }; }
+    if (input.pressed(InputAction.OpenFile)) { action = { kind: 'browse' }; }
     return this.draw(input) ?? action;
   }
 

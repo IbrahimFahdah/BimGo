@@ -5,7 +5,9 @@ import { Rgba } from '../../engine/ui/Rgba';
 import type { UiBatch } from '../../engine/ui/UiBatch';
 import { statusColour, UiTheme } from '../../engine/ui/UiTheme';
 import { SoundId } from '../../platform/audio';
-import { type InputState, Vk } from '../../platform/input';
+import { InputAction } from '../../core/scene/InputCatalog';
+import { keyOf } from '../../platform/Hotkeys';
+import type { InputState } from '../../platform/input';
 import { type AimInfo, Gun } from './Gun';
 import { GunIcons } from './GunIcons';
 
@@ -56,7 +58,7 @@ export class CommentGun extends Gun {
   }
 
   override onKeys(input: InputState): void {
-    if (!input.isPressed(Vk.key('E')) || !this.hoveredRecord) { return; }
+    if (!input.pressed(InputAction.CommentEdit) || !this.hoveredRecord) { return; }
     this.session.editComment(this.hoveredRecord);
     this.session.sound.play(SoundId.UiClick);
   }
@@ -80,7 +82,7 @@ export class CommentGun extends Gun {
       this.clearConfirmUntil = 0;
     } else {
       this.clearConfirmUntil = this.clock + 2.5;
-      this.session.toast(`Press X again to delete all ${comments.length} comments`);
+      this.session.toast(`Press ${keyOf(InputAction.ClearMarkers)} again to delete all ${comments.length} comments`);
     }
   }
 

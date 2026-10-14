@@ -7,9 +7,11 @@ import type { FontAtlas } from '../engine/ui/UiFont';
 import { UiTheme } from '../engine/ui/UiTheme';
 import { SoundId } from '../platform/audio';
 import { downloadBlob, safeFileName } from '../platform/files';
-import { type InputState, Vk } from '../platform/input';
+import { InputAction } from '../core/scene/InputCatalog';
+import type { InputState } from '../platform/input';
 import type { GameSession } from './GameSession';
 import { Widgets } from './Menus';
+import { Hints } from './Hints';
 
 const PHOTO_KINDS = ['STILL', '360°'];
 const PHOTO_SCALES = ['1×', '2×', '3×', '4×'];
@@ -125,17 +127,18 @@ export class PhotoMode {
   /** M / Esc close, Enter shoots, RMB-drag looks, the wheel changes the field of view, [ ] the sun time. */
   updateMode(input: InputState): void {
     const session = this.session;
-    if (input.isPressed(Vk.ESCAPE) || input.isPressed(Vk.key('M'))) {
+    if (input.pressed(InputAction.Back) || input.pressed(InputAction.PhotoMode)) {
       this.close();
       return;
     }
-    if (input.isPressed(Vk.RETURN)) { this.request(); }
-    if (input.rightDown) { session.player.look(input.mouseDeltaX, input.mouseDeltaY, session.settings.mouseSensitivity, session.settings.invertY); }
+    if (input.pressed(InputAction.Fullscreen)) { session.toggleFullscreen(); }
+    if (input.pressed(InputAction.PhotoTake)) { this.request(); }
+    if (input.down(InputAction.DragLook)) { session.player.look(input.mouseDeltaX, input.mouseDeltaY, session.settings.mouseSensitivity, session.settings.invertY); }
+    session.padEditorLook(input);
     const [px, py, pw, ph] = this.panelRect;
     const overPanel = input.mouseX >= px && input.mouseX < px + pw && input.mouseY >= py && input.mouseY < py + ph;
     if (input.wheel !== 0 && this.kind === 0 && !overPanel) { this.fov = Math.min(Math.max(this.fov - Math.sign(input.wheel) * 2, 30), 120); }
-    if (session.sun.enabled && input.isPressedOrRepeated(Vk.OEM_4)) { session.stepSunTime(input.isDown(Vk.SHIFT) ? -1 : -5); }
-    if (session.sun.enabled && input.isPressedOrRepeated(Vk.OEM_6)) { session.stepSunTime(input.isDown(Vk.SHIFT) ? 1 : 5); }
+    if (session.sun.enabled) { session.stepSunTimeKeys(input); }
   }
 
   private request(): void {
@@ -299,7 +302,7 @@ export class PhotoMode {
     let cy = y + this.s(14);
     ui.text(f.small, ix, cy, 'PHOTO MODE', UiTheme.ACCENT, this.s(1.4));
     cy += this.s(26);
-    ui.textWrapped(f.small, ix, cy, iw, 'RMB-drag looks · wheel: field of view · Enter: take', UiTheme.TEXT_MUTED, 1);
+    ui.textWrapped(f.small, ix, cy, iw, Hints.photoUse.text, UiTheme.TEXT_MUTED, 1);
     cy += this.s(24);
 
     this.kind = w.segmented(f, ix, cy, iw, PHOTO_KINDS, this.kind);
@@ -344,10 +347,10 @@ export class PhotoMode {
     cy += this.s(34);
 
     const due = this.shotIn > 0 || this.busy;
-    if (w.menuButton(f, ix, cy, iw, due ? 'RENDERING…' : 'TAKE PHOTO (ENTER)', true, false, !due, this.s(44))) { this.request(); }
+    if (w.menuButton(f, ix, cy, iw, due ? 'RENDERING…' : Hints.photoTake.text, true, false, !due, this.s(44))) { this.request(); }
     cy += this.s(52);
     if (this.notice) { ui.textWrapped(f.small, ix, cy, iw, this.notice, UiTheme.MEASURE_TEXT, 2); }
-    if (w.smallButton(f, ix, y + ph - this.s(44), iw, this.s(30), 'CLOSE (M / ESC)')) { this.close(); }
+    if (w.smallButton(f, ix, y + ph - this.s(44), iw, this.s(30), Hints.photoClose.text)) { this.close(); }
   }
 
   // #endregion

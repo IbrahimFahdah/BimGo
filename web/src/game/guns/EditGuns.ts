@@ -10,10 +10,27 @@ import type { TextBuffer } from '../../engine/ui/TextBuffer';
 import type { UiBatch } from '../../engine/ui/UiBatch';
 import { UiTheme } from '../../engine/ui/UiTheme';
 import { SoundId } from '../../platform/audio';
-import { type InputState, Vk } from '../../platform/input';
+import { InputAction } from '../../core/scene/InputCatalog';
+import { Hotkeys, KeyHint, keyOf } from '../../platform/Hotkeys';
+import type { InputState } from '../../platform/input';
 import { type AimInfo, Gun, type GunHost, type Highlight } from './Gun';
 import { GunIcons } from './GunIcons';
 import { UnitFormat } from '../UnitFormat';
+
+/** Gizmo / Clone / Place panel hints naming keys (rebuilt when a binding changes). */
+const HINTS = {
+  move: new KeyHint(() => `${Hotkeys.map.describeJoined('', true, InputAction.MoveForward, InputAction.MoveLeft, InputAction.MoveBack, InputAction.MoveRight)} · `
+    + `${Hotkeys.map.describeJoined('/', false, InputAction.HoldUp, InputAction.HoldDown)} up/down · ${keyOf(InputAction.HoldRotate)} rotate`),
+  rotate: new KeyHint(() => `${Hotkeys.map.describeJoined('/', false, InputAction.MoveLeft, InputAction.MoveRight)} rotate · ${keyOf(InputAction.HoldRotate)} move`),
+  snap: new KeyHint(() => `${keyOf(InputAction.HoldFine)} fine · ${keyOf(InputAction.GizmoSnap)} snap on/off · ${keyOf(InputAction.HoldSnapInvert)} flips snap`),
+  stepMove: new KeyHint(() => `${Hotkeys.map.describeJoined('/', false, InputAction.HoldStepDown, InputAction.HoldStepUp)} move step · ${keyOf(InputAction.GizmoDrop)} drop to surface`),
+  stepAngle: new KeyHint(() => `${Hotkeys.map.describeJoined('/', false, InputAction.HoldStepDown, InputAction.HoldStepUp)} angle step · ${keyOf(InputAction.GizmoDrop)} drop to surface`),
+  commit: new KeyHint(() => `${keyOf(InputAction.GunSecondary)} commit · Esc cancel`),
+  snapOffKey: new KeyHint(() => ` · ${keyOf(InputAction.GizmoSnap)} off`),
+  snapFlipKey: new KeyHint(() => ` · ${keyOf(InputAction.HoldSnapInvert)}`),
+  movableGizmo: new KeyHint(() => `Movable: ${keyOf(InputAction.GunPrimary)} locks on · ${keyOf(InputAction.GizmoDrop)} drops to surface`),
+  movableClone: new KeyHint(() => `Movable: ${keyOf(InputAction.GunPrimary)} clones`)
+};
 
 /** What the editing tools need on top of GunHost (the desktop passes GameSession). */
 export interface EditHost extends GunHost {
@@ -86,13 +103,18 @@ export class HammerGun extends Gun {
   }
 
   override onKeys(input: InputState): void {
-    if (!input.isPressed(Vk.key('T'))) { return; }
+    if (input.pressed(InputAction.DemolishMode)) { this.cycleMode(1); }
+  }
+
+  /** The wheel or the mode key: demolish ↔ delete. */
+  override cycleMode(_direction: number): boolean {
     this.deleteMode = !this.deleteMode;
     this.host.sound.play(SoundId.UiClick);
     const where = this.host.editsGoToRevit ? '' : ' (recorded in the file)';
     this.host.toast(this.deleteMode
       ? (this.host.editsGoToRevit ? 'Demolish gun: DELETE mode (removes elements from the Revit model)' : `Demolish gun: DELETE mode${where}`)
       : `Demolish gun: demolish in phase ${this.phaseLabel}${where}`);
+    return true;
   }
 
   override onPrimary(aim: AimInfo): void {
@@ -116,7 +138,7 @@ export class HammerGun extends Gun {
     if (blocked) {
       this.unprime(target);
       this.host.sound.play(SoundId.Error);
-      this.host.toast(`${blocked}, so it can't be demolished. Press T to delete it instead.`, 3.5, true);
+      this.host.toast(`${blocked}, so it can't be demolished. Press ${keyOf(InputAction.DemolishMode)} to delete it instead.`, 3.5, true);
       return;
     }
 
@@ -231,7 +253,7 @@ export class HammerGun extends Gun {
       const record = host.scene.elements[this.hover.element];
       const blocked = this.deleteMode ? null : this.blockReason(this.hover);
       if (record.link > 0) { ui.textWrapped(f.body, x, y, width, record.moveBlockReason ?? 'In a linked model (read-only)', UiTheme.DANGER, 1); }
-      else if (blocked) { ui.textWrapped(f.body, x, y, width, `${blocked}: press T to delete instead`, UiTheme.DANGER, 1); }
+      else if (blocked) { ui.textWrapped(f.body, x, y, width, `${blocked}: press ${keyOf(InputAction.DemolishMode)} to delete instead`, UiTheme.DANGER, 1); }
       else { ui.textWrapped(f.body, x, y, width, record.name, UiTheme.TEXT_SOFT, 1); }
     } else {
       ui.text(f.body, x, y, 'Aim at an element. LMB primes it, LMB again removes it.', UiTheme.TEXT_MUTED);
@@ -304,15 +326,14 @@ export class GizmoController {
     return target;
   }
 
-  isSnapping(input: InputState): boolean { return this.host.gizmoSnap !== input.isDown(Vk.CONTROL); }
+  isSnapping(input: InputState): boolean { return this.host.gizmoSnap !== input.down(InputAction.HoldSnapInvert); }
 
   update(dt: number, input: InputState): void {
     this.clock += dt;
     const target = this.target;
     if (!target) { return; }
     const rotating = this.mode === GizmoMode.Rotate;
-    const down = (k: string, alt?: number) => input.isDown(Vk.key(k)) || (alt !== undefined && input.isDown(alt));
-    const tap = (k: string, alt?: number) => input.isPressedOrRepeated(Vk.key(k)) || (alt !== undefined && input.isPressedOrRepeated(alt));
+    const tap = (action: InputAction) => input.pressedOrRepeated(action);
 
     // Camera-relative in plan, plus straight up / down
     const flatForward = flatten(this.host.camera.forward), flatRight = flatten(this.host.camera.right);
@@ -321,33 +342,34 @@ export class GizmoController {
       const step = this.host.snapMoveMm / 1000, angleStep = this.host.snapAngleDeg * Math.PI / 180;
       if (!rotating) {
         let stepMove = vec3();
-        if (tap('W', Vk.UP)) { stepMove = V.add(stepMove, flatForward); }
-        if (tap('S', Vk.DOWN)) { stepMove = V.sub(stepMove, flatForward); }
-        if (tap('D', Vk.RIGHT)) { stepMove = V.add(stepMove, flatRight); }
-        if (tap('A', Vk.LEFT)) { stepMove = V.sub(stepMove, flatRight); }
+        if (tap(InputAction.MoveForward)) { stepMove = V.add(stepMove, flatForward); }
+        if (tap(InputAction.MoveBack)) { stepMove = V.sub(stepMove, flatForward); }
+        if (tap(InputAction.MoveRight)) { stepMove = V.add(stepMove, flatRight); }
+        if (tap(InputAction.MoveLeft)) { stepMove = V.sub(stepMove, flatRight); }
         this.rawOffset = V.add(this.rawOffset, V.scale(nearestAxis(stepMove), step));
-        if (tap('E')) { this.rawOffset.z += step; this.zFree = false; }
-        if (tap('Q')) { this.rawOffset.z -= step; this.zFree = false; }
+        if (tap(InputAction.HoldUp)) { this.rawOffset.z += step; this.zFree = false; }
+        if (tap(InputAction.HoldDown)) { this.rawOffset.z -= step; this.zFree = false; }
       } else {
-        if (tap('A', Vk.LEFT)) { this.rawAngle += angleStep; }
-        if (tap('D', Vk.RIGHT)) { this.rawAngle -= angleStep; }
+        if (tap(InputAction.MoveLeft)) { this.rawAngle += angleStep; }
+        if (tap(InputAction.MoveRight)) { this.rawAngle -= angleStep; }
       }
       // Clamp the change since lock-on to whole increments (also tidies a smooth move made before snapping)
       const d = V.sub(this.rawOffset, this.startOffset);
       this.rawOffset = V.add(this.startOffset, vec3(snap(d.x, step), snap(d.y, step), this.zFree ? d.z : snap(d.z, step)));
       this.rawAngle = this.startAngle + snap(this.rawAngle - this.startAngle, angleStep);
     } else {
-      const scale = input.isDown(Vk.SHIFT) ? GizmoController.FINE : 1;
+      const scale = input.down(InputAction.HoldFine) ? GizmoController.FINE : 1;
       if (!rotating) {
-        const forward = (down('W', Vk.UP) ? 1 : 0) - (down('S', Vk.DOWN) ? 1 : 0);
-        const strafe = (down('D', Vk.RIGHT) ? 1 : 0) - (down('A', Vk.LEFT) ? 1 : 0);
-        const lift = (down('E') ? 1 : 0) - (down('Q') ? 1 : 0);
+        // Keys read 0 or 1; a gamepad stick anything in between
+        const forward = input.axis(InputAction.MoveForward) - input.axis(InputAction.MoveBack);
+        const strafe = input.axis(InputAction.MoveRight) - input.axis(InputAction.MoveLeft);
+        const lift = (input.down(InputAction.HoldUp) ? 1 : 0) - (input.down(InputAction.HoldDown) ? 1 : 0);
         let move = V.add(V.scale(flatForward, forward), V.scale(flatRight, strafe));
         if (V.lengthSquared(move) > 1) { move = V.normalize(move); }
         move.z = lift;
         this.rawOffset = V.add(this.rawOffset, V.scale(move, GizmoController.MOVE_SPEED * scale * dt));
       } else {
-        const turn = (down('A', Vk.LEFT) ? 1 : 0) - (down('D', Vk.RIGHT) ? 1 : 0);
+        const turn = input.axis(InputAction.MoveLeft) - input.axis(InputAction.MoveRight);
         this.rawAngle += turn * GizmoController.ROTATE_SPEED * scale * dt;
       }
     }
@@ -464,23 +486,23 @@ function flatten(v: Vec3): Vec3 {
 /** Keys and the context panel shared by Gizmo and Clone (port of GizmoPanel). */
 const GizmoPanel = {
   handleKeys(host: EditHost, gizmo: GizmoController, input: InputState): void {
-    if (input.isPressed(Vk.key('G'))) { host.toggleGizmoSnap(); }
+    if (input.pressed(InputAction.GizmoSnap)) { host.toggleGizmoSnap(); }
     if (!gizmo.active) { return; }
-    if (input.isPressed(Vk.key('F'))) { GizmoPanel.drop(host, gizmo); }
-    if (input.isPressed(Vk.key('R'))) {
+    if (input.pressed(InputAction.GizmoDrop)) { GizmoPanel.drop(host, gizmo); }
+    if (input.pressed(InputAction.HoldRotate)) {
       gizmo.toggleMode();
       host.sound.play(SoundId.UiClick);
     }
     const rotating = gizmo.mode === GizmoMode.Rotate;
-    if (input.isPressed(Vk.key('Z'))) { if (rotating) { host.stepSnapAngle(-1); } else { host.stepSnapMove(-1); } }
-    if (input.isPressed(Vk.key('X'))) { if (rotating) { host.stepSnapAngle(1); } else { host.stepSnapMove(1); } }
+    if (input.pressed(InputAction.HoldStepDown)) { if (rotating) { host.stepSnapAngle(-1); } else { host.stepSnapMove(-1); } }
+    if (input.pressed(InputAction.HoldStepUp)) { if (rotating) { host.stepSnapAngle(1); } else { host.stepSnapMove(1); } }
   },
 
   /** F while locked on: drop or lift onto the surface below, with a sound and a note; true when it moved. */
   drop(host: EditHost, gizmo: GizmoController): boolean {
     const { moved, message } = gizmo.dropToSurface();
     host.sound.play(moved ? SoundId.UiClick : SoundId.Error);
-    if (message) { host.toast(moved ? message + ' (RMB commits)' : message); }
+    if (message) { host.toast(moved ? `${message} (${keyOf(InputAction.GunSecondary)} commits)` : message); }
     return moved;
   },
 
@@ -502,21 +524,21 @@ const GizmoPanel = {
       ui.text(f.mono, x, y, gizmo.describeDelta(host.text), UiTheme.TEXT);
       y += s(20);
       const rotating = gizmo.mode === GizmoMode.Rotate;
-      ui.text(f.body, x, y, rotating ? 'A/D rotate · R move' : 'WASD · E/Q up/down · R rotate', UiTheme.TEXT_SOFT);
+      ui.text(f.body, x, y, rotating ? HINTS.rotate.text : HINTS.move.text, UiTheme.TEXT_SOFT);
       y += s(18);
       if (gizmo.isSnapping(host.input)) {
-        ui.text(f.body, x, y, `SNAP ${GizmoPanel.snapText(host)}${host.gizmoSnap ? ' · G off' : ' · Ctrl'}`, UiTheme.ACCENT);
+        ui.text(f.body, x, y, `SNAP ${GizmoPanel.snapText(host)}${host.gizmoSnap ? HINTS.snapOffKey.text : HINTS.snapFlipKey.text}`, UiTheme.ACCENT);
       } else {
-        ui.text(f.body, x, y, 'Shift fine · G snap on/off · Ctrl flips snap', UiTheme.TEXT_MUTED);
+        ui.text(f.body, x, y, HINTS.snap.text, UiTheme.TEXT_MUTED);
       }
       y += s(18);
-      ui.text(f.body, x, y, rotating ? 'Z/X angle step · F drop to surface' : 'Z/X move step · F drop to surface', UiTheme.TEXT_MUTED);
+      ui.text(f.body, x, y, rotating ? HINTS.stepAngle.text : HINTS.stepMove.text, UiTheme.TEXT_MUTED);
       y += s(18);
-      ui.text(f.body, x, y, 'RMB commit · Esc cancel', UiTheme.TEXT_MUTED);
+      ui.text(f.body, x, y, HINTS.commit.text, UiTheme.TEXT_MUTED);
       return;
     }
 
-    ui.textRight(f.small, x + width, y - s(20), host.gizmoSnap ? `Snap on · ${GizmoPanel.snapText(host)} (G)` : 'Snap off (G)',
+    ui.textRight(f.small, x + width, y - s(20), host.gizmoSnap ? `Snap on · ${GizmoPanel.snapText(host)} (${keyOf(InputAction.GizmoSnap)})` : `Snap off (${keyOf(InputAction.GizmoSnap)})`,
       host.gizmoSnap ? UiTheme.ACCENT : UiTheme.TEXT_FAINT, s(0.5));
     if (hover < 0) {
       ui.text(f.body, x, y, 'Aim at furniture or fittings.', UiTheme.TEXT_MUTED);
@@ -528,7 +550,7 @@ const GizmoPanel = {
     y += s(22);
     ui.textWrapped(f.body, x, y, width, hovered.familyType, UiTheme.TEXT_SOFT, 1);
     y += s(20);
-    if (hovered.movable) { ui.text(f.body, x, y, title === 'GIZMO' ? 'Movable: LMB locks on · F drops to surface' : 'Movable: LMB clones', UiTheme.GOOD); }
+    if (hovered.movable) { ui.text(f.body, x, y, title === 'GIZMO' ? HINTS.movableGizmo.text : HINTS.movableClone.text, UiTheme.GOOD); }
     else { ui.textWrapped(f.body, x, y, width, `Can't move: ${hovered.moveBlockReason}`, UiTheme.DANGER, 1); }
     y += s(20);
     if (host.editsLocalOnly) { ui.text(f.body, x, y, 'Not connected to Revit: walkthrough only', UiTheme.DANGER); }
@@ -557,7 +579,7 @@ export class GizmoGun extends Gun {
   clearMarkers(): void { /* none */ }
   override onKeys(input: InputState): void {
     // Aim + F (not locked on): drop or lift the aimed element onto the surface below and commit it at once
-    if (!this.gizmo.active && input.isPressed(Vk.key('F'))) {
+    if (!this.gizmo.active && input.pressed(InputAction.GizmoDrop)) {
       this.dropAimed();
       return;
     }
@@ -606,7 +628,7 @@ export class GizmoGun extends Gun {
     const host = this.host;
     if (this.hover < 0) {
       host.sound.play(SoundId.Error);
-      host.toast('Aim at furniture or a fitting, then F drops it onto the surface below');
+      host.toast(`Aim at furniture or a fitting, then ${keyOf(InputAction.GizmoDrop)} drops it onto the surface below`);
       return;
     }
     if (!this.lockOn(this.hover, this.hoverDynamic)) { return; }
@@ -738,7 +760,7 @@ export class CloneGun extends Gun {
 
     this.gizmo.begin(host.createClone(aim.hit.element, source));
     host.sound.play(SoundId.Grab);
-    host.toast('Clone made: move it, then RMB commits it (Esc discards it)');
+    host.toast(`Clone made: move it, then ${keyOf(InputAction.GunSecondary)} commits it (Esc discards it)`);
   }
 
   override onSecondary(): void {
@@ -903,7 +925,7 @@ export class PlaceGun extends Gun {
     this.gizmo.begin(placed);
     this.gizmo.dropToSurface(); // quietly onto the floor (or desk) in front; F does it again after moving
     host.sound.play(SoundId.Grab);
-    host.toast(`${libraryLabel(entry)}: move it, then RMB commits it (Esc discards it)`);
+    host.toast(`${libraryLabel(entry)}: move it, then ${keyOf(InputAction.GunSecondary)} commits it (Esc discards it)`);
   }
 
   /** Keeps the placement and asks the model source to create it (Revit places the type; a file records a `place`). */

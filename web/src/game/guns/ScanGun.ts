@@ -6,9 +6,13 @@ import { UiBatch } from '../../engine/ui/UiBatch';
 import type { FontAtlas } from '../../engine/ui/UiFont';
 import { UiTheme } from '../../engine/ui/UiTheme';
 import { SoundId } from '../../platform/audio';
-import { type InputState, Vk } from '../../platform/input';
+import { InputAction } from '../../core/scene/InputCatalog';
+import { KeyHint, keyOf } from '../../platform/Hotkeys';
+import type { InputState } from '../../platform/input';
 import { type AimInfo, Gun } from './Gun';
 import { GunIcons } from './GunIcons';
+
+const SCAN_AIM = new KeyHint(() => `Aim at an element. ${keyOf(InputAction.GunPrimary)} locks it.`);
 
 /** Identify elements: hover or lock a target to read its data and parameters (port of ScanGun.cs). */
 export class ScanGun extends Gun {
@@ -53,14 +57,14 @@ export class ScanGun extends Gun {
   }
 
   override onKeys(input: InputState): void {
-    if (input.isPressed(Vk.key('R')) && this.target >= 0) {
+    if (input.pressed(InputAction.ScanSelectInRevit) && this.target >= 0) {
       this.session.showInRevit(this.target, this.locked >= 0 ? this.lockedDynamic : this.hoverDynamic);
     }
 
-    // I: hide the target in the walkthrough only; Shift+I: isolate its category (again: restore)
-    if (input.isPressed(Vk.key('I'))) {
-      if (input.isDown(Vk.SHIFT)) { this.session.toggleIsolateCategory(this.target); }
-      else if (this.target >= 0) {
+    // Hide the target in the walkthrough only; isolate its category (again: restore)
+    if (input.pressed(InputAction.ScanIsolate)) { this.session.toggleIsolateCategory(this.target); }
+    else if (input.pressed(InputAction.ScanHide)) {
+      if (this.target >= 0) {
         const target = this.target;
         const dynamicId = this.locked >= 0 ? this.lockedDynamic : this.hoverDynamic;
         if (this.locked >= 0 && dynamicId === 0) { this.locked = -1; }
@@ -117,7 +121,7 @@ export class ScanGun extends Gun {
     y += this.s(20);
 
     if (target < 0) {
-      ui.text(f.body, x, y, 'Aim at an element. LMB locks it.', UiTheme.TEXT_MUTED);
+      ui.text(f.body, x, y, SCAN_AIM.text, UiTheme.TEXT_MUTED);
       return;
     }
 

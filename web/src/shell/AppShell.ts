@@ -3,10 +3,13 @@ import { readBookmarkDocument, readCommentDocument, readSunSettings, readVisibil
 import { LiveClient, LiveConnectError } from '../core/live/LiveClient';
 import { type LaunchInfo, MessageTypes, readHelloAck, readLaunch } from '../core/live/LiveProtocol';
 import { LiveSessionSource } from '../core/sources/LiveSessionSource';
+import { Rgba } from '../engine/ui/Rgba';
 import { UiBatch } from '../engine/ui/UiBatch';
 import { GameSession, type SessionPose } from '../game/GameSession';
 import { drawProgress, type ProgressState } from '../game/ProgressScreen';
 import { ViewerSettings } from '../game/ViewerSettings';
+import { PadCursorMode, PadInput } from '../platform/gamepad';
+import { Hotkeys } from '../platform/Hotkeys';
 import { Vk } from '../platform/input';
 import { hasBimGoExtension, pickBimGoFile, type PickedFile } from '../platform/files';
 import { GameWindow } from '../platform/window';
@@ -42,6 +45,9 @@ export class AppShell {
     this.home = new HomeScreen(this.window, this.ui, this.recent, version);
     this.window.setTitle('BimGo');
     this.window.onCaptureLost = () => this.session?.onCaptureLost();
+    Hotkeys.read(this.settings);
+    PadInput.read(this.settings);
+    Hotkeys.learnLayout();
     // Dev server only (removed from builds): lets automated browser checks drive the app
     if (import.meta.env.DEV) { (window as unknown as { __bimgo: unknown }).__bimgo = this; }
   }
@@ -195,6 +201,11 @@ export class AppShell {
     const dropped = this.session || this.loading ? null : window.takeDroppedFile();
     if (dropped) { this.open({ file: dropped, handle: null }); }
 
+    // The gamepad: polled once a frame; in menus and editors it drives the page's cursor (the session sets the mode)
+    if (!this.session) { window.padCursor = PadCursorMode.Menu; }
+    PadInput.poll(window.input, document.hasFocus());
+    PadInput.driveCursor(window.input, window.padCursor, window.width, window.height, window.isCaptured, window.dpiScale);
+
     if (this.loading) {
       const input = window.input;
       const cancel = drawProgress(this.ui, window.width, window.height, this.loading.title, this.loading.progress, input);
@@ -211,6 +222,8 @@ export class AppShell {
       if (action?.kind === 'browse') { this.browse(); }
       else if (action?.kind === 'sample') { void this.openSample(); }
     }
+    // The gamepad's cursor over everything (the system cursor stays where the mouse left it)
+    if (PadInput.cursorVisible) { drawPadCursor(this.ui, window.input.mouseX, window.input.mouseY, window.width, window.height); }
     window.input.endFrame();
   }
 
@@ -307,6 +320,14 @@ export class AppShell {
     this.window.setTitle('BimGo');
     this.window.input.releaseAll();
   }
+}
+
+/** The gamepad's cursor: an arrow at the cursor position (its own small batch, drawn last). */
+function drawPadCursor(ui: UiBatch, x: number, y: number, width: number, height: number): void {
+  const s = ui.scale;
+  ui.triangle(x - s, y - 2 * s, x - s, y + 20 * s, x + 15 * s, y + 14 * s, Rgba.hex(0x000000, 0.8));
+  ui.triangle(x + s, y + 1 * s, x + s, y + 16 * s, x + 12 * s, y + 12 * s, Rgba.hex(0xffffff));
+  ui.flush(width, height);
 }
 
 /** The sidecars kept beside the Revit model replace the snapshot's empty ones (comments, bookmarks, sun, visibility). */

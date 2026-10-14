@@ -14,12 +14,14 @@ import type { FontAtlas } from '../engine/ui/UiFont';
 import { UiTheme } from '../engine/ui/UiTheme';
 import { SoundId } from '../platform/audio';
 import { downloadBlob, safeFileName } from '../platform/files';
-import { type InputState, Vk } from '../platform/input';
+import { InputAction } from '../core/scene/InputCatalog';
+import type { InputState } from '../platform/input';
 import type { GameSession } from './GameSession';
 import { Widgets } from './Menus';
 import { MONTHS } from './SunState';
 import { UnitFormat } from './UnitFormat';
 import { type DaylightInputs, NO_ROOM_LIGHT, RayOutcome, type RoomLight, SunHoursFace, SunHoursStudy } from './SunHoursStudy';
+import { Hints } from './Hints';
 
 const GRID_OPTIONS = ['0.1', '0.25', '0.5', '1 m'];
 /** The same grid sizes in imperial (the grid itself stays metric). */
@@ -125,11 +127,14 @@ export class SunHoursMode {
   /** Keys and mouse while the panel is open: Esc / J close, RMB-drag looks, a click on the model adds / removes a surface. */
   updateMode(input: InputState): void {
     const session = this.session;
-    if (input.isPressed(Vk.ESCAPE) || input.isPressed(Vk.key('J'))) {
+    if (input.pressed(InputAction.Back) || input.pressed(InputAction.SunStudy)) {
       this.close();
       return;
     }
-    if (input.rightDown) { session.player.look(input.mouseDeltaX, input.mouseDeltaY, session.settings.mouseSensitivity, session.settings.invertY); }
+    if (input.pressed(InputAction.Fullscreen)) { session.toggleFullscreen(); }
+    if (input.pressed(InputAction.Screenshot)) { session.requestScreenshot(); }
+    if (input.down(InputAction.DragLook)) { session.player.look(input.mouseDeltaX, input.mouseDeltaY, session.settings.mouseSensitivity, session.settings.invertY); }
+    session.padEditorLook(input);
 
     const [px, py, pw, ph] = this.panelRect;
     const overPanel = input.mouseX >= px && input.mouseX < px + pw && input.mouseY >= py && input.mouseY < py + ph;
@@ -935,7 +940,7 @@ export class SunHoursMode {
       return;
     }
 
-    const shift = input.isDown(Vk.SHIFT);
+    const shift = input.down(InputAction.FineAdjust);
     const locked = study.running;
     const s = this.settings;
     const year = new Date().getFullYear();
@@ -1090,7 +1095,7 @@ export class SunHoursMode {
     cy += this.s(40);
 
     if (this.notice) { ui.textWrapped(f.small, ix, cy, iw, this.notice, UiTheme.MEASURE_TEXT, 2); }
-    if (w.smallButton(f, ix, y + ph - this.s(44), iw, this.s(30), 'CLOSE (J / ESC) · results stay')) { this.close(); }
+    if (w.smallButton(f, ix, y + ph - this.s(44), iw, this.s(30), Hints.studyClose.text)) { this.close(); }
   }
 
   private timeRow(f: FontAtlas, x: number, y: number, label: string, start: boolean, step: number, locked: boolean): number {

@@ -96,6 +96,8 @@ export abstract class Gun {
   onKeys(_input: InputState): void { /* optional */ }
   /** The gun's number key pressed while it is already selected (the Measure gun cycles its modes). */
   onReselect(): void { /* optional */ }
+  /** The mouse wheel: steps the gun's mode by direction (±1); false when the gun has no modes. */
+  cycleMode(_direction: number): boolean { return false; }
   onDeselect(): void { /* optional */ }
   abstract clearMarkers(): void;
   drawWorld(_overlay: Overlay3D, _selected: boolean): void { /* optional */ }

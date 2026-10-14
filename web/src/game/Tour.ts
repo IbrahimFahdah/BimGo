@@ -10,10 +10,13 @@ import { UiBatch } from '../engine/ui/UiBatch';
 import type { FontAtlas } from '../engine/ui/UiFont';
 import { UiTheme } from '../engine/ui/UiTheme';
 import { SoundId } from '../platform/audio';
-import { type InputState, Vk } from '../platform/input';
+import { InputAction } from '../core/scene/InputCatalog';
+import type { InputState } from '../platform/input';
 import type { EyePreset } from './ViewerSettings';
 import type { GameSession } from './GameSession';
 import type { Widgets } from './Menus';
+import { Hints } from './Hints';
+import { keyOf } from '../platform/Hotkeys';
 
 const DEGREES = Math.PI / 180;
 
@@ -96,7 +99,7 @@ export class TourPlayer {
     const records = session.bookmarks.bookmarks.filter(b => !b.tourSkip);
     if (records.length === 0) {
       session.menu.setBookmarksNotice(session.bookmarks.bookmarks.length === 0
-        ? 'No bookmarks to tour yet: press B where you want a stop'
+        ? `No bookmarks to tour yet: press ${keyOf(InputAction.AddBookmark)} where you want a stop`
         : 'Every bookmark is left out of the tour (TOUR SETTINGS ticks them back in)');
       session.sound.play(SoundId.Error);
       return false;
@@ -186,18 +189,18 @@ export class TourPlayer {
    */
   update(input: InputState, dt: number): void {
     const session = this.session, timeline = this.timeline!;
-    if (input.isPressed(Vk.ESCAPE)) {
+    if (input.pressed(InputAction.Back)) {
       this.stop(false);
       return;
     }
-    if (input.isPressed(Vk.F11)) { session.toggleFullscreen(); }
-    if (input.isPressed(Vk.SPACE)) {
+    if (input.pressed(InputAction.Fullscreen)) { session.toggleFullscreen(); }
+    if (input.pressed(InputAction.TourPause)) {
       this.paused = !this.paused;
       session.sound.play(SoundId.UiClick);
     }
 
-    const next = input.isPressed(Vk.RIGHT) || input.isPressed(Vk.NEXT) || input.leftPressed;
-    const previous = input.isPressed(Vk.LEFT) || input.isPressed(Vk.PRIOR) || input.rightPressed;
+    const next = input.pressed(InputAction.TourNext);
+    const previous = input.pressed(InputAction.TourPrevious);
     if (input.leftPressed || input.rightPressed) { session.captureMouse(); } // a click is a gesture: hide the cursor again
     if (next || previous) {
       input.consumeClicks();
@@ -309,8 +312,8 @@ export class TourPlayer {
     const hintAlpha = this.paused ? 1 : clamp((this.hintUntil - session.clock) / 0.6, 0, 1);
     if (hintAlpha > 0) {
       const hint = this.paused
-        ? 'PAUSED · SPACE plays · ← → stops · ESC ends the tour'
-        : 'SPACE pause · ← → or click for stops · ESC ends the tour';
+        ? Hints.tourPaused.text
+        : Hints.tourPlaying.text;
       const hintW = UiBatch.measure(f.body, hint) + this.s(28);
       const hx = Math.round(width * 0.5 - hintW * 0.5);
       const hy = height - this.s(session.uiHidden ? 64 : 112);
@@ -448,7 +451,7 @@ export class TourPlayer {
     ui.text(f.small, x, y + this.s(2), 'STOPS · EACH CAN OVERRIDE THE TOUR', UiTheme.TEXT_MUTED, this.s(1.4));
     y += this.s(26);
     if (list.length === 0) {
-      ui.textWrapped(f.body, x, y, width, 'No bookmarks yet: press B where you want a stop.', UiTheme.TEXT_MUTED, 2);
+      ui.textWrapped(f.body, x, y, width, Hints.tourEmpty.text, UiTheme.TEXT_MUTED, 2);
       return;
     }
 

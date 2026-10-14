@@ -3,6 +3,7 @@ import { Rgba } from '../engine/ui/Rgba';
 import type { FontAtlas } from '../engine/ui/UiFont';
 import { UiTheme } from '../engine/ui/UiTheme';
 import { SoundId } from '../platform/audio';
+import { InputAction } from '../core/scene/InputCatalog';
 import { type InputState, Vk } from '../platform/input';
 import type { GameSession } from './GameSession';
 import { LightMode } from './Lights';
@@ -10,6 +11,7 @@ import { LocationPicker } from './LocationPicker';
 import { Widgets } from './Menus';
 import { MONTHS, TIME_STEP, two } from './SunState';
 import { UnitFormat } from './UnitFormat';
+import { Hints } from './Hints';
 
 const QUALITY_OPTIONS = ['Low', 'Medium', 'High'];
 const LIGHT_MODE_OPTIONS = ['Off', 'Glow', 'Glow + light'];
@@ -91,13 +93,12 @@ export class SunPanel {
       return;
     }
 
-    if (input.isPressed(Vk.ESCAPE) || input.isPressed(Vk.key('O'))) {
+    if (input.pressed(InputAction.Back) || input.pressed(InputAction.Shadows) || input.pressed(InputAction.SunPanel)) {
       this.close();
       return;
     }
-    if (input.isPressedOrRepeated(Vk.OEM_4)) { this.session.stepSunTime(input.isDown(Vk.SHIFT) ? -1 : -TIME_STEP); }
-    if (input.isPressedOrRepeated(Vk.OEM_6)) { this.session.stepSunTime(input.isDown(Vk.SHIFT) ? 1 : TIME_STEP); }
-    if (input.isPressed(Vk.SPACE)) { this.togglePlay(); }
+    this.session.stepSunTimeKeys(input);
+    if (input.pressed(InputAction.SunPlay)) { this.togglePlay(); }
   }
 
   private togglePlay(): void {
@@ -189,7 +190,7 @@ export class SunPanel {
 
     // Header
     ui.text(f.small, ix, cy, 'SUN, SHADOWS & LIGHTS', UiTheme.SUN_LABEL, this.s(2));
-    ui.textRight(f.small, ix + iw, cy, 'ESC · O CLOSE', UiTheme.TEXT_FAINT, this.s(0.6));
+    ui.textRight(f.small, ix + iw, cy, Hints.sunClose.text, UiTheme.TEXT_FAINT, this.s(0.6));
     cy += this.s(22);
     const changeW = this.s(78);
     const placeColour = sun.hasOverride ? UiTheme.SUN : sun.locationKnown ? UiTheme.TEXT_MUTED : UiTheme.MEASURE_LABEL;
@@ -220,7 +221,7 @@ export class SunPanel {
     const value = w.slider(f, SLIDER.time, ix, cy, iw - playSize - this.s(10), 'Time of day',
       `${two(Math.trunc(shownMinutes / 60))}:${two(shownMinutes % 60)}`, shownMinutes, 0, 1439);
     if (w.activeSlider === SLIDER.time && input.leftDown) {
-      const step = input.isDown(Vk.SHIFT) ? 1 : TIME_STEP;
+      const step = input.down(InputAction.FineAdjust) ? 1 : TIME_STEP;
       const minutes = Math.min(Math.max(Math.round(value / step) * step, 0), 1439);
       sun.playing = false;
       if (minutes !== settings.time.minutes) {
@@ -278,7 +279,7 @@ export class SunPanel {
       viewer.save();
       sun.changed();
     }
-    ui.textRight(f.small, ix + iw, cy + this.s(8), '[ ] TIME · SPACE PLAY', UiTheme.TEXT_FAINT, this.s(0.4));
+    ui.textRight(f.small, ix + iw, cy + this.s(8), Hints.sunKeys.text, UiTheme.TEXT_FAINT, this.s(0.4));
   }
 
   private intensity(f: FontAtlas, id: number, x: number, y: number, w: number, label: string,

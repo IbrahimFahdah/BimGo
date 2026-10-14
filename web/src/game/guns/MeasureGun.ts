@@ -7,10 +7,14 @@ import { UiBatch } from '../../engine/ui/UiBatch';
 import type { FontAtlas, UiFont } from '../../engine/ui/UiFont';
 import { UiTheme } from '../../engine/ui/UiTheme';
 import { SoundId } from '../../platform/audio';
-import { type InputState, Vk } from '../../platform/input';
+import { InputAction } from '../../core/scene/InputCatalog';
+import { KeyHint, keyOf } from '../../platform/Hotkeys';
+import type { InputState } from '../../platform/input';
 import { UnitFormat } from '../UnitFormat';
 import { type AimInfo, Gun } from './Gun';
 import { GunIcons } from './GunIcons';
+
+const MEASURE_AGAIN = new KeyHint(() => `Press ${keyOf(InputAction.Gun2)} again: area · angle · clearance`);
 
 /** The measuring modes, in cycling order. */
 export enum MeasureMode { Distance = 0, Area = 1, Angle = 2, Clearance = 3 }
@@ -111,10 +115,17 @@ export class MeasureGun extends Gun {
   drawIcon(ui: UiBatch, cx: number, cy: number, size: number, colour: number): void { GunIcons.measure(ui, cx, cy, size, colour); }
 
   override onReselect(): void {
-    this.mode = (this.mode + 1) % MODE_NAMES.length;
+    this.cycleMode(1);
+  }
+
+  /** The wheel or the gun's key again: the next / previous measuring mode. */
+  override cycleMode(direction: number): boolean {
+    const count = MODE_NAMES.length;
+    this.mode = ((this.mode + Math.sign(direction)) % count + count) % count;
     this.cancelPending();
     this.session.sound.play(SoundId.UiClick);
-    this.session.toast(`Measure: ${title(this.mode)} (press 2 again for ${title((this.mode + 1) % MODE_NAMES.length)})`, 2);
+    this.session.toast(`Measure: ${title(this.mode)} (the wheel or ${keyOf(InputAction.Gun2)} again changes mode)`, 2);
+    return true;
   }
 
   override update(_dt: number, aim: AimInfo): void {
@@ -154,7 +165,7 @@ export class MeasureGun extends Gun {
   }
 
   override onKeys(input: InputState): void {
-    if (this.mode === MeasureMode.Distance && input.isPressed(Vk.key('N'))) {
+    if (this.mode === MeasureMode.Distance && input.pressed(InputAction.MeasureNormal)) {
       this.normalSnap = !this.normalSnap;
       this.session.toast(this.normalSnap ? 'Normal projection ON' : 'Normal projection OFF');
     }
@@ -558,7 +569,7 @@ export class MeasureGun extends Gun {
     ui.text(f.body, x, y, 'Normal projection (N)', UiTheme.TEXT_MUTED);
     ui.textRight(f.body, x + width, y, this.normalSnap ? 'ON' : 'OFF', UiTheme.MEASURE_LABEL);
     y += this.s(19);
-    ui.text(f.small, x, y, 'Press 2 again: area · angle · clearance', UiTheme.TEXT_FAINT);
+    ui.text(f.small, x, y, MEASURE_AGAIN.text, UiTheme.TEXT_FAINT);
   }
 
   private panelArea(ui: UiBatch, f: FontAtlas, x: number, y: number, width: number): void {

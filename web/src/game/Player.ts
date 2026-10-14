@@ -1,6 +1,7 @@
 import { clamp, type Vec3, vec3 } from '../core/math/Vector';
 import { CharacterController } from '../engine/physics/CharacterController';
-import { type InputState, Vk } from '../platform/input';
+import { InputAction } from '../core/scene/InputCatalog';
+import type { InputState } from '../platform/input';
 
 /**
  * The walker / flyer: mouse look, keyboard movement on a fixed tick, interpolated eye
@@ -36,6 +37,17 @@ export class Player {
   }
 
   // #region Per-frame (variable rate)
+
+  /** Gamepad sprint: the stick click toggles it while moving; the session clears it when the stick comes back. */
+  padSprint = false;
+
+  /** Turns by angles (radians; gamepad look): positive yaw turns left, positive pitch looks up. */
+  turn(yaw: number, pitch: number): void {
+    this.yaw += yaw;
+    this.pitch = clamp(this.pitch + pitch, -1.55, 1.55);
+    if (this.yaw > Math.PI) { this.yaw -= Math.PI * 2; }
+    if (this.yaw < -Math.PI) { this.yaw += Math.PI * 2; }
+  }
 
   look(dx: number, dy: number, sensitivity: number, invertY: boolean): void {
     this.yaw -= dx * Player.LOOK_SCALE * sensitivity;
@@ -78,19 +90,23 @@ export class Player {
 
   // #region Fixed tick
 
-  fixedUpdate(dt: number, input: InputState, inputEnabled: boolean): void {
+  /**
+   * One physics tick from the current input.
+   * @param upAction What flies up (clash mode uses its own keys so the gamepad's A still clicks).
+   * @param downAction What flies down / crouches.
+   */
+  fixedUpdate(dt: number, input: InputState, inputEnabled: boolean, upAction = InputAction.Jump, downAction = InputAction.Crouch): void {
     this.previousFeet = this.currentFeet;
 
     let forward = 0, strafe = 0;
     let run = false, up = false, down = false;
     if (inputEnabled) {
-      if (input.isDown(Vk.key('W')) || input.isDown(Vk.UP)) { forward += 1; }
-      if (input.isDown(Vk.key('S')) || input.isDown(Vk.DOWN)) { forward -= 1; }
-      if (input.isDown(Vk.key('D')) || input.isDown(Vk.RIGHT)) { strafe += 1; }
-      if (input.isDown(Vk.key('A')) || input.isDown(Vk.LEFT)) { strafe -= 1; }
-      run = input.isDown(Vk.SHIFT);
-      up = input.isDown(Vk.SPACE);
-      down = input.isDown(Vk.CONTROL);
+      // Keys read 0 or 1 (as before); a gamepad stick anything in between
+      forward = input.axis(InputAction.MoveForward) - input.axis(InputAction.MoveBack);
+      strafe = input.axis(InputAction.MoveRight) - input.axis(InputAction.MoveLeft);
+      run = input.down(InputAction.Run) || this.padSprint;
+      up = input.down(upAction);
+      down = input.down(downAction);
     }
 
     const cy = Math.cos(this.yaw), sy = Math.sin(this.yaw);
