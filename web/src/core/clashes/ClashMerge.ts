@@ -3,6 +3,7 @@ import type { ClashItem, ClashJob, ClashRunResult } from './ClashEngine';
 import {
   clashKey, type ClashDocument, type ClashElementRef, ClashDefaults, type ClashRecord, ClashStatus, type ClashTest, elementRefKey, newClash
 } from './ClashModels';
+import { ClashGroups } from './ClashGroups';
 
 /** What merging one run changed. */
 export interface ClashMergeResult {
@@ -114,6 +115,8 @@ export const ClashMerge = {
       }
     }
 
+    ClashGroups.followRun(document, test.id); // C-C1: all members resolved → the group too; one back → active
+
     test.lastRunUtc = utc;
     test.lastRunModel = modelState;
     test.lastRunTruncated = !complete;
@@ -154,6 +157,7 @@ export const ClashMerge = {
     const before = document.clashes.length;
     document.clashes = document.clashes.filter(c => c.testId !== test.id);
     document.runs = document.runs.filter(r => r.testId !== test.id);
+    ClashGroups.removeTest(document, test.id); // C-C1: its groups go with its clashes
     test.lastRunUtc = null;
     test.lastRunModel = null;
     test.lastRunTruncated = false;
@@ -170,6 +174,7 @@ export const ClashMerge = {
     document.tests = document.tests.filter(t => t.id !== testId);
     document.clashes = document.clashes.filter(c => c.testId !== testId);
     document.runs = document.runs.filter(r => r.testId !== testId);
+    ClashGroups.removeTest(document, testId); // C-C1
   }
 };
 

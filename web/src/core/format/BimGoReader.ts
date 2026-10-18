@@ -4,6 +4,8 @@ import { CATEGORIES, findCategory, KEY_GENERIC } from '../scene/CategoryCatalog'
 import { EMPTY_LIBRARY, type LibraryData, type LibraryEntry, LibraryPlacement } from '../scene/FamilyLibrary';
 import { EMPTY_LIGHTING, type EmissiveRun, type LightingData, type LightSource } from '../scene/LightingData';
 import type { LinkInfo } from '../scene/LinkInfo';
+import { gridsFromJson } from '../scene/GridData';
+import { type CameraPathDocument, readPathsDocument } from './CameraPathModels';
 import {
   cleanMaterial, EMPTY_MATERIALS, MATERIAL_NONE, MAX_MATERIALS, type MaterialData, nearestTextureSize, TextureState
 } from '../scene/MaterialData';
@@ -45,6 +47,8 @@ export interface BimGoDocument {
    * clash detection never parses it (ClashFiles.parse / serialize convert). Null when there is none.
    */
   clashes: Uint8Array | null;
+  /** Round K: the camera paths (paths.json), or null when there are none. */
+  paths: CameraPathDocument | null;
 }
 
 /** Progress and cancellation for a read (replaces OperationProgress). */
@@ -129,6 +133,8 @@ async function readDocument(file: Blob, name: string, progress?: ReadProgress): 
   const lighting = await readJson(zip, BimGoFormat.ENTRY_LIGHTING, false);
   const materials = await readOptionalJson(zip, BimGoFormat.ENTRY_MATERIALS);
   const libraryJson = await readOptionalJson(zip, BimGoFormat.ENTRY_LIBRARY);
+  const gridsJson = await readOptionalJson(zip, BimGoFormat.ENTRY_GRIDS);
+  const paths = readPathsDocument(await readOptionalJson(zip, BimGoFormat.ENTRY_PATHS)); // Round K
   progress?.step?.(0.1);
   throwIfAborted(signal);
 
@@ -137,6 +143,7 @@ async function readDocument(file: Blob, name: string, progress?: ReadProgress): 
 
   const materialData = await readMaterials(zip, materials, geometry.vertexCount);
   const scene = buildScene(name, manifest, model, elements, parameters, geometry, lighting, materialData);
+  scene.grids = gridsFromJson(gridsJson, scene.links.length);
   scene.library = await buildLibrary(zip, libraryJson, scene.elements, geometry.vertexCount);
   const entries = arr(obj(journal).entries).map(e => objOrNull(e)).filter((e): e is Json => e !== null).map(readJournalEntry);
 
@@ -156,7 +163,8 @@ async function readDocument(file: Blob, name: string, progress?: ReadProgress): 
     readFormatVersion: formatVersion,
     manifest,
     thumbnail: await readThumbnail(zip),
-    clashes: zip.get(BimGoFormat.ENTRY_CLASHES) ? await readBytes(zip, BimGoFormat.ENTRY_CLASHES) : null
+    clashes: zip.get(BimGoFormat.ENTRY_CLASHES) ? await readBytes(zip, BimGoFormat.ENTRY_CLASHES) : null,
+    paths
   };
 }
 
@@ -234,7 +242,7 @@ function buildScene(name: string, manifest: Json, model: Json, elementsJson: Jso
   // Levels, rooms, spawn
   const levels: LevelInfo[] = arr(model.levels)
     .map(l => objOrNull(l)).filter((l): l is Json => l !== null)
-    .map(l => ({ name: str(l.name, 'Level'), elevation: float(l.elevation) }))
+    .map(l => ({ name: str(l.name, 'Level'), elevation: float(l.elevation), isStorey: l.storey !== false }))
     .sort((a, b) => a.elevation - b.elevation);
 
   const rooms: RoomInfo[] = [];
@@ -287,6 +295,7 @@ function buildScene(name: string, manifest: Json, model: Json, elementsJson: Jso
     geometry,
     elements: records,
     levels,
+    grids: [],
     rooms,
     phaseId: num(model.phaseId, -1),
     phaseName: str(model.phaseName, null),

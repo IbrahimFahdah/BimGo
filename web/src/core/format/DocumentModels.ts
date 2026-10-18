@@ -1,6 +1,8 @@
 import { clamp, f32, type Vec3, vec3 } from '../math/Vector';
 import type { SiteInfo } from '../scene/ModelInfo';
 import { SectionCut } from '../scene/SectionCut';
+import { Appearance, type AppearanceSettings } from '../scene/AppearanceProfiles';
+import { GridView, type GridViewSettings } from '../scene/GridData';
 import type { TourTransition } from '../scene/TourTimeline';
 import { arr, bool, float, int, isBlank, type Json, newId, num, objOrNull, str } from './Json';
 
@@ -85,6 +87,8 @@ export interface CommentView {
   yaw: number;
   pitch: number;
   flying: boolean;
+  /** Polish round P-C: the standing eye height when the view was saved (m); null (older comments) uses the current preset. */
+  eyeHeight: number | null;
   /**
    * The section cut when the view was saved: GO restores it, BCF exports it as clipping planes; a cut with nothing
    * on clears the cut; null (older comments) leaves the current cut alone.
@@ -201,7 +205,10 @@ export function readComment(j: Json): CommentRecord {
 
 function readCommentView(j: Json | null): CommentView | null {
   return j
-    ? { x: num(j.x), y: num(j.y), z: num(j.z), yaw: float(j.yaw), pitch: float(j.pitch), flying: bool(j.flying), section: SectionCut.read(j.section) }
+    ? {
+      x: num(j.x), y: num(j.y), z: num(j.z), yaw: float(j.yaw), pitch: float(j.pitch), flying: bool(j.flying), eyeHeight: nullableFloat(j.eyeHeight),
+      section: SectionCut.read(j.section)
+    }
     : null;
 }
 
@@ -268,6 +275,27 @@ export interface SunSettings {
   skyIntensity: number;
   shadowIntensity: number;
   glassTransmission: number;
+  /** Sky round: cloud cover, 0 = clear (default) – 1 = overcast. A look only. */
+  cloudCover: number;
+  /** Sky round: cloud drift speed (0 = still, 1 = default, 2 = double). */
+  cloudSpeed: number;
+  /** Sky round: sun disc size multiplier (0.25–2). A look only. */
+  sunSize: number;
+  /** Sky round: sun glare multiplier (0–2). A look only. */
+  sunGlare: number;
+  /** Round W-A: the moon in the night sky (when the sun is down it lights the scene and casts the shadows). */
+  moon: boolean;
+  /** Round W-A: a chosen phase (lit fraction 0.05–1) instead of the real one, or null for the real phase. */
+  moonPhase: number | null;
+  /** Round W-A: moonlight multiplier (0–2). */
+  moonLight: number;
+  /** Round W-A: stars at night. */
+  stars: boolean;
+  starDensity: number;
+  starBrightness: number;
+  starTwinkle: number;
+  /** Round W-A: the Milky Way band's strength (0–2). */
+  milkyWay: number;
   /**
    * A location chosen in BimGo instead of the model's (location override), or null to use the Revit site's. Older
    * readers ignore it; Revit is never changed.
@@ -316,6 +344,8 @@ export function readLocation(j: Json | null): LocationOverride | null {
 
 export const SUN_MIN_INTENSITY = 0;
 export const SUN_MAX_INTENSITY = 2;
+/** Smallest sun disc size multiplier. */
+export const SUN_MIN_SIZE = 0.25;
 
 function daysInMonth(year: number, month: number): number {
   return new Date(Date.UTC(year, month, 0)).getUTCDate();
@@ -335,6 +365,38 @@ export function clampSunTime(t: SunTime, year: number): SunTime {
     minutes: clamp(t.minutes, 0, 24 * 60 - 1),
     daylightSaving: t.daylightSaving
   };
+}
+
+/** A sun time's day of the year (1–366) in a year (the day clamped to its month). */
+export function sunDayOfYear(year: number, time: SunTime): number {
+  const month = clamp(time.month, 1, 12);
+  const day = clamp(time.day, 1, daysInMonth(year, month));
+  return Math.round((Date.UTC(year, month - 1, day) - Date.UTC(year, 0, 1)) / 86400000) + 1;
+}
+
+/**
+ * Round K-C: a sun time part way between two others (port of SunBlend.Between). The date moves the short way round the
+ * year; the clock time moves straight; daylight saving switches halfway. Fills `into`; returns the clock time in
+ * fractional minutes (0 – 1439.99).
+ */
+export function sunBlend(a: SunTime, b: SunTime, t: number, year: number, into: SunTime): number {
+  t = Number.isFinite(t) ? clamp(t, 0, 1) : 0;
+  year = clamp(year, 1, 9998);
+  const leap = (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+  const days = leap ? 366 : 365;
+  const dayA = sunDayOfYear(year, a), dayB = sunDayOfYear(year, b);
+  let span = dayB - dayA;
+  if (span > Math.trunc(days / 2)) { span -= days; } else if (span < -Math.trunc(days / 2)) { span += days; }
+  let day = Math.round(Math.fround(dayA + span * t));
+  day = (((day - 1) % days) + days) % days + 1;
+  const date = new Date(Date.UTC(year, 0, day));
+  into.month = date.getUTCMonth() + 1;
+  into.day = date.getUTCDate();
+  const minutesA = clamp(a.minutes, 0, 1439), minutesB = clamp(b.minutes, 0, 1439);
+  const minutes = clamp(minutesA + (minutesB - minutesA) * Math.fround(t), 0, 1439.99);
+  into.minutes = clamp(Math.trunc(minutes), 0, 1439);
+  into.daylightSaving = t < 0.5 ? a.daylightSaving : b.daylightSaving;
+  return minutes;
 }
 
 /** SunTime.StartFor: the site's sun start ("yyyy-MM-ddTHH:mm"), else today at noon. */
@@ -364,12 +426,28 @@ export function readSunSettings(j: Json): SunSettings {
     skyIntensity: clampOr(j.skyIntensity, SUN_MIN_INTENSITY, SUN_MAX_INTENSITY, 1),
     shadowIntensity: clampOr(j.shadowIntensity, 0, 1, 1),
     glassTransmission: clampOr(j.glassTransmission, 0, 2, 1),
+    cloudCover: clampOr(j.cloudCover, 0, 1, 0),
+    cloudSpeed: clampOr(j.cloudSpeed, 0, 2, 1),
+    sunSize: clampOr(j.sunSize, SUN_MIN_SIZE, 2, 1),
+    sunGlare: clampOr(j.sunGlare, 0, 2, 1),
+    moon: bool(j.moon, true),
+    moonPhase: typeof j.moonPhase === 'number' && Number.isFinite(j.moonPhase) ? Math.fround(clamp(j.moonPhase, 0.05, 1)) : null,
+    moonLight: clampOr(j.moonLight, 0, 2, 1),
+    stars: bool(j.stars, true),
+    starDensity: clampOr(j.starDensity, 0, 2, 1),
+    starBrightness: clampOr(j.starBrightness, 0, 2, 1),
+    starTwinkle: clampOr(j.starTwinkle, 0, 2, 1),
+    milkyWay: clampOr(j.milkyWay, 0, 2, 1),
     location: readLocation(objOrNull(j.location))
   };
 }
 
 export function sunDefaultsFor(site: SiteInfo | null): SunSettings {
-  return { version: 1, enabled: false, time: sunStartFor(site), sunIntensity: 1, skyIntensity: 1, shadowIntensity: 1, glassTransmission: 1, location: null };
+  return {
+    version: 1, enabled: false, time: sunStartFor(site), sunIntensity: 1, skyIntensity: 1, shadowIntensity: 1, glassTransmission: 1,
+    cloudCover: 0, cloudSpeed: 1, sunSize: 1, sunGlare: 1, moon: true, moonPhase: null, moonLight: 1, stars: true, starDensity: 1,
+    starBrightness: 1, starTwinkle: 1, milkyWay: 1, location: null
+  };
 }
 
 // #endregion
@@ -403,6 +481,10 @@ export interface BookmarkRecord {
   visibility: VisibilitySettings | null;
   /** The standing eye height when the bookmark was set (m): GO and the tour use it. Null keeps the current one. */
   eyeHeight: number | null;
+  /** Polish round P-C: the player was crouching (walking) when it was saved: GO arrives crouched. */
+  crouched: boolean;
+  /** Polish round P-C: the colour profile showing when it was saved (its id; "" = none); null leaves the profile alone. */
+  colourProfile: string | null;
   /** Tour: seconds to hold at this stop, or null for the tour's hold time. */
   tourHold: number | null;
   /** Tour: this stop's swivel in degrees (positive left, negative right, 0 none), or null for the tour's. */
@@ -450,17 +532,22 @@ export interface TourSettings {
   showUi: boolean;
   /** Start again from the first stop after the last. */
   loop: boolean;
+  /** Round K-C: play the tour as a smooth camera path through the stops (a field, so older builds still read it). */
+  smooth: boolean;
+  /** Round K-C: the smooth tour's speed between stops (m/s). */
+  smoothSpeed: number;
 }
 
 /** TourSettings' limits. */
 export const TourLimits = {
-  MIN_HOLD: 1, MAX_HOLD: 60, MAX_FADE: 2, MIN_GLIDE: 1, MAX_GLIDE: 15, MAX_SWIVEL: 180, MIN_EYE_HEIGHT: 0.9, MAX_EYE_HEIGHT: 2.0
+  MIN_HOLD: 1, MAX_HOLD: 60, MAX_FADE: 2, MIN_GLIDE: 1, MAX_GLIDE: 15, MAX_SWIVEL: 180, MIN_EYE_HEIGHT: 0.9, MAX_EYE_HEIGHT: 2.0,
+  MIN_SMOOTH_SPEED: 0.25, MAX_SMOOTH_SPEED: 6
 } as const;
 
 export function defaultTourSettings(): TourSettings {
   return {
     transition: 'fade', holdSeconds: 4, fadeSeconds: f32(0.6), glideSeconds: 3, swivel: true, swivelDegrees: 30, swivelDirection: 'left',
-    showUi: false, loop: false
+    showUi: false, loop: false, smooth: false, smoothSpeed: 1.5
   };
 }
 
@@ -473,6 +560,7 @@ export function cleanTourSettings(t: TourSettings): TourSettings {
   t.fadeSeconds = Number.isFinite(t.fadeSeconds) ? f32(clamp(t.fadeSeconds, 0, L.MAX_FADE)) : f32(0.6);
   t.glideSeconds = Number.isFinite(t.glideSeconds) ? f32(clamp(t.glideSeconds, L.MIN_GLIDE, L.MAX_GLIDE)) : 3;
   t.swivelDegrees = Number.isFinite(t.swivelDegrees) ? f32(clamp(t.swivelDegrees, 0, L.MAX_SWIVEL)) : 30;
+  t.smoothSpeed = Number.isFinite(t.smoothSpeed) ? f32(clamp(t.smoothSpeed, L.MIN_SMOOTH_SPEED, L.MAX_SMOOTH_SPEED)) : 1.5;
   return t;
 }
 
@@ -505,7 +593,9 @@ export function readTourSettings(j: Json | null): TourSettings | null {
     swivelDegrees: float(j.swivelDegrees, d.swivelDegrees),
     swivelDirection: lower(j.swivelDirection, d.swivelDirection) as TourSwivelDirection,
     showUi: bool(j.showUi, d.showUi),
-    loop: bool(j.loop, d.loop)
+    loop: bool(j.loop, d.loop),
+    smooth: bool(j.smooth, d.smooth),
+    smoothSpeed: float(j.smoothSpeed, d.smoothSpeed)
   });
 }
 
@@ -537,6 +627,8 @@ export function readBookmark(j: Json): BookmarkRecord {
     section: SectionCut.read(j.section),
     visibility: objOrNull(j.visibility) ? readVisibility(objOrNull(j.visibility)!) : null,
     eyeHeight: nullableFloat(j.eyeHeight),
+    crouched: bool(j.crouched),
+    colourProfile: str(j.colourProfile, null),
     tourHold: nullableFloat(j.tourHold),
     tourSwivel: nullableFloat(j.tourSwivel),
     tourSkip: bool(j.tourSkip),
@@ -599,6 +691,10 @@ export interface VisibilitySettings {
   groundOffset: number | null;
   /** The section cut, or null when nothing is cut. */
   section: SectionCut | null;
+  /** Grids round A: how the grids are shown, or null for the defaults (grids off). */
+  grids: GridViewSettings | null;
+  /** Colour round A: the model's colour profiles, or null when there are none. */
+  appearance: AppearanceSettings | null;
 }
 
 /** Most the ground plane can move from its default (m), as the pause menu slider. */
@@ -622,13 +718,28 @@ export function readVisibility(j: Json): VisibilitySettings {
       .map(e => ({ link: str(e.link, null), uniqueId: str(e.uniqueId, null), id: num(e.id) }))
       .filter(e => (e.uniqueId !== null && e.uniqueId.length > 0) || e.id > 0),
     groundOffset: cleanGroundOffset(j.groundOffset),
-    section: activeSection(SectionCut.read(j.section))
+    section: activeSection(SectionCut.read(j.section)),
+    grids: nonDefaultGrids(GridView.read(j.grids)),
+    appearance: nonDefaultAppearance(Appearance.read(j.appearance))
   };
+}
+
+function nonDefaultGrids(g: GridViewSettings | null): GridViewSettings | null {
+  return g && !GridView.isDefault(g) ? g : null;
+}
+
+function nonDefaultAppearance(a: AppearanceSettings | null): AppearanceSettings | null {
+  return a && !Appearance.isDefault(a) ? a : null;
 }
 
 export function isVisibilityEmpty(v: VisibilitySettings): boolean {
   return v.hiddenCategories.length === 0 && v.hiddenLinks.length === 0 && v.hiddenElements.length === 0 && v.groundOffset === null
-    && v.section === null;
+    && v.section === null && (v.grids ?? null) === null && (v.appearance ?? null) === null;
+}
+
+/** Round K-C: a copy with its own lists (the section, grids and appearance are shared: replaced, never edited in place). */
+export function copyVisibility(v: VisibilitySettings): VisibilitySettings {
+  return { ...v, hiddenCategories: [...v.hiddenCategories], hiddenLinks: [...v.hiddenLinks], hiddenElements: v.hiddenElements.map(e => ({ ...e })) };
 }
 
 /** A cut kept only when it cuts. */

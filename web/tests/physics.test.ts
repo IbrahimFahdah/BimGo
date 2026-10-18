@@ -96,7 +96,7 @@ function floorScene(): SceneData {
   };
   return {
     geometry: new SceneGeometry(bytes, Uint32Array.of(0, 1, 2, 0, 2, 3)),
-    elements: [element], levels: [], rooms: [], phaseId: -1, phaseName: null, existingPhaseId: -1, existingPhaseName: null, phaseNote: null,
+    elements: [element], levels: [], grids: [], rooms: [], phaseId: -1, phaseName: null, existingPhaseId: -1, existingPhaseName: null, phaseNote: null,
     spawn: null, bounds: element.bounds, originOffset: vec3(), modelTitle: 'Floor', commentsPath: null,
     provenance: {} as SceneData['provenance'], site: {} as SceneData['site'], links: [], lighting: EMPTY_LIGHTING, materials: EMPTY_MATERIALS, library: EMPTY_LIBRARY,
     parameters: ParameterTable.empty, categoryLoaded: [], categoryElementCounts: [], sourceView: null, proxyCount: 0, skippedCount: 0, extractionSeconds: 0

@@ -68,7 +68,7 @@ function scene(...boxes: BoxSpec[]): SceneData {
   };
   return {
     geometry: new SceneGeometry(buildGeometry(positions, indices).subarray(24, 24 + positions.length * 28), Uint32Array.from(indices)),
-    elements, levels: [{ name: 'Level 1', elevation: 0 }], rooms: [], phaseId: -1, phaseName: null, existingPhaseId: -1, existingPhaseName: null,
+    elements, levels: [{ name: 'Level 1', elevation: 0, isStorey: true }], grids: [], rooms: [], phaseId: -1, phaseName: null, existingPhaseId: -1, existingPhaseName: null,
     phaseNote: null, spawn: null, bounds: new Aabb(vec3(-10, -10, -10), vec3(10, 10, 10)), originOffset: vec3(100, 200, 300),
     modelTitle: 'Clash Model', commentsPath: null, provenance: {} as SceneData['provenance'], site: {} as SceneData['site'], links: [link],
     lighting: EMPTY_LIGHTING, materials: EMPTY_MATERIALS, library: EMPTY_LIBRARY, parameters: ParameterTable.empty, categoryLoaded: [],
@@ -324,7 +324,7 @@ describe('Search sets', () => {
       box(ZERO, ONE, 'pipes', { familyType: 'Pipe Types: Copper', level: 'Level 2' }),
       box(ZERO, ONE, 'framing', { familyType: '310UB40', level: 'Level 3' }),
       box(ZERO, ONE, 'walls', { familyType: 'Generic - 200mm', level: 'Level 2' }));
-    const group = (matchAll: boolean, ...rules: ReturnType<typeof rule>[]): RuleGroup => ({ matchAll, rules });
+    const group = (matchAll: boolean, ...rules: ReturnType<typeof rule>[]): RuleGroup => ({ matchAll, rules, groups: null });
 
     const orOfAnds = { ...newSet(), matchAll: false, groups: [
       group(true, rule(RuleField.CATALOG, RuleOp.IS, 'ducts'), rule(RuleField.LEVEL, RuleOp.IS, 'Level 1')),
@@ -355,7 +355,7 @@ describe('Search sets', () => {
   it('round-trips groups through the file', () => {
     const document = SearchSets.seeded();
     expect(new TextDecoder().decode(ClashFiles.serialize(document))).not.toContain('"groups"');
-    document.sets[0].groups = [group(true, rule(RuleField.LEVEL, RuleOp.IS_NOT, 'Level 2')), { matchAll: false, rules: [] }];
+    document.sets[0].groups = [group(true, rule(RuleField.LEVEL, RuleOp.IS_NOT, 'Level 2')), { matchAll: false, rules: [], groups: null }];
     const again = ClashFiles.parse(ClashFiles.serialize(document)).document!;
     expect(again.sets[0].groups!.length).toBe(2);
     expect(again.sets[0].groups![0].matchAll).toBe(true);
@@ -366,7 +366,7 @@ describe('Search sets', () => {
     again.sets[0].groups = [];
     expect(new TextDecoder().decode(ClashFiles.serialize(again))).not.toContain('"groups"');
 
-    function group(matchAll: boolean, ...rules: ReturnType<typeof rule>[]): RuleGroup { return { matchAll, rules }; }
+    function group(matchAll: boolean, ...rules: ReturnType<typeof rule>[]): RuleGroup { return { matchAll, rules, groups: null }; }
   });
 
   it('reads older rules as operators', () => {

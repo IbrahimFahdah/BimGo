@@ -1,4 +1,5 @@
 import { type Vec2, type Vec3, vec3 } from '../math/Vector';
+import type { GridLine } from './GridData';
 import { isLibraryEmpty, type LibraryData } from './FamilyLibrary';
 import type { LightingData } from './LightingData';
 import type { MaterialData } from './MaterialData';
@@ -158,6 +159,8 @@ export function roomDistanceToBoundary(room: RoomInfo, p: Vec2): number {
 export interface LevelInfo {
   name: string;
   elevation: number;
+  /** Grids round A: Revit's "Building Story" (true for older files, which didn't record it). */
+  isStorey: boolean;
 }
 
 export interface SpawnInfo {
@@ -172,6 +175,8 @@ export interface SceneData {
   geometry: SceneGeometry;
   elements: ElementRecord[];
   levels: LevelInfo[];
+  /** Grids round A: the host's grids and the extracted links' grids (may be empty; never null). */
+  grids: GridLine[];
   rooms: RoomInfo[];
   phaseId: number;
   phaseName: string | null;

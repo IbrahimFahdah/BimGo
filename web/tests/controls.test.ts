@@ -239,23 +239,23 @@ describe('KeyMap evaluation', () => {
 
   it('gamepad bindings are stored apart from keys', () => {
     const map = new KeyMap();
-    map.assign(A.Fly, KeyMap.PAD_SLOT, chord('PadLB+PadY'), false);
+    map.assign(A.Fly, KeyMap.PAD_SLOT, chord('PadRB+PadA'), false);
     map.clear(A.Minimap, KeyMap.PAD_SLOT);
     expect(Object.keys(map.toOverrides()).length).toBe(0);
     const pad = map.toPadOverrides();
     expect(Object.keys(pad).length).toBe(2);
-    expect(pad.Fly).toBe('PadLB+PadY');
+    expect(pad.Fly).toBe('PadRB+PadA');
     expect(pad.Minimap).toBe('');
 
     const restored = new KeyMap();
     expect(restored.applyOverrides({}, null, cleanPadBindings(JSON.parse(JSON.stringify(pad))))).toBe(2);
-    same(restored.padChord(A.Fly), chord('PadLB+PadY'));
+    same(restored.padChord(A.Fly), chord('PadRB+PadA'));
     expect(restored.padChord(A.Minimap).isEmpty).toBe(true);
     same(restored.primary(A.Fly), chord('V'));
 
     const other = new KeyMap();
     expect(other.import(map.export('test')).valid).toBe(true);
-    same(other.padChord(A.Fly), chord('PadLB+PadY'));
+    same(other.padChord(A.Fly), chord('PadRB+PadA'));
     const older = other.import('{ "format": "bimgo-keymap", "version": 1, "bindings": { "Help": ["F2"] } }');
     expect(older.valid).toBe(true);
     same(other.padChord(A.Fly), chord('PadY'));

@@ -133,10 +133,11 @@ export class CommentStore {
   }
 
   /** Sets the viewpoint a comment is seen from (scene-local feet; stored in Revit internal metres). */
-  setView(record: CommentRecord, localFeet: Vec3, yaw: number, pitch: number, flying: boolean, section: SectionCut | null = null): void {
+  setView(record: CommentRecord, localFeet: Vec3, yaw: number, pitch: number, flying: boolean, section: SectionCut | null = null,
+    eyeHeight: number | null = null): void {
     record.view = {
       x: round4(localFeet.x + this.origin.x), y: round4(localFeet.y + this.origin.y), z: round4(localFeet.z + this.origin.z),
-      yaw, pitch, flying, section: section?.clone() ?? null
+      yaw, pitch, flying, eyeHeight: eyeHeight === null ? null : Math.fround(eyeHeight), section: section?.clone() ?? null
     };
     if (this.comments.includes(record)) { this.save(); }
   }
@@ -440,7 +441,7 @@ export class BookmarkStore {
   private blank(name: string): BookmarkRecord {
     return {
       id: newId(), name, author: currentUser, created: new Date().toISOString(), x: 0, y: 0, z: 0, yaw: 0, pitch: 0,
-      flying: false, level: '', sun: null, section: null, visibility: null, eyeHeight: null, tourHold: null, tourSwivel: null, tourSkip: false,
+      flying: false, level: '', sun: null, section: null, visibility: null, eyeHeight: null, crouched: false, colourProfile: null, tourHold: null, tourSwivel: null, tourSkip: false,
       thumbnail: null, local: vec3(), detail: ''
     };
   }

@@ -165,7 +165,7 @@ describe('BCF coordinates and viewpoints', () => {
   });
 
   it('round-trips a view through a perspective camera', () => {
-    const view = { x: 3.5, y: -2.25, z: 1, yaw: 2, pitch: -0.3, flying: false, section: null };
+    const view = { x: 3.5, y: -2.25, z: 1, yaw: 2, pitch: -0.3, flying: false, eyeHeight: null, section: null };
     const { frame } = BcfFrame.resolve(site(), BcfCoordinates.Shared);
     const viewpoint = BcfMapping.toViewpoint(view, 1.6, frame, 90);
     expect(viewpoint.fieldOfView).toBeCloseTo(58.716, 2);

@@ -62,6 +62,8 @@ export interface SceneMaterial {
   water: boolean;
   /** Ripple strength for water (Revit water_bump_amount, 0.1 typical). */
   waterBump: number;
+  /** QOL round: the material was see-through at extraction (lets the session re-apply the water keyword rule). */
+  seeThrough: boolean;
   /** Which Revit property the reflection values came from (diagnostics), or null. */
   reflectSource: string | null;
 }
@@ -144,6 +146,7 @@ export function cleanMaterial(raw: Record<string, unknown> | null | undefined): 
     metallic: m.metallic === true,
     water: m.water === true,
     waterBump: unit(m.waterBump),
+    seeThrough: m.seeThrough === true,
     reflectSource: blank(m.reflectSource) ? null : (m.reflectSource as string)
   };
 }

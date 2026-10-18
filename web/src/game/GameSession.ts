@@ -3094,7 +3094,7 @@ export class GameSession implements GunHost, EditHost {
   toVisibilitySettings(): VisibilitySettings {
     const settings: VisibilitySettings = {
       hiddenCategories: [], hiddenLinks: [], hiddenElements: [], groundOffset: cleanGroundOffset(this.groundZ - this.groundDefault),
-      section: this.section.current.isActive ? this.section.current.clone() : null
+      section: this.section.current.isActive ? this.section.current.clone() : null, grids: null, appearance: null
     };
     for (const def of CATEGORIES) {
       if (this.scene.categoryLoaded[def.index] && !this.categoryVisible[def.index]) { settings.hiddenCategories.push(def.key); }

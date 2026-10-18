@@ -53,11 +53,49 @@ export interface SiteInfo {
 export class ParameterTable {
   static readonly empty = new ParameterTable([], [], []);
 
+  /** Colour round A: names → pool index (case ignored; the first spelling wins). */
+  private readonly nameIndex = new Map<string, number>();
+
   constructor(
     readonly names: string[],
     readonly values: string[],
     readonly rows: (number[] | null)[]
-  ) {}
+  ) {
+    names.forEach((n, i) => {
+      const key = (n ?? '').toLowerCase();
+      if (key && !this.nameIndex.has(key)) { this.nameIndex.set(key, i); }
+    });
+  }
+
+  /** Colour round A: a parameter name's index in names (case ignored), or −1 when it wasn't extracted. */
+  indexOfName(name: string | null | undefined): number {
+    return name ? this.nameIndex.get(name.trim().toLowerCase()) ?? -1 : -1;
+  }
+
+  /** Colour round A: an element's value of one parameter (by indexOfName), or null when the element doesn't have it. */
+  valueOf(element: number, nameIndex: number): string | null {
+    if (nameIndex < 0 || element < 0 || element >= this.rows.length) { return null; }
+    const row = this.rows[element];
+    if (!row) { return null; }
+    for (let i = 0; i + 1 < row.length; i += 2) {
+      if (row[i] !== nameIndex) { continue; }
+      const v = row[i + 1];
+      return v >= 0 && v < this.values.length ? this.values[v] : null;
+    }
+    return null;
+  }
+
+  /** Colour round A: the extracted parameter names, sorted (case ignored), blanks left out. */
+  sortedNames(): string[] {
+    const seen = new Set<string>();
+    const names: string[] = [];
+    for (const n of this.names) {
+      if (!n || !n.trim() || seen.has(n.toLowerCase())) { continue; }
+      seen.add(n.toLowerCase());
+      names.push(n);
+    }
+    return names.sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'accent' }));
+  }
 
   get isEmpty(): boolean {
     return this.names.length === 0;

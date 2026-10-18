@@ -587,7 +587,7 @@ export class ClashPanel {
     }
     if (wd.smallButton(f, x + bw + this.s(6), by, bw, this.s(32), 'ADD GROUP')) {
       set.groups ??= [];
-      set.groups.push({ matchAll: true, rules: [newRule(RuleField.CATALOG, RuleOp.IS)] });
+      set.groups.push({ matchAll: true, rules: [newRule(RuleField.CATALOG, RuleOp.IS)], groups: null });
       this.ruleScroll = Number.MAX_SAFE_INTEGER;
       this.setEdited();
     }

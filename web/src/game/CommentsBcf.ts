@@ -108,7 +108,7 @@ export class CommentsBcf {
     if (record.view) { return record.view; }
     const { feet, yaw, pitch } = this.session.approachMarker(record.local);
     const world = this.session.toRevit(feet);
-    return { x: world.x, y: world.y, z: world.z, yaw, pitch, flying: false, section: null };
+    return { x: world.x, y: world.y, z: world.z, yaw, pitch, flying: false, eyeHeight: null, section: null };
   }
 
   /** The commented element as a BCF component (IFC GUID when the file has one, plus the ElementId), or null. */

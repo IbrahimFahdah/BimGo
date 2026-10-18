@@ -1,5 +1,6 @@
 import { CommentPriority, CommentStatus } from '../format/DocumentModels';
 import { arr, bool, isBlank, type Json, newId, num, obj, objOrNull, str } from '../format/Json';
+import { type ClashGroup, cleanClashGroups, clashGroupJson, readClashGroup } from './ClashGroups';
 
 /**
  * Clash detection's data (port of BimGo.Core/Clashes/ClashModels.cs, Round C): search sets, tests, clashes and run
@@ -95,11 +96,29 @@ export const RuleField = {
   LEVEL: 'level',
   /** The model: empty = the host model, else the link instance's UniqueId (or its name). */
   LINK: 'link',
-  ALL: ['catalog', 'category', 'family', 'type', 'level', 'link'] as readonly string[],
+  /** Colour round A: the element's phase role ("existing", "new", "between", "unphased"). */
+  PHASE: 'phase',
+  /** Colour round A: one of the extra extracted parameters (the rule's parameter names it). */
+  PARAMETER: 'parameter',
+  /** The built-in fields in display order (parameters follow them, one per extracted name). */
+  ALL: ['catalog', 'category', 'family', 'type', 'level', 'link', 'phase'] as readonly string[],
+  /** The stored phase values, in PhaseRole order. */
+  PHASE_VALUES: ['existing', 'new', 'between', 'unphased'] as readonly string[],
+  PHASE_LABELS: ['Existing', 'New', 'Between phases', 'Not phased'] as readonly string[],
   /** A known field for any text (unknown reads as category). */
   normalise(field: string | null | undefined): string {
     const f = (field ?? '').trim().toLowerCase();
+    if (f === 'parameter') { return RuleField.PARAMETER; }
     return RuleField.ALL.find(k => k === f) ?? RuleField.CATEGORY;
+  },
+  /** The stored value of a phase role. */
+  phaseValue(role: number): string {
+    return RuleField.PHASE_VALUES[Math.min(Math.max(role, 0), RuleField.PHASE_VALUES.length - 1)];
+  },
+  /** The label of a stored phase value (the value itself when unknown). */
+  phaseLabel(value: string | null): string {
+    const i = RuleField.PHASE_VALUES.findIndex(v => v === (value ?? '').toLowerCase());
+    return i >= 0 ? RuleField.PHASE_LABELS[i] : value ?? '';
   }
 };
 
@@ -111,8 +130,13 @@ export const RuleOp = {
   IS_NOT_ANY_OF: 'isNotAnyOf',
   CONTAINS: 'contains',
   NOT_CONTAINS: 'notContains',
-  ALL: ['is', 'isOneOf', 'isNot', 'isNotAnyOf', 'contains', 'notContains'] as readonly string[],
-  LABELS: ['IS', 'IS ONE OF', 'IS NOT', 'IS NOT ANY OF', 'CONTAINS', 'DOES NOT CONTAIN'] as readonly string[],
+  /** Colour round B: the field's first number is at least the value. */
+  AT_LEAST: 'atLeast',
+  AT_MOST: 'atMost',
+  /** Colour round B: between the two values (inclusive, either order). */
+  BETWEEN: 'between',
+  ALL: ['is', 'isOneOf', 'isNot', 'isNotAnyOf', 'contains', 'notContains', 'atLeast', 'atMost', 'between'] as readonly string[],
+  LABELS: ['IS', 'IS ONE OF', 'IS NOT', 'IS NOT ANY OF', 'CONTAINS', 'DOES NOT CONTAIN', 'AT LEAST (≥)', 'AT MOST (≤)', 'BETWEEN'] as readonly string[],
   indexOf(op: string | null | undefined): number {
     const o = (op ?? '').trim().toLowerCase();
     return RuleOp.ALL.findIndex(k => k.toLowerCase() === o);
@@ -129,8 +153,88 @@ export const RuleOp = {
   isNegative(op: string): boolean { return op === RuleOp.IS_NOT || op === RuleOp.IS_NOT_ANY_OF || op === RuleOp.NOT_CONTAINS; },
   isList(op: string): boolean { return op === RuleOp.IS_ONE_OF || op === RuleOp.IS_NOT_ANY_OF; },
   isText(op: string): boolean { return op === RuleOp.CONTAINS || op === RuleOp.NOT_CONTAINS; },
-  /** A lower-case label for descriptions ("is not any of"). */
-  words(op: string): string { return RuleOp.LABELS[Math.max(0, RuleOp.indexOf(op))].toLowerCase(); }
+  /** Colour round B: the number operators (typed numbers). */
+  isNumeric(op: string): boolean { return op === RuleOp.AT_LEAST || op === RuleOp.AT_MOST || op === RuleOp.BETWEEN; },
+  /** How many values the operator keeps (between: 2; the list operators: any). */
+  maxValues(op: string): number { return RuleOp.isList(op) ? Number.MAX_SAFE_INTEGER : op === RuleOp.BETWEEN ? 2 : 1; },
+  /** A lower-case label for descriptions ("is not any of", "at least"). */
+  words(op: string): string {
+    if (op === RuleOp.AT_LEAST) { return 'at least'; }
+    if (op === RuleOp.AT_MOST) { return 'at most'; }
+    return RuleOp.LABELS[Math.max(0, RuleOp.indexOf(op))].toLowerCase();
+  }
+};
+
+const isDigit = (c: string | undefined) => c !== undefined && c >= '0' && c <= '9';
+
+/**
+ * Colour round B: numbers in rule values and element texts (port of RuleNumbers). The first number in a text counts
+ * ("600 mm" → 600); spaces / apostrophes between digit groups are dropped; a comma followed by three digits is a
+ * thousands separator, otherwise a decimal mark.
+ */
+export const RuleNumbers = {
+  /** The first number in a text, or null. */
+  tryParse(text: string | null | undefined): number | null {
+    if (!text) { return null; }
+    let i = 0;
+    while (i < text.length && !isDigit(text[i])) { i++; }
+    if (i >= text.length) { return null; }
+    const negative = i > 0 && (text[i - 1] === '-' || text[i - 1] === '−') && (i < 2 || !isDigit(text[i - 2]));
+    if (i > 0 && text[i - 1] === '.') { i--; }
+    const groupFollows = (start: number) => {
+      if (start + 3 > text.length) { return false; }
+      for (let k = start; k < start + 3; k++) { if (!isDigit(text[k])) { return false; } }
+      return start + 3 === text.length || !isDigit(text[start + 3]);
+    };
+    let digits = '';
+    let decimalSeen = false;
+    for (; i < text.length; i++) {
+      const c = text[i];
+      if (isDigit(c)) { digits += c; continue; }
+      if (!isDigit(text[i + 1])) { break; }
+      if ((c === ' ' || c === ' ' || c === ' ' || c === '\'') && digits.length > 0 && !decimalSeen && groupFollows(i + 1)) { continue; }
+      if (c === '.' && !decimalSeen) { decimalSeen = true; digits += '.'; continue; }
+      if (c === ',' && !decimalSeen) {
+        if (groupFollows(i + 1)) { continue; }
+        decimalSeen = true;
+        digits += '.';
+        continue;
+      }
+      break;
+    }
+    if (digits.length === 0 || digits === '.') { return null; }
+    let value = Number(digits.startsWith('.') ? '0' + digits : digits);
+    if (!Number.isFinite(value)) { return null; }
+    if (negative) { value = -value; }
+    return value;
+  },
+
+  /** The numbers in a typed text ("300 to 600" → 300, 600), at most max. */
+  all(text: string | null | undefined, max = 2): number[] {
+    const result: number[] = [];
+    let rest = text ?? '';
+    while (result.length < max) {
+      let i = 0;
+      while (i < rest.length && !isDigit(rest[i])) { i++; }
+      if (i >= rest.length) { break; }
+      let j = i;
+      while (j < rest.length && (isDigit(rest[j]) || ((rest[j] === '.' || rest[j] === ',') && isDigit(rest[j + 1])))) { j++; }
+      const from = i > 0 && (rest[i - 1] === '-' || rest[i - 1] === '−') && (i < 2 || rest[i - 2] === ' ') ? i - 1 : i;
+      const value = RuleNumbers.tryParse(rest.slice(from, j));
+      if (value === null) { break; }
+      result.push(value);
+      rest = rest.slice(j);
+      if (rest.length > 0 && (rest[0] === '-' || rest[0] === '–')) { rest = rest.slice(1); }
+    }
+    return result;
+  },
+
+  /** A number as rules store it (invariant, up to 6 decimals, no trailing zeros). */
+  format(value: number): string {
+    let fixed = value.toFixed(6);
+    if (fixed.includes('.')) { fixed = fixed.replace(/0+$/, '').replace(/\.$/, ''); }
+    return fixed === '-0' ? '0' : fixed;
+  }
 };
 
 /**
@@ -140,6 +244,8 @@ export const RuleOp = {
  */
 export interface SetRule {
   field: string;
+  /** Colour round A: the parameter's name when field is "parameter", else null (not written). */
+  parameter: string | null;
   /** Null in files from builds before operators (contains / exclude say what it is then). */
   op: string | null;
   values: string[];
@@ -149,7 +255,7 @@ export interface SetRule {
 }
 
 export function newRule(field = RuleField.CATALOG, op: string | null = RuleOp.IS, values: string[] = []): SetRule {
-  return { field, op, values: [...values], contains: false, value: '', exclude: false };
+  return { field, parameter: null, op, values: [...values], contains: false, value: '', exclude: false };
 }
 
 /** The operator in effect (an older rule's from its switches). */
@@ -171,7 +277,14 @@ export function ruleValueAt(rule: SetRule, index: number): string {
 export function ruleIsComplete(rule: SetRule): boolean {
   const count = ruleValueCount(rule);
   if (count === 0) { return false; }
-  if (!RuleOp.isText(ruleOperator(rule))) { return true; }
+  const op = ruleOperator(rule);
+  if (RuleOp.isNumeric(op)) {
+    const needed = op === RuleOp.BETWEEN ? 2 : 1;
+    if (count < needed) { return false; }
+    for (let i = 0; i < needed; i++) { if (RuleNumbers.tryParse(ruleValueAt(rule, i)) === null) { return false; } }
+    return true;
+  }
+  if (!RuleOp.isText(op)) { return true; }
   for (let i = 0; i < count; i++) { if (!isBlank(ruleValueAt(rule, i))) { return true; } }
   return false;
 }
@@ -179,13 +292,15 @@ export function ruleIsComplete(rule: SetRule): boolean {
 /** Makes the rule explicit, trims a single-value operator to one value and keeps the earlier fields in step. */
 export function normaliseRule(rule: SetRule): SetRule {
   rule.field = RuleField.normalise(rule.field);
+  rule.parameter = rule.field === RuleField.PARAMETER ? (rule.parameter ?? '').trim() : null;
   if (!RuleOp.isKnown(rule.op)) {
     rule.op = RuleOp.fromLegacy(rule.contains, rule.exclude);
     rule.values = [rule.value ?? ''];
   }
   rule.op = RuleOp.normalise(rule.op);
   rule.values = (rule.values ?? []).map(v => v ?? '');
-  if (!RuleOp.isList(rule.op) && rule.values.length > 1) { rule.values.length = 1; }
+  const keep = RuleOp.maxValues(rule.op);
+  if (rule.values.length > keep) { rule.values.length = keep; }
   rule.contains = RuleOp.isText(rule.op);
   rule.exclude = RuleOp.isNegative(rule.op);
   rule.value = rule.values.length > 0 ? rule.values[0] : '';
@@ -195,7 +310,9 @@ export function normaliseRule(rule: SetRule): SetRule {
 /** Changes the operator: a list keeps its values; a single-value operator keeps the first one. */
 export function setRuleOperator(rule: SetRule, op: string): void {
   normaliseRule(rule);
+  const wasNumeric = RuleOp.isNumeric(rule.op ?? '');
   rule.op = RuleOp.normalise(op);
+  if (wasNumeric !== RuleOp.isNumeric(rule.op)) { rule.values = []; } // colour round B: numbers and names don't mix
   normaliseRule(rule);
 }
 
@@ -207,11 +324,19 @@ export function setRuleValues(rule: SetRule, values: readonly string[]): void {
 }
 
 /** Changes the field (the values belong to the old field, so they go). */
-export function setRuleField(rule: SetRule, field: string): void {
+export function setRuleField(rule: SetRule, field: string, parameter: string | null = null): void {
   normaliseRule(rule);
   rule.field = RuleField.normalise(field);
+  rule.parameter = parameter;
   rule.values = [];
   normaliseRule(rule);
+}
+
+/** True when the rule looks at the same field (and parameter) as another field choice. */
+export function ruleIsField(rule: SetRule, field: string, parameter: string | null): boolean {
+  const normal = RuleField.normalise(field);
+  if (RuleField.normalise(rule.field) !== normal) { return false; }
+  return normal !== RuleField.PARAMETER || (rule.parameter ?? '').toLowerCase() === (parameter ?? '').toLowerCase();
 }
 
 const sameText = (a: string, b: string) => a.localeCompare(b, undefined, { sensitivity: 'accent' }) === 0;
@@ -231,17 +356,51 @@ export function toggleRuleValue(rule: SetRule, value: string): void {
 }
 
 export function copyRule(rule: SetRule): SetRule {
-  return { field: rule.field, op: rule.op, values: [...(rule.values ?? [])], contains: rule.contains, value: rule.value, exclude: rule.exclude };
+  return {
+    field: rule.field, parameter: rule.parameter, op: rule.op, values: [...(rule.values ?? [])], contains: rule.contains, value: rule.value,
+    exclude: rule.exclude
+  };
 }
 
-/** A group of rules inside a search set (C-B4): ANY or ALL of its rules, each an ordinary condition. */
+/**
+ * A group of rules inside a search set (C-B4): ANY or ALL of its rules, each an ordinary condition. Polish round P-C:
+ * groups inside groups, to any depth (each one more condition).
+ */
 export interface RuleGroup {
   matchAll: boolean;
   rules: SetRule[];
+  /** Groups inside this group (null: none, nothing written). */
+  groups: RuleGroup[] | null;
 }
 
+/** Deepest nesting kept when reading. */
+export const RULE_GROUP_MAX_DEPTH = 16;
+
 export function groupHasConditions(group: RuleGroup): boolean {
-  return (group.rules ?? []).some(r => r && ruleIsComplete(r));
+  return (group.rules ?? []).some(r => r && ruleIsComplete(r)) || (group.groups ?? []).some(g => g && groupHasConditions(g));
+}
+
+/** Every rule: the group's, then its groups' (depth first). */
+export function groupAllRules(group: RuleGroup): SetRule[] {
+  return [...(group.rules ?? []), ...(group.groups ?? []).flatMap(g => (g ? groupAllRules(g) : []))];
+}
+
+/** Drops null rules / groups, normalises the rest (deeper than the limit dropped), groups null when empty. */
+export function normaliseGroup(group: RuleGroup, depth = 1): RuleGroup {
+  group.rules = (group.rules ?? []).filter(r => r);
+  group.rules.forEach(normaliseRule);
+  if (group.groups) {
+    group.groups = group.groups.filter(g => g);
+    if (depth >= RULE_GROUP_MAX_DEPTH) { group.groups = []; }
+    for (const inner of group.groups) { normaliseGroup(inner, depth + 1); }
+    if (group.groups.length === 0) { group.groups = null; }
+  }
+  return group;
+}
+
+export function copyGroup(group: RuleGroup): RuleGroup {
+  const groups = (group.groups ?? []).filter(g => g).map(copyGroup);
+  return { matchAll: group.matchAll, rules: (group.rules ?? []).filter(r => r).map(copyRule), groups: groups.length > 0 ? groups : null };
 }
 
 /**
@@ -261,9 +420,9 @@ export function newSet(name = 'New set'): SearchSet {
   return { id: newId(), name, matchAll: false, rules: [], groups: null };
 }
 
-/** Every rule: the set's own, then each group's. */
+/** Every rule: the set's own, then each group's (nested groups' too, depth first). */
 export function allRules(set: SearchSet): SetRule[] {
-  return [...(set.rules ?? []), ...(set.groups ?? []).flatMap(g => g?.rules ?? [])];
+  return [...(set.rules ?? []), ...(set.groups ?? []).flatMap(g => (g ? groupAllRules(g) : []))];
 }
 
 /** Drops null rules / groups, normalises every rule, and leaves groups null when empty (in place). */
@@ -272,10 +431,7 @@ export function normaliseSetRules(set: SearchSet): void {
   set.rules.forEach(normaliseRule);
   if (set.groups) {
     set.groups = set.groups.filter(g => g);
-    for (const group of set.groups) {
-      group.rules = (group.rules ?? []).filter(r => r);
-      group.rules.forEach(normaliseRule);
-    }
+    for (const group of set.groups) { normaliseGroup(group); }
     if (set.groups.length === 0) { set.groups = null; }
   }
 }
@@ -286,7 +442,7 @@ export function copySet(set: SearchSet, freshId = false): SearchSet {
     name: set.name,
     matchAll: set.matchAll,
     rules: (set.rules ?? []).filter(r => r).map(copyRule),
-    groups: set.groups ? set.groups.filter(g => g).map(g => ({ matchAll: g.matchAll, rules: (g.rules ?? []).filter(r => r).map(copyRule) })) : null
+    groups: set.groups ? set.groups.filter(g => g).map(copyGroup) : null
   };
 }
 
@@ -418,6 +574,8 @@ export interface ClashDocument {
   tests: ClashTest[];
   clashes: ClashRecord[];
   runs: ClashRunRecord[];
+  /** C-C1: clash groups (null when there are none, so files without groups stay as they were). */
+  groups: ClashGroup[] | null;
 }
 
 export const CLASH_FORMAT = 'bimgo-clashes';
@@ -425,7 +583,7 @@ export const CLASH_REPORT_FORMAT = 'bimgo-clash-report';
 export const CLASH_VERSION = 1;
 
 export function emptyClashDocument(): ClashDocument {
-  return { format: CLASH_FORMAT, version: CLASH_VERSION, modelTitle: null, modelKey: null, generator: null, exportedUtc: null, sets: [], tests: [], clashes: [], runs: [] };
+  return { format: CLASH_FORMAT, version: CLASH_VERSION, modelTitle: null, modelKey: null, generator: null, exportedUtc: null, sets: [], tests: [], clashes: [], runs: [], groups: null };
 }
 
 export function findSet(document: ClashDocument, id: string | null | undefined): SearchSet | null {
@@ -481,16 +639,18 @@ export function cleanClashDocument(document: ClashDocument): ClashDocument {
     }
   }
   if (document.runs.length > ClashDefaults.MAX_RUNS) { document.runs.splice(0, document.runs.length - ClashDefaults.MAX_RUNS); }
+  cleanClashGroups(document); // C-C1: after the clash ids are fixed
   return document;
 }
 
 // #region JSON
 
-const date = (v: unknown): string | null => (typeof v === 'string' && !Number.isNaN(Date.parse(v)) ? v : null);
+export const date = (v: unknown): string | null => (typeof v === 'string' && !Number.isNaN(Date.parse(v)) ? v : null);
 
 function readRule(j: Json): SetRule {
   return {
     field: str(j.field, RuleField.CATALOG),
+    parameter: str(j.parameter, null),
     op: str(j.op, null),
     values: arr(j.values).map(v => (typeof v === 'string' ? v : '')),
     contains: bool(j.contains),
@@ -499,15 +659,17 @@ function readRule(j: Json): SetRule {
   };
 }
 
-function readSet(j: Json): SearchSet {
-  const groups = Array.isArray(j.groups) ? j.groups.map(g => {
-    const o = obj(g);
-    return { matchAll: bool(o.matchAll), rules: arr(o.rules).map(r => readRule(obj(r))) };
-  }) : null;
+function readGroup(o: Json, depth: number): RuleGroup {
+  const inner = depth < RULE_GROUP_MAX_DEPTH && Array.isArray(o.groups) ? o.groups.map(g => readGroup(obj(g), depth + 1)) : null;
+  return { matchAll: bool(o.matchAll), rules: arr(o.rules).map(r => readRule(obj(r))), groups: inner };
+}
+
+export function readSet(j: Json): SearchSet {
+  const groups = Array.isArray(j.groups) ? j.groups.map(g => readGroup(obj(g), 1)) : null;
   return { id: str(j.id, ''), name: str(j.name, 'New set'), matchAll: bool(j.matchAll), rules: arr(j.rules).map(r => readRule(obj(r))), groups };
 }
 
-function readTest(j: Json): ClashTest {
+export function readTest(j: Json): ClashTest {
   return {
     id: str(j.id, ''),
     name: str(j.name, 'New test'),
@@ -522,7 +684,7 @@ function readTest(j: Json): ClashTest {
   };
 }
 
-function readRef(v: unknown): ClashElementRef | null {
+export function readRef(v: unknown): ClashElementRef | null {
   const j = objOrNull(v);
   if (!j) { return null; }
   return {
@@ -585,7 +747,8 @@ export function readClashDocument(j: Json): ClashDocument {
     sets: arr(j.sets).map(s => readSet(obj(s))),
     tests: arr(j.tests).map(t => readTest(obj(t))),
     clashes: arr(j.clashes).map(c => readClash(obj(c))),
-    runs: arr(j.runs).map(r => readRun(obj(r)))
+    runs: arr(j.runs).map(r => readRun(obj(r))),
+    groups: Array.isArray(j.groups) ? j.groups.map(g => readClashGroup(obj(g))) : null
   };
 }
 
@@ -612,15 +775,8 @@ export function clashDocumentJson(document: ClashDocument): Json {
     modelKey: document.modelKey,
     generator: document.generator,
     exportedUtc: document.exportedUtc,
-    sets: document.sets.map(s => ({
-      id: s.id, name: s.name, matchAll: s.matchAll,
-      rules: s.rules.map(ruleJson),
-      groups: s.groups ? s.groups.map(g => ({ matchAll: g.matchAll, rules: g.rules.map(ruleJson) })) : null
-    })),
-    tests: document.tests.map(t => ({
-      id: t.id, name: t.name, kind: t.kind, setA: t.setA, setB: t.setB, tolerance: t.tolerance, enabled: t.enabled,
-      lastRunUtc: t.lastRunUtc, lastRunModel: t.lastRunModel, lastRunTruncated: t.lastRunTruncated
-    })),
+    sets: document.sets.map(setJson),
+    tests: document.tests.map(testJson),
     clashes: document.clashes.map(c => ({
       id: c.id, testId: c.testId, a: refJson(c.a), b: refJson(c.b), x: c.x, y: c.y, z: c.z, distance: c.distance,
       crossing: c.crossing, approximate: c.approximate, status: c.status, assignedTo: c.assignedTo, notes: c.notes,
@@ -630,15 +786,38 @@ export function clashDocumentJson(document: ClashDocument): Json {
     runs: document.runs.map(r => ({
       utc: r.utc, testId: r.testId, user: r.user, found: r.found, new: r.new, newlyResolved: r.newlyResolved, byStatus: r.byStatus,
       elementsA: r.elementsA, elementsB: r.elementsB, seconds: r.seconds, truncated: r.truncated
-    }))
+    })),
+    groups: document.groups ? document.groups.map(clashGroupJson) : null
   }) as Json;
 }
 
-function ruleJson(r: SetRule): Json {
-  return { field: r.field, op: r.op, values: r.values, contains: r.contains, value: r.value, exclude: r.exclude };
+/** A set as JSON-ready members (nulls kept: callers drop them). */
+export function setJson(s: SearchSet): Json {
+  return { id: s.id, name: s.name, matchAll: s.matchAll, rules: s.rules.map(ruleJson), groups: s.groups ? s.groups.map(groupJson) : null };
 }
 
-function refJson(r: ClashElementRef): Json {
+/** A test as JSON-ready members. */
+export function testJson(t: ClashTest): Json {
+  return {
+    id: t.id, name: t.name, kind: t.kind, setA: t.setA, setB: t.setB, tolerance: t.tolerance, enabled: t.enabled,
+    lastRunUtc: t.lastRunUtc, lastRunModel: t.lastRunModel, lastRunTruncated: t.lastRunTruncated
+  };
+}
+
+/** Drops null / undefined members recursively (the desktop's WhenWritingNull). */
+export function jsonWithoutNulls(value: unknown): unknown {
+  return withoutNulls(value);
+}
+
+function groupJson(g: RuleGroup): Json {
+  return { matchAll: g.matchAll, rules: g.rules.map(ruleJson), groups: g.groups ? g.groups.map(groupJson) : null };
+}
+
+function ruleJson(r: SetRule): Json {
+  return { field: r.field, parameter: r.parameter, op: r.op, values: r.values, contains: r.contains, value: r.value, exclude: r.exclude };
+}
+
+export function refJson(r: ClashElementRef): Json {
   return {
     uniqueId: r.uniqueId, elementId: r.elementId, link: r.link, cloneKey: r.cloneKey, ifcGuid: r.ifcGuid, category: r.category,
     familyType: r.familyType, level: r.level

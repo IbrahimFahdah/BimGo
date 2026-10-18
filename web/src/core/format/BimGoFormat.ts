@@ -11,6 +11,8 @@ export const BimGoFormat = {
   BOOKMARK_SIDECAR_SUFFIX: '.bimgo-bookmarks.json',
   SUN_SIDECAR_SUFFIX: '.bimgo-sun.json',
   VISIBILITY_SIDECAR_SUFFIX: '.bimgo-visibility.json',
+  /** Round K: the camera path sidecar suffix beside an older snapshot. */
+  PATHS_SIDECAR_SUFFIX: '.bimgo-paths.json',
   LEGACY_SIDECAR_SUFFIX: '.rvtgo.json',
 
   ENTRY_MANIFEST: 'manifest.json',
@@ -33,6 +35,10 @@ export const BimGoFormat = {
   MAX_THUMBNAIL_BYTES: 2 * 1024 * 1024,
   /** Optional (Round C): clash sets, tests, results and history (clashes/ClashModels ClashDocument). */
   ENTRY_CLASHES: 'clashes.json',
+  /** Optional (grids round A): the host's and extracted links' grids. */
+  ENTRY_GRIDS: 'grids.json',
+  /** Optional (Round K): keyframed camera paths. */
+  ENTRY_PATHS: 'paths.json',
   TEXTURE_FOLDER: 'textures/',
   /** The folder family library previews live under. */
   LIBRARY_FOLDER: 'library/',

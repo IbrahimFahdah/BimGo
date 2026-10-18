@@ -5,6 +5,8 @@ import { UnitSystem } from '../core/scene/Units';
 import { ShadowQuality } from '../engine/render/ShadowMaps';
 import { LightMode } from './Lights';
 import { readJson, writeJson } from '../platform/settings';
+import { InputCatalog } from '../core/scene/InputCatalog';
+import { MaterialOverrides } from '../core/scene/MaterialOverrides';
 
 /** The player's eye-height preset (port of EyePreset). */
 export enum EyePreset {
@@ -81,6 +83,23 @@ export function cleanPadBindings(value: unknown, max = MAX_KEY_BINDING_ENTRIES, 
 
 function cleanNumber(value: unknown, min: number, max: number, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) ? clamp(value, min, max) : fallback;
+}
+
+/** Grass blade height range (mm) and reach (m). */
+export const GrassLimits = { MIN_HEIGHT: 30, MAX_HEIGHT: 400, MIN_DISTANCE: 15, MAX_DISTANCE: 80 } as const;
+
+/** Water round W: the top of the ripple strength / speed and grass sway ranges (200 %), and the wave size range. */
+export const LookLimits = { MAX_LOOK_SCALE: 2, MIN_WAVE_SCALE: 0.25, MAX_WAVE_SCALE: 4 } as const;
+
+/** A look scale (ripple strength / speed, grass sway) in 0–2 on 5 % steps; unreadable is 1. */
+export function cleanLookScale(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? Math.round(clamp(value, 0, LookLimits.MAX_LOOK_SCALE) * 20) / 20 : 1;
+}
+
+/** A wave size in 0.25–4 on 5 % steps; unreadable is 1. */
+export function cleanWaveScale(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? Math.round(clamp(value, LookLimits.MIN_WAVE_SCALE, LookLimits.MAX_WAVE_SCALE) * 20) / 20 : 1;
 }
 
 /** Colour mode (port of ColourMode). */
@@ -164,6 +183,36 @@ export class ViewerSettings {
   genericPadMap: Record<string, string> = {};
   /** The name of the generic controller the map was recorded with. */
   genericPadName = '';
+  /** QOL round: materials with Revit's Water appearance asset are water (on by default). */
+  waterFromAsset = true;
+  /** QOL round: material name fragments that make a (see-through) material water. */
+  waterKeywords: string[] = ['water'];
+  /** QOL round: water keywords also match opaque materials. */
+  waterKeywordsOpaque = false;
+  /** Sky round: material name fragments drawn as grass blades in the Realistic mode. */
+  grassKeywords: string[] = ['grass', 'lawn', 'turf'];
+  /** Grass round: grass blades on (Realistic mode). */
+  grassBlades = true;
+  /** Grass round: blade density, 0 low, 1 medium, 2 high. */
+  grassDensity = 1;
+  /** Grass round: blade height (mm; ±40 %). */
+  grassHeightMm = 120;
+  /** Grass round: how far blades reach from the eye (m). */
+  grassDistance = 40;
+  /** Grass round: water's body colour (#RRGGBB), or empty for the material's own. */
+  waterColour = '';
+  /** Grass round: how much water reflects (0–1). */
+  waterReflection = 1;
+  /** Water round W: ripple strength (0–2; 0 = still). */
+  waterRipple = 1;
+  /** Water round W: ripple speed (0–2). */
+  waterRippleSpeed = 1;
+  /** Water round W: wave size (0.25–4). */
+  waterWaveScale = 1;
+  /** Water round W: grass sway (0–2). */
+  grassSway = 1;
+  /** Polish round P-B: the controls defaults version the user has seen (older: a one-time toast and NEW / CHANGED tags). */
+  controlsDefaultsVersion = InputCatalog.DEFAULTS_VERSION;
 
   /** The eye height of a preset (m). */
   eyeHeightFor(preset: EyePreset): number {
@@ -226,6 +275,25 @@ export class ViewerSettings {
     s.padLookSensitivity = cleanNumber(raw.padLookSensitivity, 0.2, 3, 1);
     s.padDeadZone = cleanNumber(raw.padDeadZone, 0.05, 0.6, PAD_DEFAULTS.DEAD_ZONE);
     s.padTriggerThreshold = cleanNumber(raw.padTriggerThreshold, 0.05, 0.9, PAD_DEFAULTS.TRIGGER);
+    for (const key of ['waterFromAsset', 'waterKeywordsOpaque', 'grassBlades'] as const) {
+      if (typeof raw[key] === 'boolean') { s[key] = raw[key] as boolean; }
+    }
+    if (Array.isArray(raw.waterKeywords)) { s.waterKeywords = MaterialOverrides.cleanKeywords(raw.waterKeywords); }
+    if (Array.isArray(raw.grassKeywords)) { s.grassKeywords = MaterialOverrides.cleanKeywords(raw.grassKeywords); }
+    s.grassDensity = Math.round(cleanNumber(raw.grassDensity, 0, 2, 1));
+    s.grassHeightMm = Math.round(cleanNumber(raw.grassHeightMm, GrassLimits.MIN_HEIGHT, GrassLimits.MAX_HEIGHT, 120));
+    s.grassDistance = Math.round(cleanNumber(raw.grassDistance, GrassLimits.MIN_DISTANCE, GrassLimits.MAX_DISTANCE, 40));
+    if (typeof raw.waterColour === 'string' && /^#?[0-9a-fA-F]{6}$/.test(raw.waterColour.trim())) {
+      s.waterColour = '#' + raw.waterColour.trim().replace(/^#/, '').toUpperCase();
+    }
+    s.waterReflection = cleanNumber(raw.waterReflection, 0, 1, 1);
+    s.waterRipple = cleanLookScale(raw.waterRipple);
+    s.waterRippleSpeed = cleanLookScale(raw.waterRippleSpeed);
+    s.grassSway = cleanLookScale(raw.grassSway);
+    s.waterWaveScale = cleanWaveScale(raw.waterWaveScale);
+    // P-B: settings saved before the controls defaults version saw version 0 (a new browser starts at the current one)
+    s.controlsDefaultsVersion = typeof raw.controlsDefaultsVersion === 'number' ? Math.max(0, Math.trunc(raw.controlsDefaultsVersion))
+      : Object.keys(raw).length > 0 ? 0 : InputCatalog.DEFAULTS_VERSION;
     return s;
   }
 
@@ -271,7 +339,22 @@ export class ViewerSettings {
       padDeadZone: this.padDeadZone,
       padTriggerThreshold: this.padTriggerThreshold,
       genericPadMap: this.genericPadMap,
-      genericPadName: this.genericPadName
+      genericPadName: this.genericPadName,
+      waterFromAsset: this.waterFromAsset,
+      waterKeywords: this.waterKeywords,
+      waterKeywordsOpaque: this.waterKeywordsOpaque,
+      grassKeywords: this.grassKeywords,
+      grassBlades: this.grassBlades,
+      grassDensity: this.grassDensity,
+      grassHeightMm: this.grassHeightMm,
+      grassDistance: this.grassDistance,
+      waterColour: this.waterColour,
+      waterReflection: this.waterReflection,
+      waterRipple: this.waterRipple,
+      waterRippleSpeed: this.waterRippleSpeed,
+      waterWaveScale: this.waterWaveScale,
+      grassSway: this.grassSway,
+      controlsDefaultsVersion: this.controlsDefaultsVersion
     });
   }
 }

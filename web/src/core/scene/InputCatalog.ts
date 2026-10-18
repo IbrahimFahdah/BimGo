@@ -12,6 +12,10 @@ export enum InputContext {
   PhotoMode, SunPanel, Tour,
   /** Clash mode: the docked clash list, free cursor, flying. */
   Clashes,
+  /** Sky round: the pause menu's own keys (the options preview). */
+  PauseMenu,
+  /** Round K: the 3D camera path editor. */
+  PathEditor,
   /** Keys that can't be rebound (Esc, menus and panels' mouse). Listed for reference and clash checks. */
   Fixed
 }
@@ -47,7 +51,9 @@ export enum InputAction {
   // Views and tools
   AddBookmark, Bookmark1, Bookmark2, Bookmark3, Bookmark4, Bookmark5, Bookmark6, Bookmark7, Bookmark8, Bookmark9,
   Coordinates, Lights, Shadows, SunPanel, SunEarlier, SunEarlierFine, SunLater, SunLaterFine, SunStudy, PhotoMode,
-  SectionBox, SectionPlane, SectionClear, ClashMode,
+  SectionBox, SectionPlane, SectionClear, ClashMode, GridsPanel, GridsCycle, ColourProfile,
+  MediaPanel, // Round K-A
+  PathEditMode, // Round K-B
 
   // Gun keys
   ScanSelectInRevit, ScanHide, ScanIsolate, MeasureNormal, CommentEdit, DemolishMode, GizmoSnap, GizmoDrop,
@@ -65,7 +71,15 @@ export enum InputAction {
   // Clash mode
   ClashNext, ClashPrevious, ClashFrame, ClashStatusNew, ClashStatusActive, ClashStatusReviewed, ClashStatusApproved,
   ClashStatusResolved, ClashSelectInRevit, ClashFlyUp, ClashFlyDown, ClashView, ClashSectionToggle,
-  ClashSelectAll,
+  ClashSelectAll, ClashPictures, ClashGroup, ClashUngroup,
+  ClashPickPoints, ClashStatusCycle, // polish round P-B
+
+  // Pause menu (sky round)
+  MenuPreview,
+
+  // Path editor (P-B reserved; Round K-B)
+  PathAddKey, PathDeleteKey, PathPreview, PathPreviousKey, PathNextKey,
+  PathSetKey, PathMoveForward, PathMoveBack, PathMoveLeft, PathMoveRight, PathFlyUp, PathFlyDown, PathFlyFast, PathUndo,
 
   // Fixed (not rebindable)
   Back, CloseWindow, Click, DragLook, FineAdjust, PhotoZoom, OpenFile, PadClick, PadMenuBack
@@ -90,9 +104,21 @@ export class ActionDef {
   get id(): string { return InputAction[this.action]; }
 }
 
-/** A state of the app with the actions that can fire in it. */
+/**
+ * One row of the generated F1 sheet (polish round P-B): a short label and the actions whose keys it shows; keyText
+ * stands in for the key column when the keyboard side isn't a binding (looking with the mouse).
+ */
+export class HelpEntry {
+  constructor(readonly label: string, readonly keyText: string | null, readonly actions: readonly InputAction[]) {}
+}
+
+/** A default that changed in a controls defaults version (P-B): a new action, or new keys / pad binding for one. */
+export interface DefaultsChange { version: number; action: InputAction; added: boolean; was: string | null }
+
+/** A state of the app with the actions that can fire in it (and, P-B, its F1 rows). */
 export class InputSituation {
-  constructor(readonly name: string, readonly contexts: readonly InputContext[], readonly extra: readonly InputAction[]) {}
+  constructor(readonly name: string, readonly contexts: readonly InputContext[], readonly extra: readonly InputAction[],
+    readonly help: readonly HelpEntry[] = []) {}
 
   /** True when the action can fire in this situation. */
   contains(action: InputAction): boolean {
@@ -154,7 +180,7 @@ function buildDefinitions(): ActionDef[] {
   add(A.NextGun, c, 'Next gun', P, 'Shift+WheelDown');
   add(A.GunModePrevious, c, 'Gun mode: previous (Measure, Demolish)', P, 'WheelUp');
   add(A.GunModeNext, c, 'Gun mode: next (Measure, Demolish)', P, 'WheelDown');
-  add(A.Unarmed, c, 'Unarmed: no gun (again, or a gun key, arms)', P, '0');
+  add(A.Unarmed, c, 'None: no gun (again, or a gun key, arms)', P, '0');
   add(A.GunPrimary, c, 'Gun primary (fire)', P, 'LMB');
   add(A.GunSecondary, c, 'Gun secondary', P, 'RMB');
   add(A.ClearMarkers, c, "Clear this gun's markers", P, 'X');
@@ -178,6 +204,11 @@ function buildDefinitions(): ActionDef[] {
   add(A.SectionPlane, c, 'Cut at the aimed surface', P, 'Shift+P');
   add(A.SectionClear, c, 'Clear all cuts', P, 'Ctrl+P');
   add(A.ClashMode, c, 'Clash mode on / off (docked clash list)', P, 'Y');
+  add(A.GridsPanel, c, 'Grids panel (also in clash mode)', P, 'Shift+G');
+  add(A.GridsCycle, c, 'Grids: off / level underfoot / all levels (also in clash mode)', P, 'C');
+  add(A.ColourProfile, c, 'Colour profile on / off (also in clash mode)', P, 'Shift+C');
+  add(A.MediaPanel, c, 'Media panel: photo, tour, camera paths, video', P, 'Shift+M');
+  add(A.PathEditMode, c, 'Camera path editor in 3D on / off', P, 'Shift+K');
 
   // Gun keys (while that gun is selected)
   add(A.ScanSelectInRevit, InputContext.ScanGun, 'Select in Revit (live)', P, 'R');
@@ -235,6 +266,31 @@ function buildDefinitions(): ActionDef[] {
   add(A.ClashView, c, 'Model view: ghost / wireframe / real / hidden', P, 'G');
   add(A.ClashSectionToggle, c, 'Section box on / off (on: around the current clash)', P, 'B');
   add(A.ClashSelectAll, c, 'Select all shown clashes (focus on them all) / clear', P, 'Ctrl+A');
+  add(A.ClashPictures, c, 'Row pictures on / off', P, 'P');
+  add(A.ClashGroup, c, 'Group the selected clashes', P, 'Ctrl+G');
+  add(A.ClashUngroup, c, 'Ungroup the picked group / take the selected clashes out of their groups', P, 'Ctrl+Shift+G');
+  add(A.ClashPickPoints, c, 'Pick points: click dots or rows to pick, then group them (again or Esc leaves)', P, 'K');
+  add(A.ClashStatusCycle, c, 'Status: next (new → active → reviewed → approved → resolved)', P);
+
+  // Path editor (P-B reserved; Round K-B reads them)
+  c = InputContext.PathEditor;
+  add(A.PathAddKey, c, 'Add a key at this view (on the path: inserted there)', P, 'K');
+  add(A.PathDeleteKey, c, 'Delete the selected key', P, 'Delete');
+  add(A.PathPreview, c, 'Preview the flythrough (play / pause)', P, 'Space');
+  add(A.PathPreviousKey, c, 'Previous key (the camera snaps into it)', R, 'Left');
+  add(A.PathNextKey, c, 'Next key (the camera snaps into it)', R, 'Right');
+  add(A.PathSetKey, c, 'Set the selected key to this view', P, 'Enter');
+  add(A.PathMoveForward, c, 'Fly forward', H, 'W');
+  add(A.PathMoveBack, c, 'Fly back', H, 'S');
+  add(A.PathMoveLeft, c, 'Fly left', H, 'A');
+  add(A.PathMoveRight, c, 'Fly right', H, 'D');
+  add(A.PathFlyUp, c, 'Fly up (hold)', H, 'E');
+  add(A.PathFlyDown, c, 'Fly down (hold)', H, 'Q');
+  add(A.PathFlyFast, c, 'Fly faster · drag a handle without snapping (hold)', H, 'Shift');
+  add(A.PathUndo, c, 'Undo the last path change', P, 'Ctrl+Z');
+
+  // Pause menu (sky round; the browser keeps Tab for the minimap elsewhere, the pause menu has it free)
+  add(A.MenuPreview, InputContext.PauseMenu, 'Options preview: the scene with the graphics settings only (again or Esc returns)', P, 'Tab');
 
   // Fixed
   fixed(A.Back, 'Pause menu · back · cancel · stop', P, true, InputContext.Fixed, 'Esc');
@@ -306,41 +362,237 @@ function buildDefinitions(): ActionDef[] {
   pad(A.ClashSelectInRevit, 'PadX');
   pad(A.ClashFlyUp, 'PadRT');
   pad(A.ClashFlyDown, 'PadLT');
+  pad(A.ClashView, 'PadUp');
+  pad(A.ClashSectionToggle, 'PadDown');
+  pad(A.ClashSelectAll, 'PadRB+PadX');
+  pad(A.ClashPictures, 'PadBack');
+  pad(A.Unarmed, 'PadRB+PadB');
+  pad(A.MenuPreview, 'PadY');
+  // Polish round P-B: the actions that had no gamepad binding
+  pad(A.AddBookmark, 'PadLB+PadA');
+  pad(A.GridsCycle, 'PadLB+PadY');
+  pad(A.ColourProfile, 'PadRB+PadY');
+  pad(A.GridsPanel, 'PadLB+PadB');
+  pad(A.ClashMode, 'PadRB+PadBack');
+  pad(A.CommentEdit, 'PadX');
+  pad(A.HoldSnapInvert, 'PadLS');
+  pad(A.SunPlay, 'PadY');
+  pad(A.ClashGroup, 'PadRB+PadA');
+  pad(A.ClashUngroup, 'PadRB+PadB');
+  pad(A.ClashStatusCycle, 'PadLB+PadA');
+  pad(A.PathAddKey, 'PadX');
+  pad(A.PathDeleteKey, 'PadLB+PadX');
+  pad(A.PathPreview, 'PadY');
+  pad(A.PathPreviousKey, 'PadLeft');
+  pad(A.PathNextKey, 'PadRight');
+  pad(A.PathSetKey, 'PadRB+PadY');
+  pad(A.PathMoveForward, 'PadLSUp');
+  pad(A.PathMoveBack, 'PadLSDown');
+  pad(A.PathMoveLeft, 'PadLSLeft');
+  pad(A.PathMoveRight, 'PadLSRight');
+  pad(A.PathFlyUp, 'PadRT');
+  pad(A.PathFlyDown, 'PadLT');
+  pad(A.PathFlyFast, 'PadLS');
   return list;
 }
+
+/** Situation names (the app finds the one it is in by these: GameSession.currentSituation). */
+export const Situations = {
+  WALKING: 'Walking',
+  SCAN: 'Walking with the Scan gun',
+  MEASURE: 'Walking with the Measure gun',
+  COMMENT: 'Walking with the Comment gun',
+  DEMOLISH: 'Walking with the Demolish gun',
+  GIZMO: 'Walking with the Gizmo, Clone or Place gun',
+  HOLDING: 'Holding an element',
+  MARKUP: 'Markup editor',
+  SECTION: 'Section box editor',
+  PHOTO: 'Photo mode',
+  SUN_PANEL: 'Sun panel',
+  STUDY: 'Sun / daylight study',
+  TOUR: 'Bookmark tour',
+  CLASHES: 'Clash mode',
+  GRIDS: 'Grids panel',
+  VIDEO: 'Recording a video',
+  START: 'Start screen',
+  PAUSE: 'Pause menu and panels',
+  PATH: 'Path editor (Round K)'
+} as const;
 
 function buildSituations(): InputSituation[] {
   const walking = [InputContext.General, InputContext.Movement, InputContext.Guns, InputContext.Tools];
   const withGun = (gun: InputContext) => [...walking, gun];
   const sunTime = [A.SunEarlier, A.SunEarlierFine, A.SunLater, A.SunLaterFine];
   const padMenu = [A.PadClick, A.PadMenuBack];
+  const S = Situations;
+
+  // F1 rows (polish round P-B): most used first
+  const h = (label: string, ...actions: InputAction[]) => new HelpEntry(label, null, actions);
+  const hk = (label: string, keyText: string, ...actions: InputAction[]) => new HelpEntry(label, keyText, actions);
+  const move = h('Move', A.MoveForward, A.MoveLeft, A.MoveBack, A.MoveRight);
+  const look = hk('Look', 'MOUSE', A.LookUp, A.LookDown, A.LookLeft, A.LookRight);
+  const dragLook = h('Look (drag)', A.DragLook);
+  const click = h('Click · back', A.Click, A.PadClick, A.PadMenuBack);
+  const sunTimeRow = h('Sun time −/+ 5 min', A.SunEarlier, A.SunLater);
+  const sunFineRow = h('Sun time −/+ 1 min', A.SunEarlierFine, A.SunLaterFine);
+  const fine = h('Finer slider steps (hold)', A.FineAdjust);
+  const walk = (...gunRows: HelpEntry[]) => [
+    move,
+    h('Jump · crouch', A.Jump, A.Crouch),
+    h('Run', A.Run),
+    h('Fly / walk', A.Fly),
+    h('Level up · down', A.LevelUp, A.LevelDown),
+    h('Fire · secondary', A.GunPrimary, A.GunSecondary),
+    h('Select gun · gun wheel', A.Gun1, A.Gun2, A.Gun3, A.Gun4, A.Gun5, A.Gun6, A.Gun7, A.Gun8, A.Gun9, A.GunWheel),
+    ...gunRows,
+    h('Bookmark this view', A.AddBookmark),
+    h('Shadows · sun panel', A.Shadows, A.SunPanel),
+    sunTimeRow,
+    h('Section box · photo · media · paths', A.SectionBox, A.PhotoMode, A.MediaPanel, A.PathEditMode),
+    h('Clash mode', A.ClashMode),
+    h('Grids · colour profile', A.GridsCycle, A.ColourProfile),
+    h('Minimap · hide the UI', A.Minimap, A.HideUi),
+    look,
+    h('Go home · go to bookmark', A.GoHome, A.Bookmark1, A.Bookmark2, A.Bookmark3, A.Bookmark4, A.Bookmark5, A.Bookmark6, A.Bookmark7, A.Bookmark8, A.Bookmark9)
+  ].slice(0, 16);
+  const clashHelp = [
+    h('Previous · next clash', A.ClashPrevious, A.ClashNext),
+    h('Go to it again', A.ClashFrame),
+    h('Status 1–5 · next status', A.ClashStatusNew, A.ClashStatusActive, A.ClashStatusReviewed, A.ClashStatusApproved, A.ClashStatusResolved, A.ClashStatusCycle),
+    h('Fly', A.MoveForward, A.MoveLeft, A.MoveBack, A.MoveRight),
+    h('Fly up · down', A.ClashFlyUp, A.ClashFlyDown),
+    dragLook,
+    h('Model view · section box', A.ClashView, A.ClashSectionToggle),
+    h('Show in Revit', A.ClashSelectInRevit),
+    h('Select all shown', A.ClashSelectAll),
+    h('Group · ungroup', A.ClashGroup, A.ClashUngroup),
+    h('Pick points', A.ClashPickPoints),
+    h('Row pictures', A.ClashPictures),
+    h('Grids · colour profile', A.GridsCycle, A.ColourProfile),
+    h('Grids panel', A.GridsPanel),
+    h('Leave clash mode', A.ClashMode),
+    click
+  ];
+
   return [
-    new InputSituation('Walking', walking, []),
-    new InputSituation('Walking with the Scan gun', withGun(InputContext.ScanGun), []),
-    new InputSituation('Walking with the Measure gun', withGun(InputContext.MeasureGun), []),
-    new InputSituation('Walking with the Comment gun', withGun(InputContext.CommentGun), []),
-    new InputSituation('Walking with the Demolish gun', withGun(InputContext.DemolishGun), []),
-    new InputSituation('Walking with the Gizmo, Clone or Place gun', withGun(InputContext.GizmoGuns), []),
-    new InputSituation('Holding an element', [InputContext.Holding, InputContext.GizmoGuns], [
+    new InputSituation(S.WALKING, walking, [], walk()),
+    new InputSituation(S.SCAN, withGun(InputContext.ScanGun), [], walk(
+      h('Hide · isolate its category', A.ScanHide, A.ScanIsolate), h('Select in Revit (live)', A.ScanSelectInRevit))),
+    new InputSituation(S.MEASURE, withGun(InputContext.MeasureGun), [], walk(
+      h('Measure mode', A.GunModePrevious, A.GunModeNext), h('Normal projection', A.MeasureNormal), h('Clear the markers', A.ClearMarkers))),
+    new InputSituation(S.COMMENT, withGun(InputContext.CommentGun), [], walk(h('Edit the hovered comment', A.CommentEdit))),
+    new InputSituation(S.DEMOLISH, withGun(InputContext.DemolishGun), [], walk(h('Demolish / delete', A.DemolishMode))),
+    new InputSituation(S.GIZMO, withGun(InputContext.GizmoGuns), [], walk(h('Drop onto the surface · snap', A.GizmoDrop, A.GizmoSnap))),
+    new InputSituation(S.HOLDING, [InputContext.Holding, InputContext.GizmoGuns], [
       A.MoveForward, A.MoveBack, A.MoveLeft, A.MoveRight, A.Minimap, A.HideUi, A.Help, A.Fullscreen, A.Screenshot,
       A.GunPrimary, A.GunSecondary, A.LookUp, A.LookDown, A.LookLeft, A.LookRight
+    ], [
+      h('Move it', A.MoveForward, A.MoveLeft, A.MoveBack, A.MoveRight),
+      h('Up · down', A.HoldUp, A.HoldDown),
+      h('Move ↔ rotate', A.HoldRotate),
+      h('Snap step smaller · larger', A.HoldStepDown, A.HoldStepUp),
+      h('Fine moves (hold)', A.HoldFine),
+      h('Flip snapping (hold)', A.HoldSnapInvert),
+      h('Snap on / off', A.GizmoSnap),
+      h('Drop onto the surface', A.GizmoDrop),
+      h('Commit', A.GunSecondary),
+      look,
+      h('Cancel', A.Back)
     ]),
-    new InputSituation('Markup editor', [InputContext.Markup], [...padMenu, A.Fullscreen, A.Click]),
-    new InputSituation('Section box editor', [InputContext.SectionEditor], [...padMenu,
-      A.SectionBox, A.SectionClear, A.Fullscreen, A.Screenshot, A.Click, A.DragLook]),
-    new InputSituation('Photo mode', [InputContext.PhotoMode], [...sunTime, A.PhotoMode, A.Fullscreen, A.Click, A.DragLook, A.PadClick, A.PadMenuBack]),
-    new InputSituation('Sun panel', [InputContext.SunPanel], [...sunTime, A.Shadows, A.SunPanel, A.Fullscreen, A.Click, A.FineAdjust, A.PadClick, A.PadMenuBack]),
-    new InputSituation('Sun / daylight study', [], [...padMenu, A.SunStudy, A.Fullscreen, A.Screenshot, A.Click, A.DragLook, A.FineAdjust]),
-    new InputSituation('Bookmark tour', [InputContext.Tour], [A.Fullscreen]),
-    new InputSituation('Clash mode', [InputContext.Clashes], [...padMenu,
+    new InputSituation(S.MARKUP, [InputContext.Markup], [...padMenu, A.Fullscreen, A.Click], [
+      h('Arrow · box · ellipse · pen · text', A.MarkupArrow, A.MarkupBox, A.MarkupEllipse, A.MarkupPen, A.MarkupText),
+      h('Colours', A.MarkupColour1, A.MarkupColour2, A.MarkupColour3, A.MarkupColour4, A.MarkupColour5),
+      h('Undo · redo', A.MarkupUndo, A.MarkupRedo),
+      h('Save the markup', A.MarkupSave),
+      click
+    ]),
+    new InputSituation(S.SECTION, [InputContext.SectionEditor], [...padMenu,
+      A.SectionBox, A.SectionClear, A.Fullscreen, A.Screenshot, A.Click, A.DragLook], [
+      h('Drag a handle · back', A.Click, A.PadClick, A.PadMenuBack),
+      h('Without snapping (hold)', A.SectionFreeDrag),
+      dragLook,
+      h('Clear all cuts', A.SectionClear),
+      h('Close the editor', A.SectionBox)
+    ]),
+    new InputSituation(S.PHOTO, [InputContext.PhotoMode], [...sunTime, A.PhotoMode, A.Fullscreen, A.Click, A.DragLook, A.PadClick, A.PadMenuBack], [
+      h('Take the photo', A.PhotoTake),
+      h('Field of view', A.PhotoZoom),
+      dragLook,
+      sunTimeRow,
+      h('Close photo mode', A.PhotoMode),
+      click
+    ]),
+    new InputSituation(S.SUN_PANEL, [InputContext.SunPanel], [...sunTime, A.Shadows, A.SunPanel, A.Fullscreen, A.Click, A.FineAdjust, A.PadClick, A.PadMenuBack], [
+      h('Play / pause the day', A.SunPlay),
+      sunTimeRow,
+      sunFineRow,
+      h('Shadows on / off', A.Shadows),
+      fine,
+      h('Close the sun panel', A.SunPanel),
+      click
+    ]),
+    new InputSituation(S.STUDY, [], [...padMenu, A.SunStudy, A.Fullscreen, A.Screenshot, A.Click, A.DragLook, A.FineAdjust], [
+      h('Pick surfaces · back', A.Click, A.PadClick, A.PadMenuBack),
+      dragLook,
+      fine,
+      h('Screenshot', A.Screenshot),
+      h('Close the study', A.SunStudy)
+    ]),
+    new InputSituation(S.TOUR, [InputContext.Tour], [A.Fullscreen], [
+      h('Pause / play', A.TourPause),
+      h('Previous · next stop', A.TourPrevious, A.TourNext),
+      h('Stop the tour', A.Back)
+    ]),
+    new InputSituation(S.CLASHES, [InputContext.Clashes], [...padMenu,
       A.MoveForward, A.MoveBack, A.MoveLeft, A.MoveRight, A.Run, A.ClashMode, A.Help, A.HideUi, A.Fullscreen, A.Screenshot,
-      A.Click, A.DragLook]),
-    new InputSituation('Recording a video', [], [A.Fullscreen]),
-    new InputSituation('Start screen', [], [...padMenu, A.OpenFile, A.Click]),
-    new InputSituation('Pause menu and panels', [], [...padMenu,
-      A.Help, A.Fullscreen, A.Screenshot, A.Refresh, A.Save, A.SaveAs, A.Undo, A.Redo, A.Click])
+      A.Click, A.DragLook, A.GridsPanel, A.GridsCycle, A.ColourProfile], clashHelp),
+    new InputSituation(S.GRIDS, [], [...padMenu, A.GridsPanel, A.GridsCycle, A.Fullscreen, A.Click, A.FineAdjust], [
+      h('Grids: off / underfoot / all', A.GridsCycle),
+      fine,
+      h('Close the grids panel', A.GridsPanel),
+      click
+    ]),
+    new InputSituation(S.VIDEO, [], [A.Fullscreen], [h('Stop recording', A.Back), h('Fullscreen', A.Fullscreen)]),
+    new InputSituation(S.START, [], [...padMenu, A.OpenFile, A.Click], [h('Open a file', A.OpenFile), click]),
+    new InputSituation(S.PAUSE, [InputContext.PauseMenu], [...padMenu,
+      A.Help, A.Fullscreen, A.Screenshot, A.Refresh, A.Save, A.SaveAs, A.Undo, A.Redo, A.Click], [
+      click,
+      h('Options preview', A.MenuPreview),
+      h('Save · save as', A.Save, A.SaveAs),
+      h('Undo · redo (files)', A.Undo, A.Redo),
+      h('Refresh from Revit (live)', A.Refresh)
+    ]),
+    // Round K-B: the 3D path editor (← / → snap into keys, so it flies on its own WASD / E / Q actions)
+    new InputSituation(S.PATH, [InputContext.PathEditor], [...padMenu,
+      A.PathEditMode, A.Help, A.HideUi, A.Fullscreen, A.Screenshot, A.Click, A.DragLook], [
+      h('Fly', A.PathMoveForward, A.PathMoveLeft, A.PathMoveBack, A.PathMoveRight),
+      h('Fly up · down', A.PathFlyUp, A.PathFlyDown),
+      h('Faster · free drag (hold)', A.PathFlyFast),
+      dragLook,
+      h('Add a key · delete it', A.PathAddKey, A.PathDeleteKey),
+      h('Previous · next key (snap in)', A.PathPreviousKey, A.PathNextKey),
+      h('Set the key to this view', A.PathSetKey),
+      h('Preview', A.PathPreview),
+      h('Undo', A.PathUndo),
+      h('Leave the editor', A.PathEditMode),
+      click
+    ])
   ];
 }
+
+/** Every default that changed, by version (oldest first); was: the old binding. */
+const DEFAULTS_CHANGES: readonly DefaultsChange[] = [
+  // Version 1 (P-B): pick points on K, the status cycle, the path editor reserved; gamepad bindings for what had none
+  ...[A.ClashPickPoints, A.ClashStatusCycle, A.PathAddKey, A.PathDeleteKey, A.PathPreview, A.PathPreviousKey, A.PathNextKey]
+    .map(action => ({ version: 1, action, added: true, was: null })),
+  ...[A.AddBookmark, A.GridsCycle, A.ColourProfile, A.GridsPanel, A.ClashMode, A.CommentEdit, A.HoldSnapInvert, A.SunPlay, A.ClashGroup, A.ClashUngroup]
+    .map(action => ({ version: 1, action, added: false, was: 'gamepad: none' })),
+  // Version 2 (Round K-A): the media panel
+  { version: 2, action: A.MediaPanel, added: true, was: null },
+  // Version 3 (Round K-B): the 3D path editor and its own fly keys
+  ...[A.PathEditMode, A.PathSetKey, A.PathMoveForward, A.PathMoveBack, A.PathMoveLeft, A.PathMoveRight, A.PathFlyUp, A.PathFlyDown, A.PathFlyFast, A.PathUndo]
+    .map(action => ({ version: 3, action, added: true, was: null }))
+];
 
 const ACTION_COUNT = Math.max(...Object.values(InputAction).filter((v): v is number => typeof v === 'number')) + 1;
 
@@ -363,6 +615,25 @@ function ensure(): void {
 export const InputCatalog = {
   /** Highest action value + 1. */
   get actionCount(): number { return ACTION_COUNT; },
+
+  /**
+   * The controls defaults version (polish round P-B). 0: up to P-A2; 1: P-B's hotkey review; 2: Round K-A's media panel;
+   * 3: Round K-B's path editor. Raise it when a default changes and add the changes to defaultsChanges.
+   */
+  DEFAULTS_VERSION: 3,
+
+  /** Every default that changed, by version. */
+  get defaultsChanges(): readonly DefaultsChange[] { return DEFAULTS_CHANGES; },
+
+  /** The changes made after a version the user saw. */
+  changesSince(seenVersion: number): DefaultsChange[] {
+    return DEFAULTS_CHANGES.filter(c => c.version > seenVersion);
+  },
+
+  /** A situation by name (null when unknown). */
+  situation(name: string): InputSituation | null {
+    return InputCatalog.situations.find(s => s.name === name) ?? null;
+  },
 
   /** Every action in display order. */
   get all(): readonly ActionDef[] {
@@ -397,7 +668,7 @@ export const InputCatalog = {
     InputContext.General, InputContext.Movement, InputContext.Guns, InputContext.Tools,
     InputContext.ScanGun, InputContext.MeasureGun, InputContext.CommentGun, InputContext.DemolishGun, InputContext.GizmoGuns,
     InputContext.Holding, InputContext.Markup, InputContext.SectionEditor, InputContext.PhotoMode, InputContext.SunPanel,
-    InputContext.Tour, InputContext.Clashes, InputContext.Fixed
+    InputContext.Tour, InputContext.Clashes, InputContext.PauseMenu, InputContext.PathEditor, InputContext.Fixed
   ] as readonly InputContext[],
 
   /** A group's heading. */
@@ -417,8 +688,10 @@ export const InputCatalog = {
       case InputContext.SectionEditor: return 'Section box editor';
       case InputContext.PhotoMode: return 'Photo mode';
       case InputContext.SunPanel: return 'Sun panel';
-      case InputContext.Tour: return 'Bookmark tour';
+      case InputContext.Tour: return 'Bookmark tour and camera paths';
       case InputContext.Clashes: return 'Clash mode';
+      case InputContext.PauseMenu: return 'Pause menu';
+      case InputContext.PathEditor: return 'Path editor (Round K)';
       default: return 'Fixed (not rebindable)';
     }
   },
@@ -434,11 +707,14 @@ export const InputCatalog = {
       case InputContext.SectionEditor: return 'The section box key or Esc closes it; clear all cuts still works.';
       case InputContext.PhotoMode: return 'The photo mode key or Esc closes it; the sun time keys work.';
       case InputContext.SunPanel: return 'Shadows / sun panel or Esc closes it; the sun time keys work.';
-      case InputContext.Tour: return 'While a bookmark tour plays (Esc stops it).';
+      case InputContext.Tour: return 'While a bookmark tour or a camera path plays (Esc stops it).';
       case InputContext.Clashes:
         return "Clash detection's docked list (the clash mode key or Esc leaves): the move keys fly, run speeds up, RMB-drag looks, the wheel scrolls the list.";
+      case InputContext.PauseMenu: return 'While the pause menu shows (not in its panels).';
+      case InputContext.PathEditor:
+        return 'The 3D camera path editor (the path editor key, or MEDIA → PATHS → EDIT IN 3D; Esc leaves): free cursor, RMB-drag looks, click a key or a handle, drag the handles; the scrubber at the bottom drives the camera.';
       case InputContext.Fixed:
-        return 'Text boxes also keep Enter, Tab, Backspace, ↑ / ↓, Ctrl+V and Esc. Gamepad in menus and editors: the look stick moves the cursor, the move stick scrolls (menus) or looks (editors).';
+        return 'Text boxes also keep Enter, Tab, Backspace, ↑ / ↓, Ctrl+V and Esc. Gamepad in menus and editors: the look stick moves the cursor, the move stick scrolls (menus) or looks (editors); over menus and docks the D-pad moves the focus ring and LB / RB tapped alone switch tabs; A with LB / RB held is a chord, not a click.';
       default: return null;
     }
   },

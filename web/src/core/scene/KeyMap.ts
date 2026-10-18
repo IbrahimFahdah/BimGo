@@ -1,4 +1,4 @@
-import { ActionKind, type ActionDef, type InputAction, InputCatalog } from './InputCatalog';
+import { ActionKind, type ActionDef, type HelpEntry, InputAction, InputCatalog } from './InputCatalog';
 import { displayName, KeyChord, KeyCodes, KeyModifiers, type KeyState, modifierPrefix } from './KeyChord';
 
 /** A binding that already uses a key (a clash). */
@@ -647,6 +647,62 @@ export class KeyMap {
       return modifierPrefix(b.modifiers & ~a.modifiers).replace(/\+$/, '');
     }
     return this.label(fine);
+  }
+
+  /**
+   * Polish round P-B: an F1 row's key column: its fixed text, or its actions' primary keys joined by " · " (unbound
+   * left out; five or more consecutive actions read as a range; the four move keys run together; upper case).
+   */
+  helpKeys(entry: HelpEntry | null): string {
+    if (!entry) { return ''; }
+    if (entry.keyText !== null) { return entry.keyText; }
+    const actions = entry.actions;
+    const isMove = (a: InputAction) => a === InputAction.MoveForward || a === InputAction.MoveBack || a === InputAction.MoveLeft || a === InputAction.MoveRight;
+    if (actions.length === 4 && actions.every(isMove)) { return this.describeJoined(' ', true, ...actions).toUpperCase(); }
+    if (actions.length === 2 && !this.isUnbound(actions[0]) && !this.isUnbound(actions[1])) {
+      return this.describeJoined(' · ', false, actions[0], actions[1]).toUpperCase();
+    }
+    const parts: string[] = [];
+    for (let i = 0; i < actions.length;) {
+      let run = 1;
+      while (i + run < actions.length && actions[i + run] === actions[i] + run) { run++; }
+      if (run >= 5) {
+        parts.push(this.describeRange(actions[i], run));
+        i += run;
+        continue;
+      }
+      if (!this.isUnbound(actions[i])) { parts.push(this.label(actions[i])); }
+      i++;
+    }
+    return parts.join(' · ').toUpperCase();
+  }
+
+  /**
+   * Polish round P-B: an F1 row's gamepad column: its actions' pad bindings joined by " · ", a shared prefix written once
+   * ("D-pad ← · →"); a stick's four directions read as the stick ("LS"). Empty when the row has none.
+   */
+  helpPad(entry: HelpEntry | null): string {
+    if (!entry) { return ''; }
+    const labels: string[] = [];
+    for (const action of entry.actions) {
+      const label = this.padLabel(action);
+      if (label.length > 0 && !labels.includes(label)) { labels.push(label); }
+    }
+    if (labels.length === 0) { return ''; }
+    if (labels.length === 1) { return labels[0]; }
+    const first = labels[0];
+    let common = first.length;
+    for (const label of labels) {
+      let n = 0;
+      while (n < common && n < label.length && label[n] === first[n]) { n++; }
+      common = n;
+    }
+    const space = first.lastIndexOf(' ', Math.max(0, Math.min(common, first.length) - 1));
+    if (space <= 0 || labels.some(l => l.length <= space + 1)) { return labels.join(' · '); }
+    const prefix = first.slice(0, space);
+    const rests = labels.map(l => l.slice(space + 1));
+    if (rests.length === 4 && ['↑', '↓', '←', '→'].every(r => rests.includes(r))) { return prefix; }
+    return prefix + ' ' + rests.join(' · ');
   }
 
   /** The default controls as Markdown tables, one per group (the web README). */

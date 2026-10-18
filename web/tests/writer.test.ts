@@ -3,7 +3,7 @@ import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { BimGoReader } from '../src/core/format/BimGoReader';
 import { f, writeBimGo } from '../src/core/format/BimGoWriter';
-import { readCommentDocument, readBookmarkDocument } from '../src/core/format/DocumentModels';
+import { readCommentDocument, readBookmarkDocument, sunDefaultsFor } from '../src/core/format/DocumentModels';
 import { crc32 } from '../src/core/format/ZipWriter';
 import { EditJournal } from '../src/core/edits/EditJournal';
 import { vec3 } from '../src/core/math/Vector';
@@ -28,8 +28,8 @@ function content(doc: Awaited<ReturnType<typeof BimGoReader.read>>) {
       offset: vec3(0.25, 0, 0), angle: 0.5, label: 'Move Wall', utc: '2026-01-01T00:00:00Z', user: 'Ann', appliedToRevit: false, revitElementId: 0
     }]),
     bookmarks: readBookmarkDocument({ bookmarks: [{ id: 'b1', name: 'Door', x: 100, y: 200, z: 0.3, yaw: 1.5, pitch: -0.2, sun: { month: 3, day: 4, minutes: 600 } }] }),
-    sun: { version: 1, enabled: true, time: { month: 6, day: 21, minutes: 780, daylightSaving: false }, sunIntensity: 1.2, skyIntensity: 1, shadowIntensity: 0.8, glassTransmission: 1, location: null },
-    visibility: { hiddenCategories: ['walls'], hiddenLinks: [], hiddenElements: [{ link: null, uniqueId: 'u7', id: 7 }], groundOffset: 0.35, section: null },
+    sun: { ...sunDefaultsFor(null), enabled: true, time: { month: 6, day: 21, minutes: 780, daylightSaving: false }, sunIntensity: 1.2, shadowIntensity: 0.8, cloudCover: 0.4, moonPhase: 0.5 },
+    visibility: { hiddenCategories: ['walls'], hiddenLinks: [], hiddenElements: [{ link: null, uniqueId: 'u7', id: 7 }], groundOffset: 0.35, section: null, grids: null, appearance: null },
     materials: doc.scene.materials,
     savedBy: 'Ann'
   };
@@ -67,8 +67,8 @@ describe('BimGoWriter', () => {
     expect(back.journal.entries[0]).toMatchObject({ seq: 1, op: 'transform', uniqueId: 'u7', label: 'Move Wall', angle: 0.5 });
     expect(back.journal.entries[0].offset).toEqual({ x: 0.25, y: 0, z: 0 });
     expect(back.bookmarks.bookmarks[0]).toMatchObject({ id: 'b1', name: 'Door', sun: { month: 3, day: 4, minutes: 600, daylightSaving: false } });
-    expect(back.sun).toMatchObject({ enabled: true, sunIntensity: Math.fround(1.2), shadowIntensity: Math.fround(0.8) });
-    expect(back.visibility).toEqual({ hiddenCategories: ['walls'], hiddenLinks: [], hiddenElements: [{ link: null, uniqueId: 'u7', id: 7 }], groundOffset: Math.fround(0.35), section: null });
+    expect(back.sun).toMatchObject({ enabled: true, sunIntensity: Math.fround(1.2), shadowIntensity: Math.fround(0.8), cloudCover: Math.fround(0.4), moonPhase: 0.5, moon: true, stars: true });
+    expect(back.visibility).toEqual({ hiddenCategories: ['walls'], hiddenLinks: [], hiddenElements: [{ link: null, uniqueId: 'u7', id: 7 }], groundOffset: Math.fround(0.35), section: null, grids: null, appearance: null });
   });
 });
 

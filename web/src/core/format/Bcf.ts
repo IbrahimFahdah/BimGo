@@ -626,7 +626,7 @@ export const BcfMapping = {
       x: round4(p.x), y: round4(p.y), z: round4(p.z - eyeHeight),
       yaw: flat < 1e-6 ? 0 : Math.fround(Math.atan2(dy, dx)),
       pitch: Math.fround(clamp(Math.atan2(dz, flat), -1.5, 1.5)),
-      flying: false, section: null
+      flying: false, eyeHeight: null, section: null
     };
     return Number.isFinite(view.x) && Number.isFinite(view.y) && Number.isFinite(view.z) ? view : null;
   },

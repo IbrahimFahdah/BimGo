@@ -3,6 +3,8 @@ import {
   CLASH_FORMAT, CLASH_REPORT_FORMAT, CLASH_VERSION, cleanClashDocument, clashDocumentJson, clashKey, type ClashDocument, type ClashRecord,
   findSet, findTest, normaliseSetRules, readClashDocument
 } from './ClashModels';
+import { ClashGroups } from './ClashGroups';
+import { newId } from '../format/Json';
 
 /** What importing a report changed. */
 export interface ClashImportResult {
@@ -12,6 +14,8 @@ export interface ClashImportResult {
   clashesUpdated: number;
   unchanged: number;
   sameModel: boolean;
+  /** C-C1: groups added. */
+  groupsAdded: number;
 }
 
 /**
@@ -85,15 +89,22 @@ export const ClashFiles = {
 
     const ours = new Map<string, ClashRecord>();
     for (const clash of into.clashes) { if (!ours.has(clashKey(clash))) { ours.set(clashKey(clash), clash); } }
+    const oursById = new Set(into.clashes.map(c => c.id));
+    const theirToOurs = new Map<string, string>(); // C-C1: group members by clash
     for (const theirs of from.clashes) {
       const key = clashKey(theirs);
       const mine = ours.get(key);
       if (!mine) {
+        const theirId = theirs.id;
+        if (oursById.has(theirs.id)) { theirs.id = newId(); } // an id we use for another pair
+        oursById.add(theirs.id);
         into.clashes.push(theirs);
         ours.set(key, theirs);
+        theirToOurs.set(theirId, theirs.id);
         added++;
         continue;
       }
+      theirToOurs.set(theirs.id, mine.id);
       const newer = theirs.updated !== null && (mine.updated === null || Date.parse(theirs.updated) > Date.parse(mine.updated));
       if (!newer && (mine.commentId !== null || theirs.commentId === null)) {
         unchanged++;
@@ -120,9 +131,10 @@ export const ClashFiles = {
       }
     }
     into.runs.sort((a, b) => Date.parse(a.utc) - Date.parse(b.utc));
+    const groupsAdded = ClashGroups.mergeFrom(from, into, theirToOurs); // C-C1
     cleanClashDocument(into);
 
     const sameModel = !from.modelKey || !modelKey || from.modelKey.toLowerCase() === modelKey.toLowerCase();
-    return { setsAdded, testsAdded, clashesAdded: added, clashesUpdated: updated, unchanged, sameModel };
+    return { setsAdded, testsAdded, clashesAdded: added, clashesUpdated: updated, unchanged, sameModel, groupsAdded };
   }
 };

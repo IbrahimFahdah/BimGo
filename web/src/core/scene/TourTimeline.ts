@@ -44,6 +44,28 @@ export interface TourPose {
   moving: boolean;
   /** True once the tour has played to its end. */
   finished: boolean;
+  /**
+   * Polish round P-C: the state (sun) blends from stop blendFrom to blendTo by blendT (0–1, eased). Glide: over the
+   * glide; fades: half over the fade-out and half over the next fade-in. Holding: from = to = stop, 1.
+   */
+  blendFrom: number;
+  blendTo: number;
+  blendT: number;
+}
+
+/** Round K: what the tour player plays: a bookmark tour or a camera path (port of ITourTimeline). */
+export interface ITourTimeline {
+  readonly duration: number;
+  readonly count: number;
+  startOf(stop: number): number;
+  indexAt(time: number): number;
+  pose(time: number): TourPose;
+}
+
+function setBlend(pose: TourPose, from: number, to: number, t: number): void {
+  pose.blendFrom = from;
+  pose.blendTo = to;
+  pose.blendT = Math.min(Math.max(t, 0), 1);
 }
 
 /** The eye position of a pose. */
@@ -60,7 +82,7 @@ export function poseEye(pose: TourPose): Vec3 {
  *   swivel to the next stop's view. A glide takes at least `glide` s, longer when the stops are far apart (at most
  *   GLIDE_SPEED m/s). The swivel pans over the hold.
  */
-export class TourTimeline {
+export class TourTimeline implements ITourTimeline {
   /** Fastest glide between stops (m/s): far-apart stops glide for longer than the set time. */
   static readonly GLIDE_SPEED = 4;
   /** Longest single glide (s), however far apart the stops are. */
@@ -138,7 +160,9 @@ export class TourTimeline {
 
   /** The camera at a time (past the end: finished, black when there are fades). */
   evaluate(time: number): TourPose {
-    const pose: TourPose = { stop: -1, feet: vec3(), eyeHeight: 0, yaw: 0, pitch: 0, black: 0, moving: false, finished: true };
+    const pose: TourPose = {
+      stop: -1, feet: vec3(), eyeHeight: 0, yaw: 0, pitch: 0, black: 0, moving: false, finished: true, blendFrom: -1, blendTo: -1, blendT: 1
+    };
     const n = this.stops.length;
     if (n === 0) { return pose; }
 
@@ -147,6 +171,7 @@ export class TourTimeline {
       // The last stop's final view
       const last = this.stops[n - 1];
       pose.stop = n - 1;
+      pose.blendFrom = pose.blendTo = n - 1;
       pose.feet = last.feet;
       pose.eyeHeight = last.eyeHeight;
       pose.yaw = last.yaw + last.swivel;
@@ -159,6 +184,7 @@ export class TourTimeline {
     const i = this.indexAt(time);
     const stop = this.stops[i];
     pose.stop = i;
+    pose.blendFrom = pose.blendTo = i;
     pose.pitch = stop.pitch;
 
     if (!this.glideMode) {
@@ -169,8 +195,13 @@ export class TourTimeline {
       pose.eyeHeight = stop.eyeHeight;
       pose.yaw = stop.yaw + stop.swivel * TourTimeline.smooth(window > 0 ? local / window : 1);
       if (this.fade > 0) {
-        if (local < this.fade) { pose.black = 1 - local / this.fade; }
-        else if (local > this.fade + stop.holdSeconds) { pose.black = Math.min(Math.max((local - this.fade - stop.holdSeconds) / this.fade, 0), 1); }
+        if (local < this.fade) {
+          pose.black = 1 - local / this.fade;
+          if (i > 0) { setBlend(pose, i - 1, i, 0.5 + 0.5 * TourTimeline.smooth(local / this.fade)); } // P-C
+        } else if (local > this.fade + stop.holdSeconds) {
+          pose.black = Math.min(Math.max((local - this.fade - stop.holdSeconds) / this.fade, 0), 1);
+          if (i + 1 < n) { setBlend(pose, i, i + 1, 0.5 * TourTimeline.smooth(pose.black)); }
+        }
       }
       return pose;
     }
@@ -184,6 +215,7 @@ export class TourTimeline {
       pose.yaw = TourTimeline.lerpAngle(from.yaw + from.swivel, stop.yaw, s);
       pose.pitch = from.pitch + (stop.pitch - from.pitch) * s;
       pose.moving = true;
+      setBlend(pose, i - 1, i, s); // P-C: the sun blends over the glide
       return pose;
     }
 
@@ -201,6 +233,11 @@ export class TourTimeline {
       pose.black = this.fade > 0 ? Math.min(Math.max((hold - stop.holdSeconds) / this.fade, 0), 1) : 0;
     }
     return pose;
+  }
+
+  /** Round K: the tour player's pose (the same as evaluate). */
+  pose(time: number): TourPose {
+    return this.evaluate(time);
   }
 
   /** Smoothstep: eases in and out over 0..1 (clamped). */

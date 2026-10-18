@@ -7,6 +7,9 @@ import { formatTextureState, type MaterialData, type SceneMaterial } from '../sc
 import type { SiteInfo, SitePoint } from '../scene/ModelInfo';
 import { modelVertexCount, SCENE_VERTEX_SIZE, type SceneData } from '../scene/SceneData';
 import { isLibraryEmpty, type LibraryEntry } from '../scene/FamilyLibrary';
+import { gridsToJson } from '../scene/GridData';
+import { Appearance } from '../scene/AppearanceProfiles';
+import { GridView } from '../scene/GridData';
 import { BimGoFormat, FileKinds, formatPhaseRole } from './BimGoFormat';
 import type { BimGoDocument } from './BimGoReader';
 import {
@@ -16,6 +19,7 @@ import {
 import { obj, type Json } from './Json';
 import { ZipWriter } from './ZipWriter';
 import type { SectionCut } from '../scene/SectionCut';
+import { type CameraKey, type CameraPathDocument, isPathsEmpty } from './CameraPathModels';
 
 /** Who wrote the file (port of WriterInfo). */
 export interface WriterInfo {
@@ -37,6 +41,8 @@ export interface SaveContent {
   thumbnail?: Uint8Array | null;
   /** Clash detection's data (clashes.json bytes), or null for none: written as held, so a dormant file keeps it unchanged. */
   clashes?: Uint8Array | null;
+  /** Round K: the camera paths (paths.json), or null for none. */
+  paths?: CameraPathDocument | null;
 }
 
 /**
@@ -88,12 +94,17 @@ export async function writeBimGo(document: BimGoDocument, content: SaveContent, 
   if (v && !isVisibilityEmpty(v)) {
     await zip.addText(BimGoFormat.ENTRY_VISIBILITY, json(visibility(v), true), signal);
   }
+  if (content.paths && !isPathsEmpty(content.paths)) { // Round K
+    await zip.addText(BimGoFormat.ENTRY_PATHS, json(pathsDocument(content.paths), true), signal);
+  }
   if (content.sun) { await zip.addText(BimGoFormat.ENTRY_SUN, json(sunSettings(content.sun), true), signal); }
   if (content.clashes && content.clashes.length > 0) { await zip.add(BimGoFormat.ENTRY_CLASHES, content.clashes, true, signal); }
   if (scene.lighting.emissive.length > 0 || scene.lighting.lights.length > 0) {
     await zip.addText(BimGoFormat.ENTRY_LIGHTING, json(buildLighting(scene.lighting), false), signal);
   }
   if (!isLibraryEmpty(scene.library)) { await writeLibrary(zip, scene, json, signal); }
+  const grids = gridsToJson(scene.grids ?? []); // grids round A (optional)
+  if (grids) { await zip.addText(BimGoFormat.ENTRY_GRIDS, json(grids, false), signal); }
   const materials = content.materials;
   if (materials.materials.length > 0 && materials.vertexMaterial.length === g.vertexCount) {
     await writeMaterials(zip, materials, json, signal);
@@ -158,7 +169,7 @@ function buildModel(scene: SceneData): Json {
     existingPhaseName: scene.existingPhaseName,
     phaseNote: scene.phaseNote,
     spawn: scene.spawn ? { eye: vec(scene.spawn.eye), yaw: f(scene.spawn.yaw), pitch: f(scene.spawn.pitch), source: scene.spawn.source } : null,
-    levels: scene.levels.map(l => ({ name: l.name, elevation: f(l.elevation) })),
+    levels: scene.levels.map(l => ({ name: l.name, elevation: f(l.elevation), storey: l.isStorey ? undefined : false })),
     rooms: scene.rooms.map(r => ({
       number: r.number, name: r.name, bottomZ: f(r.bottomZ), topZ: f(r.topZ), link: r.link > 0 ? r.link : null,
       loops: r.loops.map(loop => loop.flatMap(p => [f(p.x), f(p.y)]))
@@ -230,7 +241,10 @@ function commentDocument(d: CommentDocument): Json {
       edited: c.edited, editedBy: c.editedBy, status: c.status, assignedTo: c.assignedTo, priority: c.priority, updated: c.updated,
       updatedBy: c.updatedBy, replies: c.replies?.map(r => ({ id: r.id, author: r.author, created: r.created, text: r.text })) ?? null,
       view: c.view
-        ? { x: c.view.x, y: c.view.y, z: c.view.z, yaw: f(c.view.yaw), pitch: f(c.view.pitch), flying: c.view.flying, section: section(c.view.section) }
+        ? {
+          x: c.view.x, y: c.view.y, z: c.view.z, yaw: f(c.view.yaw), pitch: f(c.view.pitch), flying: c.view.flying,
+          eyeHeight: c.view.eyeHeight === null || c.view.eyeHeight === undefined ? null : f(c.view.eyeHeight), section: section(c.view.section)
+        }
         : null,
       thumbnail: c.thumbnail, elementUniqueId: c.elementUniqueId, snapshot: c.snapshot, snapshotOriginal: c.snapshotOriginal, clashId: c.clashId
     }))
@@ -240,7 +254,9 @@ function commentDocument(d: CommentDocument): Json {
 function visibility(v: VisibilitySettings): Json {
   return {
     hiddenCategories: v.hiddenCategories, hiddenLinks: v.hiddenLinks, hiddenElements: v.hiddenElements,
-    groundOffset: v.groundOffset === null ? null : f(v.groundOffset), section: section(v.section)
+    groundOffset: v.groundOffset === null ? null : f(v.groundOffset), section: section(v.section),
+    grids: v.grids && !GridView.isDefault(v.grids) ? { ...v.grids, opacity: f(v.grids.opacity), width: f(v.grids.width), labelDistance: f(v.grids.labelDistance) } : null,
+    appearance: v.appearance && !Appearance.isDefault(v.appearance) ? Appearance.json(v.appearance) : null
   };
 }
 
@@ -301,7 +317,10 @@ function sunTime(t: SunTime): Json {
 function sunSettings(s: SunSettings): Json {
   return {
     version: s.version, enabled: s.enabled, time: sunTime(s.time), sunIntensity: f(s.sunIntensity), skyIntensity: f(s.skyIntensity),
-    shadowIntensity: f(s.shadowIntensity), glassTransmission: f(s.glassTransmission), location: s.location ? location(s.location) : null
+    shadowIntensity: f(s.shadowIntensity), glassTransmission: f(s.glassTransmission), cloudCover: f(s.cloudCover), cloudSpeed: f(s.cloudSpeed),
+    sunSize: f(s.sunSize), sunGlare: f(s.sunGlare), moon: s.moon, moonPhase: s.moonPhase === null ? null : f(s.moonPhase), moonLight: f(s.moonLight),
+    stars: s.stars, starDensity: f(s.starDensity), starBrightness: f(s.starBrightness), starTwinkle: f(s.starTwinkle), milkyWay: f(s.milkyWay),
+    location: s.location ? location(s.location) : null
   };
 }
 
@@ -312,7 +331,8 @@ function location(l: LocationOverride): Json {
 function tourSettings(t: TourSettings): Json {
   return {
     transition: t.transition, holdSeconds: f(t.holdSeconds), fadeSeconds: f(t.fadeSeconds), glideSeconds: f(t.glideSeconds), swivel: t.swivel,
-    swivelDegrees: f(t.swivelDegrees), swivelDirection: t.swivelDirection, showUi: t.showUi, loop: t.loop
+    swivelDegrees: f(t.swivelDegrees), swivelDirection: t.swivelDirection, showUi: t.showUi, loop: t.loop,
+    smooth: t.smooth ? true : null, smoothSpeed: f(t.smoothSpeed)
   };
 }
 
@@ -326,8 +346,29 @@ function bookmark(b: BookmarkRecord): Json {
     id: b.id, name: b.name, author: b.author, created: b.created, x: b.x, y: b.y, z: b.z, yaw: f(b.yaw), pitch: f(b.pitch),
     flying: b.flying, level: b.level, sun: b.sun ? sunTime(b.sun) : null, section: section(b.section),
     visibility: b.visibility ? hiddenLists(b.visibility) : null, eyeHeight: b.eyeHeight === null ? null : f(b.eyeHeight),
+    crouched: b.crouched ? true : null, colourProfile: b.colourProfile,
     tourHold: b.tourHold === null ? null : f(b.tourHold), tourSwivel: b.tourSwivel === null ? null : f(b.tourSwivel), tourSkip: b.tourSkip,
     thumbnail: b.thumbnail
+  };
+}
+
+function cameraKey(k: CameraKey): Json {
+  return {
+    id: k.id, name: k.name, x: k.x, y: k.y, z: k.z, yaw: f(k.yaw), pitch: f(k.pitch), heading: k.heading, targetX: k.targetX, targetY: k.targetY,
+    targetZ: k.targetZ, smoothness: k.smoothness === null ? null : f(k.smoothness), speed: k.speed === null ? null : f(k.speed),
+    holdSeconds: k.holdSeconds > 0 ? f(k.holdSeconds) : null, ease: k.ease, sun: k.sun ? sunTime(k.sun) : null, colourProfile: k.colourProfile,
+    swivel: k.swivel === null ? null : f(k.swivel), section: section(k.section), visibility: k.visibility ? hiddenLists(k.visibility) : null
+  };
+}
+
+function pathsDocument(d: CameraPathDocument): Json {
+  return {
+    version: d.version, model: d.model, units: d.units,
+    paths: d.paths.map(p => ({
+      id: p.id, name: p.name, author: p.author, created: p.created, keys: p.keys.map(cameraKey), speed: f(p.speed), smoothness: f(p.smoothness),
+      heading: p.heading, lookAhead: f(p.lookAhead), level: p.level, fadeSeconds: f(p.fadeSeconds), showUi: p.showUi, loop: p.loop,
+      followBetween: p.followBetween ? true : null
+    }))
   };
 }
 
@@ -356,7 +397,8 @@ function material(m: SceneMaterial): Json {
     offsetV: f(m.offsetV), angle: f(m.angle), fade: f(m.fade), tint: vec(m.tint), reflectivity: f(m.reflectivity),
     // Reflection fields: left out at their defaults (as the desktop's WhenWritingDefault), so older files stay the same
     shine: m.shine > 0 ? f(m.shine) : null, roughness: m.roughness === null ? null : f(m.roughness), metallic: m.metallic ? true : null,
-    water: m.water ? true : null, waterBump: m.waterBump > 0 ? f(m.waterBump) : null, reflectSource: m.reflectSource
+    water: m.water ? true : null, waterBump: m.waterBump > 0 ? f(m.waterBump) : null, seeThrough: m.seeThrough ? true : null,
+    reflectSource: m.reflectSource
   };
 }
 
@@ -397,7 +439,8 @@ export const SidecarJson = {
   comments: (d: CommentDocument): Json => plain(commentDocument(d)),
   bookmarks: (d: BookmarkDocument): Json => plain(bookmarkDocument(d)),
   sun: (s: SunSettings): Json => plain(sunSettings(s)),
-  visibility: (v: VisibilitySettings): Json => plain(visibility(v))
+  visibility: (v: VisibilitySettings): Json => plain(visibility(v)),
+  paths: (d: CameraPathDocument): Json => plain(pathsDocument(d))
 };
 
 function plain(value: unknown): Json {
