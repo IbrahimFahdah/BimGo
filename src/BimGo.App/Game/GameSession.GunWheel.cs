@@ -1,4 +1,4 @@
-using System.Numerics;
+﻿using System.Numerics;
 using BimGo.Audio;
 using BimGo.Game.Guns;
 using BimGo.Platform;
@@ -158,7 +158,7 @@ namespace BimGo.Game
                     float r = S(hover ? 10 : 9);
                     _ui.Ring(ix, iy - S(4), r, MathF.Max(1f, S(1.5f)), handColour, 20);
                     _ui.Line(ix - r * 0.7f, iy - S(4) + r * 0.7f, ix + r * 0.7f, iy - S(4) - r * 0.7f, MathF.Max(1f, S(1.5f)), handColour);
-                    _ui.TextCentred(f.Small, ix, iy + S(10), "UNARMED", handColour);
+                    _ui.TextCentred(f.Small, ix, iy + S(10), "NONE", handColour);
                     continue;
                 }
 
@@ -173,7 +173,7 @@ namespace BimGo.Game
 
             if (_wheelHover == WHEEL_UNARMED)
             {
-                _ui.TextCentred(f.Bold, cx, cy - f.Bold.LineHeight * 0.5f, "Unarmed", UiTheme.TEXT, S(1f));
+                _ui.TextCentred(f.Bold, cx, cy - f.Bold.LineHeight * 0.5f, "None", UiTheme.TEXT, S(1f));
             }
             else if (_wheelHover == WHEEL_BAR)
             {
@@ -182,7 +182,7 @@ namespace BimGo.Game
             else
             {
                 Gun shown = _wheelHover >= 0 ? _guns[_wheelHover] : _guns[_activeGun];
-                string name = _wheelHover < 0 && _unarmed ? "Unarmed" : shown.Name;
+                string name = _wheelHover < 0 && _unarmed ? "None" : shown.Name;
                 _ui.TextCentred(f.Bold, cx, cy - f.Bold.LineHeight * 0.5f, name, _wheelHover >= 0 ? shown.Colour : UiTheme.TEXT_MUTED, S(1f));
             }
             _ui.TextCentred(f.Small, cx, cy + radius + S(18), _wheelByPad ? HINT_WHEEL_PAD.Text : HINT_WHEEL_MOUSE.Text, UiTheme.TEXT_SOFT);

@@ -1,4 +1,4 @@
-<Window x:Class="BimGo.Forms.OptionsWindow"
+﻿<Window x:Class="BimGo.Forms.OptionsWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="BimGo — Options"
@@ -227,6 +227,64 @@
                                 </StackPanel>
                             </StackPanel>
                         </Border>
+
+                        <!-- QOL round: water and glass overrides (also in the walkthrough: pause menu → Appearance) -->
+                        <TextBlock Style="{StaticResource SectionHeader}" Text="WATER &amp; GLASS OVERRIDES"/>
+                        <Border Style="{StaticResource Card}" Margin="0,0,0,18">
+                            <StackPanel>
+                                <CheckBox x:Name="CheckWaterAsset" Content="Water from Revit's Water appearance asset"
+                                          ToolTip="Materials with the Water appearance asset get animated ripples and a water sheen."/>
+                                <TextBlock Margin="0,10,0,4" Text="Water keywords (material name contains):"/>
+                                <TextBox x:Name="TextWaterKeywords" Height="28" Padding="6,0" VerticalContentAlignment="Center" BorderBrush="#B7BDC4"
+                                         ToolTip="Comma-separated, case-insensitive (e.g. water, pond). Empty = keywords off."/>
+                                <CheckBox x:Name="CheckWaterOpaque" Margin="0,6,0,0" Content="Keywords also match opaque materials"
+                                          ToolTip="Off: only see-through materials match, so &quot;Water Heater&quot; stays a heater."/>
+                                <TextBlock Margin="0,12,0,4" Text="Glass keywords (make an opaque material see-through glass):"/>
+                                <TextBox x:Name="TextGlassKeywords" Height="28" Padding="6,0" VerticalContentAlignment="Center" BorderBrush="#B7BDC4"
+                                         ToolTip="Comma-separated, case-insensitive (e.g. glazing, pane). Empty = glass is found by transparency and glass appearances only. Materials named mirror stay mirrors."/>
+                                <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
+                                    <TextBlock VerticalAlignment="Center" Margin="0,0,10,0" Text="Water colour"/>
+                                    <ComboBox x:Name="ComboWaterColour" Width="110" Height="28" VerticalContentAlignment="Center" SelectionChanged="ComboWaterColour_SelectionChanged"/>
+                                    <TextBox x:Name="TextWaterColour" Width="90" Height="28" Margin="8,0,0,0" Padding="6,0" VerticalContentAlignment="Center" BorderBrush="#B7BDC4"
+                                             ToolTip="#RRGGBB, or empty for the material's own (Revit's) colour."/>
+                                    <TextBlock VerticalAlignment="Center" Margin="16,0,10,0" Text="Reflection"/>
+                                    <Slider x:Name="SliderWaterReflection" Width="140" Minimum="0" Maximum="100" TickFrequency="5" IsSnapToTickEnabled="True" VerticalAlignment="Center" ValueChanged="SliderWaterReflection_ValueChanged"/>
+                                    <TextBlock x:Name="TextWaterReflection" VerticalAlignment="Center" Margin="8,0,0,0" FontSize="12" Foreground="{StaticResource Muted}" Text="100 %"/>
+                                </StackPanel>
+                                <!-- Water round W: ripple strength and speed (0 = still / paused; a look only) -->
+                                <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                                    <TextBlock VerticalAlignment="Center" Width="80" Text="Ripples"
+                                               ToolTip="How strong the water ripples are. 0 % = still water (the waves are skipped: a small saving on large water)."/>
+                                    <Slider x:Name="SliderWaterRipple" Width="140" Minimum="0" Maximum="200" TickFrequency="5" IsSnapToTickEnabled="True" VerticalAlignment="Center" ValueChanged="SliderLookScale_ValueChanged"/>
+                                    <TextBlock x:Name="TextWaterRipple" Width="70" VerticalAlignment="Center" Margin="8,0,0,0" FontSize="12" Foreground="{StaticResource Muted}" Text="100 %"/>
+                                    <TextBlock VerticalAlignment="Center" Margin="16,0,10,0" Text="Ripple speed"
+                                               ToolTip="How fast the ripples move. 0 % = they stand still (a look only: no speed saving)."/>
+                                    <Slider x:Name="SliderWaterRippleSpeed" Width="140" Minimum="0" Maximum="200" TickFrequency="5" IsSnapToTickEnabled="True" VerticalAlignment="Center" ValueChanged="SliderLookScale_ValueChanged"/>
+                                    <TextBlock x:Name="TextWaterRippleSpeed" Width="70" VerticalAlignment="Center" Margin="8,0,0,0" FontSize="12" Foreground="{StaticResource Muted}" Text="100 %"/>
+                                </StackPanel>
+                                <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                                    <TextBlock VerticalAlignment="Center" Width="80" Text="Wave size"
+                                               ToolTip="How long the waves are: 25 % = fine chop, 400 % = long, broad swell. Ripple strength stays the same."/>
+                                    <Slider x:Name="SliderWaterWaveScale" Width="140" Minimum="25" Maximum="400" TickFrequency="5" IsSnapToTickEnabled="True" VerticalAlignment="Center" ValueChanged="SliderLookScale_ValueChanged"/>
+                                    <TextBlock x:Name="TextWaterWaveScale" Width="70" VerticalAlignment="Center" Margin="8,0,0,0" FontSize="12" Foreground="{StaticResource Muted}" Text="100 %"/>
+                                </StackPanel>
+                                <CheckBox x:Name="CheckGrassBlades" Margin="0,14,0,0" Content="Grass blades on grass materials (Realistic mode)"
+                                          ToolTip="Blades are placed around you on upward surfaces whose material name contains a grass keyword. Height and distance: pause menu → Appearance → Grass blades."/>
+                                <StackPanel Orientation="Horizontal" Margin="22,6,0,0">
+                                    <TextBlock VerticalAlignment="Center" Margin="0,0,10,0" Text="Density"/>
+                                    <ComboBox x:Name="ComboGrassDensity" Width="110" Height="28" VerticalContentAlignment="Center"/>
+                                    <TextBlock VerticalAlignment="Center" Margin="16,0,10,0" Text="Sway"
+                                               ToolTip="How far the blades sway in the breeze. 0 % = still (a look only: no speed saving)."/>
+                                    <Slider x:Name="SliderGrassSway" Width="140" Minimum="0" Maximum="200" TickFrequency="5" IsSnapToTickEnabled="True" VerticalAlignment="Center" ValueChanged="SliderLookScale_ValueChanged"/>
+                                    <TextBlock x:Name="TextGrassSway" Width="70" VerticalAlignment="Center" Margin="8,0,0,0" FontSize="12" Foreground="{StaticResource Muted}" Text="100 %"/>
+                                </StackPanel>
+                                <TextBlock Margin="22,8,0,4" Text="Grass keywords (material name contains):"/>
+                                <TextBox x:Name="TextGrassKeywords" Height="28" Margin="22,0,0,0" Padding="6,0" VerticalContentAlignment="Center" BorderBrush="#B7BDC4"
+                                         ToolTip="Comma-separated, case-insensitive (default: grass, lawn, turf)."/>
+                                <TextBlock Margin="0,4,0,0" FontSize="12" Foreground="{StaticResource Muted}" TextWrapping="Wrap"
+                                           Text="Water and grass can be changed again in the walkthrough (pause menu → Appearance). Glass is baked into the geometry: changes made in the walkthrough take effect at the next Go / Export."/>
+                            </StackPanel>
+                        </Border>
                     </StackPanel>
                 </ScrollViewer>
             </TabItem>
@@ -249,7 +307,7 @@
                 <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                     <StackPanel Margin="20,16,20,16">
                         <!-- Extra parameters -->
-                        <TextBlock Style="{StaticResource SectionHeader}" Text="EXTRA PARAMETERS (SHOWN BY THE SCAN GUN, SAVED IN .BIMGO FILES)"/>
+                        <TextBlock Style="{StaticResource SectionHeader}" Text="EXTRA PARAMETERS (SCAN GUN, SEARCH SET RULES AND COLOUR PROFILES; SAVED IN .BIMGO FILES)"/>
                         <Border Style="{StaticResource Card}" Margin="0,0,0,18">
                             <StackPanel>
                                 <DockPanel Margin="0,0,0,8">

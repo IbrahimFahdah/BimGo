@@ -280,7 +280,11 @@ namespace BimGo.Scene
     /// </summary>
     /// <param name="Name">The level name.</param>
     /// <param name="Elevation">The elevation in metres (scene Z).</param>
-    public readonly record struct LevelInfo(string Name, float Elevation);
+    /// <param name="IsStorey">
+    /// Grids round A: Revit's "Building Story" (true for older files, which didn't record it). The grids panel can draw on
+    /// storeys only.
+    /// </param>
+    public readonly record struct LevelInfo(string Name, float Elevation, bool IsStorey = true);
 
     /// <summary>
     /// Where the player starts.
@@ -317,6 +321,9 @@ namespace BimGo.Scene
 
         /// <summary>Levels sorted by elevation.</summary>
         public LevelInfo[] Levels { get; init; }
+
+        /// <summary>Grids round A: the host's grids and the extracted links' grids (may be empty; never null).</summary>
+        public GridLine[] Grids { get; init; } = Array.Empty<GridLine>();
 
         /// <summary>Placed, bounded rooms of the current phase (may be empty).</summary>
         public RoomInfo[] Rooms { get; init; } = Array.Empty<RoomInfo>();

@@ -29,13 +29,25 @@ namespace BimGo.Format
         /// <summary>The section cut (section box round), or null when nothing is cut. Older readers ignore it.</summary>
         public Scene.SectionCut Section { get; set; }
 
+        /// <summary>
+        /// Grids round A: how the grids are shown (the grids panel), or null for the defaults (grids off). Older readers
+        /// ignore it.
+        /// </summary>
+        public GridViewSettings Grids { get; set; }
+
+        /// <summary>
+        /// Colour round A: the model's colour profiles, the active one and whether it shows, or null when there are none.
+        /// Older readers ignore it.
+        /// </summary>
+        public Scene.AppearanceSettings Appearance { get; set; }
+
         /// <summary>Most the ground plane can move from its default (m), as the pause menu slider.</summary>
         public const float MAX_GROUND_OFFSET = 10f;
 
         /// <summary>True when nothing is hidden and the ground is at its default (the file then leaves the entry out).</summary>
         [JsonIgnore]
         public bool IsEmpty => (HiddenCategories?.Count ?? 0) == 0 && (HiddenLinks?.Count ?? 0) == 0 && (HiddenElements?.Count ?? 0) == 0
-            && GroundOffset == null && Section == null;
+            && GroundOffset == null && Section == null && Grids == null && Appearance == null;
 
         /// <summary>
         /// Drops null and blank entries (guards against hand-edited files).
@@ -51,7 +63,24 @@ namespace BimGo.Format
                 GroundOffset = float.IsFinite(ground) && MathF.Abs(ground) > 1e-4f ? Math.Clamp(ground, -MAX_GROUND_OFFSET, MAX_GROUND_OFFSET) : null;
             }
             Section = Section?.IsActive == true ? Section.Clean() : null;
+            Grids = Grids?.Clean();
+            if (Grids?.IsDefault == true) { Grids = null; }
+            Appearance = Appearance?.Clean();
+            if (Appearance?.IsDefault == true) { Appearance = null; }
             return this;
+        }
+
+        /// <summary>
+        /// Round K-C: a copy with its own lists (a bookmark's hidden items copied into a camera path key). The section,
+        /// grids and appearance are shared: they are replaced, never edited in place.
+        /// </summary>
+        public VisibilitySettings Copy()
+        {
+            var copy = (VisibilitySettings)MemberwiseClone();
+            copy.HiddenCategories = HiddenCategories != null ? new List<string>(HiddenCategories) : new List<string>();
+            copy.HiddenLinks = HiddenLinks != null ? new List<string>(HiddenLinks) : new List<string>();
+            copy.HiddenElements = HiddenElements != null ? new List<HiddenElement>(HiddenElements) : new List<HiddenElement>();
+            return copy;
         }
     }
 

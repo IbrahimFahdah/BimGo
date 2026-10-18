@@ -152,7 +152,7 @@ namespace BimGo.Game
             for (int i = 0; i < lights.Length; i++)
             {
                 int e = lights[i].Element;
-                if (_userHidden[e] || !_groupVisible[SceneBatches.GroupOf(elements[e])]) { continue; }
+                if (_userHidden[e] || ProfileHides(e) || !_groupVisible[SceneBatches.GroupOf(elements[e])]) { continue; }
 
                 if (!_hidden[e])
                 {

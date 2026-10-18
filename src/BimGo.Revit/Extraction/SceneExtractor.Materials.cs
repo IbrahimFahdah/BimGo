@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Numerics;
 using System.Security.Cryptography;
 using System.Text;
@@ -515,6 +515,8 @@ namespace BimGo.Extraction
         {
             ReflectivityInfo info = ReflectivityReader.Read(asset, schema ?? string.Empty, material, RoughnessMapAverage);
             entry.ReflectSource = string.IsNullOrEmpty(info.Source) ? null : info.Source;
+            // QOL round: lets the session re-apply the water keywords to see-through materials only
+            entry.SeeThrough = info.Glass || (info.Water && ReflectivityReader.IsSeeThrough(asset, schema ?? string.Empty, material));
             if (!info.Mapped) { return; }
 
             if (info.Glass)

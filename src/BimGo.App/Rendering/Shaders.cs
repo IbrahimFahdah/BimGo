@@ -1,4 +1,4 @@
-// The class belongs to the Rendering namespace
+﻿// The class belongs to the Rendering namespace
 namespace BimGo.Rendering
 {
     /// <summary>
@@ -35,12 +35,25 @@ bool sectionCut(vec3 p)
         public const string CAP_STENCIL_FS = @"#version 330 core
 in vec3 vWorld;
 in vec4 vColor;
+flat in vec4 vProfile;
+uniform int uProfilePass;
+uniform int uCapColourPass;
 uniform vec4 uCapPlane;
 uniform float uCapShade;
 out vec4 oColor;
 void main()
 {
     if (dot(uCapPlane.xyz, vWorld) > uCapPlane.w) discard;
+    // Colour round A fix: a colour profile's ghosted (and hidden) elements aren't solid, so they get no cap
+    int code = uProfilePass > 0 ? int(vProfile.a * 255.0 + 0.5) : 0;
+    if (code == 1 || code == 2 || (code >= 128 && code < 255)) discard;
+    // Polish round P-C: the colour pass paints the caps of profile-coloured elements in their colour (others: flat cap)
+    if (uCapColourPass > 0)
+    {
+        if (code != 255) discard;
+        oColor = vec4(vProfile.rgb * uCapShade, 1.0);
+        return;
+    }
     oColor = vec4(vColor.rgb * uCapShade, 1.0);
 }";
 
@@ -101,6 +114,10 @@ void main()
         /// without glowing surfaces leave the attribute disabled, so it reads (0, 0, 0, 1) = no glow.
         /// aMaterial (4, the Realistic-mode material index; 65535 = none) and aUv (5, surface coordinates in metres)
         /// are only enabled for snapshots with materials; the fragment shader only reads them when uRealistic = 1.
+        /// Colour round A: aElement (6, the element's index as a float: exact up to 16.7 million) is only enabled once a
+        /// colour profile was shown; with uProfilePass above 0 the element's profile code is fetched here, once per
+        /// vertex, from uProfileTex (one RGBA8 texel per element, PROFILE_WIDTH texels a row): rgb = colour, a = code
+        /// (0 normal, 1 ghost, 2 hidden, 255 coloured).
         /// </summary>
         public const string SCENE_VS = @"#version 330 core
 layout(location = 0) in vec3 aPos;
@@ -109,14 +126,18 @@ layout(location = 2) in vec4 aColor;
 layout(location = 3) in vec4 aEmissive;
 layout(location = 4) in float aMaterial;
 layout(location = 5) in vec2 aUv;
+layout(location = 6) in float aElement;
 uniform mat4 uViewProj;
 uniform mat4 uModel;
+uniform int uProfilePass;
+uniform sampler2D uProfileTex;
 out vec3 vWorld;
 out vec3 vNormal;
 out vec4 vColor;
 out vec3 vEmissive;
 flat out int vMaterial;
 out vec2 vUv;
+flat out vec4 vProfile;
 void main()
 {
     vec4 world = uModel * vec4(aPos, 1.0);
@@ -126,8 +147,19 @@ void main()
     vEmissive = aEmissive.rgb * (aEmissive.a * 4.0);
     vMaterial = int(aMaterial + 0.5);
     vUv = aUv;
+    vProfile = vec4(0.0);
+    if (uProfilePass > 0)
+    {
+        int e = int(aElement + 0.5);
+        vProfile = texelFetch(uProfileTex, ivec2(e % " + PROFILE_WIDTH_TEXT + @", e / " + PROFILE_WIDTH_TEXT + @"), 0);
+    }
     gl_Position = uViewProj * world;
 }";
+
+        /// <summary>Colour round A: texels per row of the profile texture (keep in step with the GLSL above).</summary>
+        public const int PROFILE_WIDTH = 1024;
+
+        private const string PROFILE_WIDTH_TEXT = "1024";
 
         /// <summary>
         /// Realistic colour mode (inserted after LIGHTS_GLSL in the scene fragment shader). The material table holds
@@ -140,7 +172,8 @@ void main()
         /// strength (metals 0.30 / 0.55 / 0.90, other surfaces half that, Fresnel adds the rest at grazing angles);
         /// roughness blurs the sky towards its average and takes away most of the grazing boost. Glass: Revit's
         /// value × 2.5, kept within 10–50 %. uReflectGain is the user's strength slider. Water tilts the normal with six
-        /// travelling waves (uTime), faded with distance, and adds a sun glint (no shadow test).</para>
+        /// travelling waves (uTime: the water clock, which runs at the ripple speed), scaled by uWaterWaves (ripple strength; 0
+        /// skips the waves) and stretched by uWaveScale (wave size: the wavelengths × it, the slope unchanged) and faded with distance, and adds a sun glint (no shadow test).</para>
         /// <para>Probes (build B): where the plan grid (uProbeGrid) names a baked probe, the reflection reads it instead
         /// of the sky: box-projected against the probe's room box, the mip level from roughness, two probes blended near
         /// room boundaries. Faces use the light-shadow face table (FACE_F / FACE_U / LIGHT_PAD from LIGHTS_GLSL, which
@@ -154,6 +187,56 @@ void main()
         /// tint is worked out in display values). uTintMode: 0 = Revit tint off, otherwise multiply (Revit's blend,
         /// confirmed on the same model).</para>
         /// </summary>
+        /// <summary>
+        /// Sky round: a procedural cloud layer (value-noise fbm on a plane above the eye, drifting by uCloudOffset;
+        /// uCloudCover 0 = clear, 1 = overcast). Shared by the sky and the scene's sky reflections. Costs nothing at
+        /// 0 % cover (one uniform branch).
+        /// </summary>
+        public const string CLOUD_GLSL = @"
+uniform float uCloudCover;
+uniform vec2 uCloudOffset;
+float cloudHash(vec2 p)
+{
+    p = fract(p * vec2(123.34, 456.21));
+    p += dot(p, p + 45.32);
+    return fract(p.x * p.y);
+}
+float cloudNoise(vec2 p)
+{
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    vec2 u = f * f * (3.0 - 2.0 * f);
+    return mix(mix(cloudHash(i), cloudHash(i + vec2(1.0, 0.0)), u.x),
+               mix(cloudHash(i + vec2(0.0, 1.0)), cloudHash(i + vec2(1.0, 1.0)), u.x), u.y);
+}
+float cloudFbm(vec2 p)
+{
+    float a = 0.5;
+    float s = 0.0;
+    for (int i = 0; i < 5; i++)
+    {
+        s += a * cloudNoise(p);
+        p = p * 2.03 + vec2(17.1, 9.2);
+        a *= 0.5;
+    }
+    return s / 0.96875;
+}
+// Clouds in a direction: rgb = colour, a = cover. light = the sun's colour (dims at night), sky = the horizon colour.
+vec4 cloudLayer(vec3 dir, vec3 sunDir, vec3 light, vec3 sky)
+{
+    if (uCloudCover <= 0.001 || dir.z <= 0.0) return vec4(0.0);
+    vec2 p = dir.xy / (dir.z + 0.06) * 1.6 + uCloudOffset;
+    float n = cloudFbm(p);
+    float t = mix(0.72, -0.25, uCloudCover);
+    float a = smoothstep(t, t + 0.35, n) * smoothstep(0.0, 0.12, dir.z);
+    float thick = clamp((n - t) * 1.5, 0.0, 1.0);
+    vec3 lit = sky * 0.75 + light * 0.3;
+    vec3 col = mix(lit, lit * 0.68, thick * (0.4 + 0.6 * uCloudCover));
+    col += light * 0.35 * pow(max(dot(dir, sunDir), 0.0), 12.0) * (1.0 - thick);
+    return vec4(col, a);
+}
+";
+
         public const string MATERIALS_GLSL = @"
 uniform int uRealistic;
 uniform sampler2D uMaterialTable;
@@ -162,6 +245,10 @@ uniform sampler2DArray uTex1;
 uniform sampler2DArray uTex2;
 uniform sampler2DArray uTex3;
 uniform int uReflections;
+uniform vec4 uWaterTint;
+uniform float uWaterReflect;
+uniform float uWaterWaves;
+uniform float uWaveScale;
 uniform vec3 uSkyZenith;
 uniform vec3 uSkyHorizon;
 uniform int uTintMode;
@@ -232,7 +319,11 @@ vec4 realisticColour(int id, vec2 uv, vec2 dx, vec2 dy)
 vec3 skyColour(vec3 dir)
 {
     float h = dir.z;
-    return h >= 0.0 ? mix(uSkyHorizon, uSkyZenith, pow(clamp(h, 0.0, 1.0), 0.55)) : uSkyHorizon * 0.55;
+    if (h < 0.0) return uSkyHorizon * 0.55;
+    vec3 c = mix(uSkyHorizon, uSkyZenith, pow(clamp(h, 0.0, 1.0), 0.55));
+    // Sky round: the clouds in reflections (the sun's colour lights them; uSunDir / uSunColor from SUN_GLSL)
+    vec4 cloud = cloudLayer(dir, uSunDir, uSun == 1 ? uSunColor * 2.6 : vec3(0.6), uSkyHorizon);
+    return mix(c, cloud.rgb, cloud.a);
 }
 
 // t5: shine (0-1), roughness (0-1), flags (1 = metal, 2 = water), ripple strength
@@ -271,10 +362,10 @@ vec3 waterNormal(vec3 world, vec3 n, float amount, float dist)
     vec2 slope = vec2(0.0);
     for (int i = 0; i < 6; i++)
     {
-        float phase = dot(WAVE_DIR[i], world.xy) * WAVE_K[i] + uTime * WAVE_SPEED[i];
+        float phase = dot(WAVE_DIR[i], world.xy) * (WAVE_K[i] / uWaveScale) + uTime * WAVE_SPEED[i];
         slope += WAVE_DIR[i] * (WAVE_AMP[i] * WAVE_K[i] * cos(phase));
     }
-    slope *= amount * 0.2 / (1.0 + dist * 0.06);
+    slope *= amount * uWaterWaves * 0.2 / (1.0 + dist * 0.06);
     return normalize(n + vec3(-slope, 0.0));
 }
 
@@ -580,7 +671,7 @@ vec3 shoulder(vec3 c)
 }
 ";
 
-        public const string SCENE_FS = "#version 330 core\n" + CLIP_GLSL + SUN_GLSL + AO_GLSL + LIGHTS_GLSL + MATERIALS_GLSL + @"
+        public const string SCENE_FS = "#version 330 core\n" + CLIP_GLSL + SUN_GLSL + AO_GLSL + LIGHTS_GLSL + CLOUD_GLSL + MATERIALS_GLSL + @"
 in vec3 vWorld;
 in vec3 vNormal;
 in vec4 vColor;
@@ -596,6 +687,9 @@ uniform int uPlan;
 uniform vec2 uClipZ;
 uniform vec4 uOverride;
 uniform float uGhost;
+flat in vec4 vProfile;
+uniform int uProfilePass;
+uniform float uProfileDetail;
 out vec4 oColor;
 void main()
 {
@@ -604,6 +698,16 @@ void main()
     vec2 uvDy = dFdy(vUv);
     if (vWorld.z < uClipZ.x || vWorld.z > uClipZ.y) discard;
     if (sectionCut(vWorld)) discard;
+
+    // Colour round A: the profile code. Pass 1 (the normal passes) leaves ghosted and (round B) see-through coloured
+    // elements to pass 2 (the blended pass, which draws nothing else); the plan minimap draws them in place instead.
+    // Hidden ones never draw.
+    int profileCode = uProfilePass > 0 ? int(vProfile.a * 255.0 + 0.5) : 0;
+    bool profileGhost = profileCode == 1;
+    bool profileBlend = profileGhost || (profileCode >= 128 && profileCode < 255);
+    if (profileCode == 2) discard;
+    if (uProfilePass == 2 && !profileBlend) discard;
+    if (uProfilePass == 1 && profileBlend && uPlan == 0) discard;
 
     vec4 base = vColor;
     float reflectivity = 0.0;
@@ -614,6 +718,8 @@ void main()
         base.rgb = r.rgb;
         reflectivity = r.a;
         shine = reflectionInfo(vMaterial);
+        // Grass round: water's body colour (rgb, a = how much) when one is picked
+        if ((int(shine.z + 0.5) & 2) != 0 && uWaterTint.a > 0.0) base.rgb = mix(base.rgb, uWaterTint.rgb, uWaterTint.a);
         if (uReflectDebug == 1) base.rgb = reflectionDebugColour(shine, reflectivity);
         else if (uReflectDebug == 2) base.rgb = probeDebugColour(vWorld, gl_FrontFacing ? normalize(vNormal) : -normalize(vNormal));
     }
@@ -622,6 +728,16 @@ void main()
         float l = dot(base.rgb, vec3(0.299, 0.587, 0.114));
         base.rgb = base.a < 0.98 ? vec3(0.76, 0.82, 0.87) : vec3(0.80 + 0.12 * l);
     }
+
+    // Colour round A: the profile's colour over any colour mode, keeping uProfileDetail of the surface's own shade
+    // (texture, material) and all of the lighting; glass stays see-through
+    if (profileCode >= 128)
+    {
+        float l = dot(base.rgb, vec3(0.299, 0.587, 0.114));
+        vec3 detailed = vProfile.rgb * clamp(l * 1.8, 0.25, 1.6);
+        base.rgb = mix(vProfile.rgb, detailed, uProfileDetail);
+    }
+    else if (profileGhost && uPlan == 1) base.rgb = vec3(0.86, 0.87, 0.89);
 
     vec3 n = normalize(vNormal);
 
@@ -638,7 +754,7 @@ void main()
     int shineFlags = int(shine.z + 0.5);
     float dist = length(vWorld - uEye);
     bool reflecting = uRealistic == 1 && uReflections == 1 && uReflectDebug == 0;
-    if (reflecting && (shineFlags & 2) != 0 && n.z > 0.3) n = waterNormal(vWorld, n, shine.w, dist);
+    if (reflecting && (shineFlags & 2) != 0 && n.z > 0.3 && uWaterWaves > 0.001) n = waterNormal(vWorld, n, shine.w, dist);
     float ao = ambientOcclusion(vWorld, uEye);
     vec3 lit;
     if (uSun == 1)
@@ -693,6 +809,7 @@ void main()
                 else fresnel *= weight;
                 // Metals: the reflection takes the metal's colour (kept fairly bright: chrome is near white)
                 if (metal) env *= mix(base.rgb, vec3(1.0), 0.5);
+                if (water) fresnel *= uWaterReflect; // grass round: water's reflection strength
                 lit = mix(lit, env, fresnel);
                 // Water: the sun glints on the ripples (water is usually outdoors, so no shadow lookup)
                 if (water)
@@ -715,12 +832,14 @@ void main()
         result.rgb = mix(result.rgb, uOverride.rgb, uOverride.a);
         result.a = max(result.a, 0.85);
     }
-    // Clash view (Round C-B): everything but the pair as faint grey glass, keeping its shading
-    if (uGhost > 0.0)
+    // Clash view (Round C-B): everything but the pair as faint grey glass, keeping its shading (the profile's blended
+    // pass: only its ghosts; its see-through colours keep their colour at the row's opacity)
+    if (uGhost > 0.0 && (uProfilePass != 2 || profileGhost))
     {
         float grey = dot(result.rgb, vec3(0.299, 0.587, 0.114));
         result = vec4(mix(vec3(grey), vec3(0.62), 0.6), uGhost);
     }
+    else if (uProfilePass == 2) result.a = min(result.a, float(profileCode - 128) / 126.0);
     oColor = result;
 }";
 
@@ -776,7 +895,7 @@ void main()
     gl_Position = vec4(p, 0.0, 1.0);
 }";
 
-        public const string SKY_FS = @"#version 330 core
+        public const string SKY_FS = "#version 330 core\n" + CLOUD_GLSL + @"
 in vec2 vNdc;
 uniform mat4 uInvViewProj;
 uniform vec3 uEye;
@@ -785,7 +904,88 @@ uniform vec3 uSunDir;
 uniform vec3 uZenith;
 uniform vec3 uHorizon;
 uniform vec3 uSunDisc;
+uniform vec3 uSunShape;
+// Round W-A: the night sky. uStars = (density, brightness, twinkle, Milky Way; density 0 = no stars); the celestial
+// rows turn a sky direction into equatorial axes (the stars turn with the sidereal time); uNight 0 day – 1 night.
+uniform vec3 uMoonDir;
+uniform vec3 uMoonSun;  // towards the light on the moon: the sun, or a chosen phase's
+uniform vec3 uMoonDisc;
+uniform vec3 uMoonGlow;
+uniform float uNight;
+uniform vec4 uStars;
+uniform float uTime;
+uniform vec3 uCelestialX;
+uniform vec3 uCelestialY;
+uniform vec3 uCelestialZ;
 out vec4 oColor;
+
+const float MOON_RADIUS = 0.0085;
+const vec3 GALACTIC_POLE = vec3(-0.86766, -0.19807, 0.45599);
+const vec3 GALACTIC_CENTRE = vec3(-0.05488, -0.87341, -0.48386);
+
+float hash13(vec3 p)
+{
+    p = fract(p * 0.1031);
+    p += dot(p, p.zyx + 31.32);
+    return fract((p.x + p.y) * p.z);
+}
+vec3 hash33(vec3 p)
+{
+    p = fract(p * vec3(0.1031, 0.1030, 0.0973));
+    p += dot(p, p.yxz + 33.33);
+    return fract((p.xxy + p.yxx) * p.zyx);
+}
+float noise3(vec3 p)
+{
+    vec3 i = floor(p), f = fract(p);
+    vec3 u = f * f * (3.0 - 2.0 * f);
+    return mix(mix(mix(hash13(i), hash13(i + vec3(1, 0, 0)), u.x), mix(hash13(i + vec3(0, 1, 0)), hash13(i + vec3(1, 1, 0)), u.x), u.y),
+               mix(mix(hash13(i + vec3(0, 0, 1)), hash13(i + vec3(1, 0, 1)), u.x), mix(hash13(i + vec3(0, 1, 1)), hash13(i + vec3(1, 1, 1)), u.x), u.y), u.z);
+}
+
+// One layer of stars on the celestial sphere: cells of 1 / scale, at most one star in each (the 27 cells round the
+// direction, so none is cut off); px = the angle a pixel covers (keeps them a pixel or two wide at any zoom)
+vec3 starLayer(vec3 c, float scale, float chance, float bright, float px)
+{
+    vec3 p = c * scale;
+    vec3 home = floor(p);
+    vec3 sum = vec3(0.0);
+    float radius = max(px * 0.75, 1e-5);
+    for (int z = -1; z <= 1; z++)
+    for (int y = -1; y <= 1; y++)
+    for (int x = -1; x <= 1; x++)
+    {
+        vec3 cell = home + vec3(x, y, z);
+        float h = hash13(cell + 11.7);
+        if (h > chance) continue;
+        vec3 r = hash33(cell);
+        vec3 star = normalize(cell + 0.15 + 0.7 * r);
+        float d = length(c - star);
+        if (d > radius * 3.0) continue;
+        float magnitude = bright * (0.08 + 0.92 * pow(r.x, 7.0));
+        float twinkle = 1.0 - uStars.z * 0.45 * (0.5 + 0.5 * sin(uTime * (2.0 + 6.0 * r.y) + h * 61.0));
+        vec3 tint = mix(vec3(0.72, 0.80, 1.00), vec3(1.00, 0.86, 0.68), r.z);
+        sum += tint * magnitude * twinkle * exp(-d * d / (radius * radius));
+    }
+    return sum;
+}
+
+// The stars and the Milky Way in a direction (above the horizon, by night)
+vec3 nightSky(vec3 dir, float px)
+{
+    vec3 c = vec3(dot(dir, uCelestialX), dot(dir, uCelestialY), dot(dir, uCelestialZ));
+    float extinction = smoothstep(0.0, 0.18, dir.z);
+    float wash = clamp(length(uMoonGlow) * 2.5, 0.0, 1.0); // a bright moon hides the faint stars
+    float density = uStars.x;
+    vec3 stars = starLayer(c, 40.0, 0.16 * density, 2.2, px) + starLayer(c, 95.0, 0.10 * density, 0.35 * (1.0 - 0.6 * wash), px);
+    float g = dot(c, GALACTIC_POLE);
+    float band = exp(-g * g / 0.014);
+    float core = 0.55 + 0.9 * pow(max(dot(c, GALACTIC_CENTRE), 0.0), 3.0);
+    float lane = 1.0 - 0.55 * smoothstep(0.45, 0.7, noise3(c * 18.0)) * exp(-g * g / 0.0025);
+    float milky = band * core * lane * (0.5 + 0.5 * noise3(c * 7.0)) * uStars.w * (1.0 - 0.8 * wash);
+    return (stars * uStars.y * (1.0 - 0.5 * wash) + vec3(0.50, 0.56, 0.72) * 0.11 * milky) * extinction * uNight;
+}
+
 void main()
 {
     vec4 far = uInvViewProj * vec4(vNdc, 1.0, 1.0);
@@ -799,11 +999,41 @@ void main()
         : mix(horizon * 0.88, ground, clamp(-h * 5.0, 0.0, 1.0));
     float line = 1.0 - smoothstep(0.0, 0.0035, abs(h));
     c = mix(c, horizon * 0.72, line * 0.7);
+    // Sky round: uSunShape = (cos of the disc's outer edge, cos of its inner edge, glare multiplier)
     if (uSun == 1)
     {
         float d = max(dot(dir, uSunDir), 0.0);
-        c += uSunDisc * (smoothstep(0.99955, 0.99975, d) + 0.35 * pow(d, 64.0) + 0.15 * pow(d, 8.0));
+        float glare = uSunShape.z * (1.0 - 0.75 * uCloudCover);
+        c += uSunDisc * (smoothstep(uSunShape.x, uSunShape.y, d) + glare * (0.35 * pow(d, 64.0) + 0.15 * pow(d, 8.0)));
+
+        // W-A: stars, the Milky Way, then the moon (its lit side faces the sun: the phase draws itself)
+        if (h > 0.0)
+        {
+            float px = max(length(fwidth(dir)), 1e-5);
+            if (uNight > 0.01 && uStars.x > 0.0) { c += nightSky(dir, px); }
+            float m = dot(dir, uMoonDir);
+            if (uMoonDisc.x > 0.0 && m > 0.99)
+            {
+                vec3 q = (dir - uMoonDir * m) / MOON_RADIUS;
+                float q2 = dot(q, q);
+                float edge = px / MOON_RADIUS;
+                float inside = (1.0 - smoothstep(1.0 - edge, 1.0 + edge, sqrt(q2))) * step(0.0, m);
+                vec3 n = q - uMoonDir * sqrt(max(1.0 - q2, 0.0));
+                float lit = smoothstep(-0.06, 0.10, dot(n, uMoonSun));
+                float maria = 0.86 + 0.14 * noise3(n * 5.0 + 3.0) - 0.16 * smoothstep(0.5, 0.75, noise3(n * 2.2 + 9.0));
+                vec3 moon = uMoonDisc * (lit * maria + 0.03);
+                c = c * (1.0 - inside * uNight * 0.75) + moon * inside;
+            }
+            // The moon's glow: fades smoothly to nothing (no edge), tight round the disc, a faint wider haze
+            if (uMoonDisc.x > 0.0 && m > 0.0)
+            {
+                float angle = sqrt(max(2.0 * (1.0 - m), 0.0));
+                c += uMoonGlow * (0.45 * exp(-angle / 0.012) + 0.05 * exp(-angle / 0.05));
+            }
+        }
     }
+    vec4 cloud = cloudLayer(dir, uSunDir, uSun == 1 ? uSunDisc * 0.9 + uMoonGlow * 1.6 : vec3(0.6), horizon);
+    c = mix(c, cloud.rgb, cloud.a);
     oColor = vec4(c, 1.0);
 }";
 
@@ -848,6 +1078,146 @@ void main()
 
         #endregion
 
+        #region Grass (grass round, build B)
+
+        /// <summary>
+        /// Grass blades: one instance per blade on a world-anchored grid around the eye (so blades stay put as you
+        /// walk), placed from the grass map (RG32F: height, palette index + 1; 0 = no grass). Seven vertices per blade
+        /// (a three-segment tapering strip, bent by its lean and the wind). Blades with no grass under them, behind the
+        /// eye or past the distance collapse to nothing. A second, sparser grid with wider blades covers the far ring.
+        /// </summary>
+        public const string GRASS_VS = @"#version 330 core
+uniform mat4 uViewProj;
+uniform vec3 uEye;
+uniform sampler2D uGrassMap;
+uniform vec3 uGrassArea;
+uniform vec2 uGrassSize;
+uniform vec3 uGrassPalette[16];
+uniform float uSpacing;
+uniform int uSide;
+uniform float uInner;
+uniform float uFadeIn;
+uniform float uFadeOut;
+uniform float uRadius;
+uniform float uBladeHeight;
+uniform float uBladeWidth;
+uniform float uSway;
+uniform float uTime;
+out vec3 vWorld;
+out vec3 vNormal;
+out vec3 vColour;
+out float vT;
+float bladeHash(vec2 p, float k)
+{
+    p = fract(p * vec2(0.1031, 0.1030) + k * 0.0973);
+    p += dot(p, p.yx + 33.33);
+    return fract((p.x + p.y) * p.x);
+}
+void collapse()
+{
+    gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+    vWorld = vec3(0.0);
+    vNormal = vec3(0.0, 0.0, 1.0);
+    vColour = vec3(0.0);
+    vT = 0.0;
+}
+void main()
+{
+    // Nine vertices per blade (the first and last repeated: degenerate joins in one strip), a clump per instance
+    int blade = gl_VertexID / 9;
+    int v = clamp(gl_VertexID - blade * 9 - 1, 0, 6);
+    float k = float(blade) * 7.13;
+
+    // The clump's grid cell (world-anchored), each blade jittered inside it
+    int ix = gl_InstanceID % uSide;
+    int iy = gl_InstanceID / uSide;
+    vec2 cell = floor(uEye.xy / uSpacing) + vec2(float(ix - uSide / 2), float(iy - uSide / 2));
+    float h0 = bladeHash(cell, 1.0 + k), h1 = bladeHash(cell, 2.0 + k), h2 = bladeHash(cell, 3.0 + k), h3 = bladeHash(cell, 4.0 + k);
+    vec2 root = (cell + vec2(h0, h1)) * uSpacing;
+    float d = length(root - uEye.xy);
+    if (d < uInner || d > uRadius) { collapse(); return; }
+
+    // The grass map: nothing here, or the height and colour
+    vec2 g = (root - uGrassArea.xy) / uGrassArea.z;
+    ivec2 t = ivec2(floor(g));
+    if (t.x < 0 || t.y < 0 || t.x >= int(uGrassSize.x) || t.y >= int(uGrassSize.y)) { collapse(); return; }
+    vec2 texel = texelFetch(uGrassMap, t, 0).rg;
+    if (texel.g < 0.5) { collapse(); return; }
+
+    // Behind the eye or well off screen (a margin for tall blades): skip
+    vec4 clipRoot = uViewProj * vec4(root, texel.r, 1.0);
+    if (clipRoot.w < -0.5 || abs(clipRoot.x) > clipRoot.w * 1.3 + 1.0 || abs(clipRoot.y) > clipRoot.w * 1.3 + 1.0) { collapse(); return; }
+
+    // Shape: grows in over the inner band and shrinks over the outer one (the two grids cross-fade; the far edge
+    // blends into the textured ground), varied per blade
+    float fade = smoothstep(uInner, uFadeIn, d) * (1.0 - smoothstep(uFadeOut, uRadius, d));
+    if (uFadeIn <= uInner) fade = 1.0 - smoothstep(uFadeOut, uRadius, d);
+    float height = uBladeHeight * (0.55 + 0.9 * h2 * h2) * fade;
+    if (height < 0.004) { collapse(); return; }
+    float width = uBladeWidth * (0.7 + 0.6 * h3);
+    float yaw = h0 * 6.2831853;
+    vec3 right = vec3(cos(yaw), sin(yaw), 0.0);
+    vec3 facing = vec3(-right.y, right.x, 0.0);
+    float lean = (h1 - 0.5) * 0.9;
+    float sway = (sin(uTime * 1.7 + root.x * 0.35 + root.y * 0.22) * 0.16 + sin(uTime * 3.1 + h2 * 6.28) * 0.05) * uSway;
+    vec3 bend = facing * lean + vec3(0.71, 0.71, 0.0) * sway;
+
+    // Vertex: two per level (0, 0.35, 0.7), then the tip; a curved taper
+    float level = v >= 6 ? 1.0 : float(v / 2) * 0.35;
+    float side = v >= 6 ? 0.0 : (v % 2 == 0 ? -0.5 : 0.5);
+    vec3 world = vec3(root, texel.r)
+        + right * (side * width * (1.0 - level * level * 0.8))
+        + vec3(0.0, 0.0, height * level)
+        + bend * (height * level * level);
+    vWorld = world;
+    vec3 along = normalize(vec3(0.0, 0.0, 1.0) + bend * (2.0 * level));
+    vNormal = normalize(mix(normalize(cross(right, along)), vec3(0.0, 0.0, 1.0), 0.55));
+    int palette = clamp(int(texel.g + 0.5) - 1, 0, 15);
+    vec3 base = uGrassPalette[palette] * (0.8 + 0.4 * h3);
+    vColour = base * vec3(1.0 + 0.16 * (h1 - 0.5), 1.0 + 0.06 * (h0 - 0.5), 1.0 - 0.15 * h0);
+    vT = level;
+    gl_Position = uViewProj * vec4(world, 1.0);
+}";
+
+        /// <summary>
+        /// Grass blades' colours: darker at the root, the sun (with shadows), a little light through the blade when
+        /// looking towards the sun, the artificial lights, fog; both sides lit alike.
+        /// </summary>
+        public const string GRASS_FS = "#version 330 core\n" + CLIP_GLSL + SUN_GLSL + AO_GLSL + LIGHTS_GLSL + @"
+in vec3 vWorld;
+in vec3 vNormal;
+in vec3 vColour;
+in float vT;
+uniform vec3 uEye;
+uniform vec3 uFogColor;
+uniform float uFogDensity;
+out vec4 oColor;
+void main()
+{
+    if (sectionCut(vWorld)) discard;
+    vec3 n = normalize(vNormal);
+    float ao = mix(0.35, 1.0, vT);
+    // Darker at the root, lighter and a little yellower at the tip
+    vec3 albedo = mix(vColour * 0.55, vColour * 1.15 + vec3(0.05, 0.05, -0.01), vT);
+    vec3 c;
+    if (uSun == 1)
+    {
+        c = albedo * sunLight(n, vWorld, uEye, ao);
+        vec3 view = normalize(vWorld - uEye);
+        c += albedo * uSunColor * (0.35 * pow(max(dot(view, uSunDir), 0.0), 3.0) * vT);
+    }
+    else
+    {
+        c = albedo * (0.45 * ao + 0.45 * max(n.z, 0.0));
+    }
+    if (uLightCount > 0) c += albedo * artificialLight(vWorld, n, ao);
+    float dist = length(vWorld - uEye);
+    float fog = clamp(1.0 - exp(-dist * uFogDensity), 0.0, 0.65);
+    oColor = vec4(shoulder(mix(c, uFogColor, fog)), 1.0);
+}";
+
+        #endregion
+
         #region Ambient occlusion
 
         /// <summary>
@@ -873,14 +1243,24 @@ void writeGeometry(vec3 world, vec3 n)
 }
 ";
 
-        /// <summary>Geometry pre-pass for scene batches (vertex shader: <see cref="SCENE_VS"/>).</summary>
+        /// <summary>
+        /// Geometry pre-pass for scene batches (vertex shader: <see cref="SCENE_VS"/>). Colour round A: ghosted and hidden
+        /// profile elements are left out (they don't occlude what is behind them).
+        /// </summary>
         public const string GEOMETRY_FS = GEOMETRY_GLSL + @"
 in vec3 vWorld;
 in vec3 vNormal;
 in vec3 vEmissive;
+flat in vec4 vProfile;
+uniform int uProfilePass;
 void main()
 {
     if (sectionCut(vWorld)) discard;
+    if (uProfilePass > 0)
+    {
+        int code = int(vProfile.a * 255.0 + 0.5);
+        if (code == 1 || code == 2 || (code >= 128 && code < 255)) discard;
+    }
     writeGeometry(vWorld, vNormal);
     oGlow = vec4(vEmissive * uGlow, 1.0);
 }";
@@ -1047,6 +1427,57 @@ void main()
         #endregion
 
         #region Overlay and UI
+
+        /// <summary>
+        /// Grids round A: grid lines and level outlines. Each segment is a quad whose corners share the segment's end
+        /// point and direction; the vertex shader pushes them sideways to a constant pixel width (screen-facing, like
+        /// Overlay3D.Line). aAlong is metres along the grid (for the dash-dot pattern; negative = solid, the level
+        /// outlines).
+        /// </summary>
+        public const string GRID_VS = @"#version 330 core
+layout(location = 0) in vec3 aPos;
+layout(location = 1) in vec3 aDir;
+layout(location = 2) in float aAlong;
+layout(location = 3) in float aSide;
+layout(location = 4) in vec4 aColor;
+uniform mat4 uViewProj;
+uniform vec3 uEye;
+uniform float uHalfWidth;
+out vec4 vColor;
+out float vAlong;
+void main()
+{
+    vec3 toEye = uEye - aPos;
+    vec3 side = cross(aDir, toEye);
+    float sideLength = length(side);
+    side = sideLength > 1e-6 ? side / sideLength : vec3(0.0);
+    float hw = uHalfWidth * max(length(toEye), 0.05);
+    vColor = aColor;
+    vAlong = aAlong;
+    gl_Position = uViewProj * vec4(aPos + side * (aSide * hw), 1.0);
+}";
+
+        /// <summary>
+        /// Grids round A: a Revit-like dash-dot (2.4 m dash, 0.5 m gap, 0.3 m dot, 0.5 m gap) in world metres; once
+        /// the dot would be under ~3 pixels (far away) the line turns solid so it doesn't shimmer. uDashed 0 (grids round
+        /// B, the default): solid lines.
+        /// </summary>
+        public const string GRID_FS = @"#version 330 core
+in vec4 vColor;
+in float vAlong;
+uniform float uAlpha;
+uniform int uDashed;
+out vec4 oColor;
+void main()
+{
+    if (uDashed == 1 && vAlong >= 0.0 && fwidth(vAlong) < 0.1)
+    {
+        float t = mod(vAlong, 3.7);
+        bool on = t < 2.4 || (t >= 2.9 && t < 3.2);
+        if (!on) discard;
+    }
+    oColor = vec4(vColor.rgb, vColor.a * uAlpha);
+}";
 
         public const string OVERLAY_VS = @"#version 330 core
 layout(location = 0) in vec3 aPos;

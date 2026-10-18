@@ -92,6 +92,7 @@ namespace BimGo.Game
         private void ClickClashRow(ClashRecord clash, bool ctrl, bool shift)
         {
             if (clash == null) { return; }
+            _clashGroupCurrent = null; // C-C1: a clash row shows the clash card
             if (!ctrl && !shift)
             {
                 _clashAnchor = clash;
@@ -146,6 +147,8 @@ namespace BimGo.Game
         /// <summary>Back to a single clash (the current one stays on screen).</summary>
         private void ClearClashSelection()
         {
+            _clashGroupCurrent = null; // C-C1: the group card goes with the selection
+            _clashGroupPicks.Clear();
             _clashSelected.Clear();
             _clashSelectedLookup.Clear();
             _clashMultiBoth.Clear();
@@ -187,6 +190,7 @@ namespace BimGo.Game
         /// </summary>
         private void ToggleSelectAllShownClashes()
         {
+            _clashGroupCurrent = null; // C-C1
             if (AllShownClashesSelected)
             {
                 ClashRecord keep = _clashCurrent;
@@ -222,10 +226,10 @@ namespace BimGo.Game
             {
                 _clashAllLabelSelected = selected;
                 _clashAllLabelShown = _clashList.Count;
-                string key = Hotkeys.Label(InputAction.ClashSelectAll);
-                _clashAllLabel = AllShownClashesSelected ? $"CLEAR ALL {selected:N0} ({key})"
-                    : selected > 1 ? $"SELECT ALL {_clashList.Count:N0} ({selected:N0} SELECTED) ({key})"
-                    : $"SELECT ALL SHOWN ({key})";
+                // C-C2: narrower (it shares a row with search and REPORT…; the key hint names the key)
+                _clashAllLabel = AllShownClashesSelected ? $"CLEAR ALL {selected:N0}"
+                    : selected > 1 ? $"SELECT ALL {_clashList.Count:N0}"
+                    : "SELECT ALL";
             }
             return _clashAllLabel;
         }

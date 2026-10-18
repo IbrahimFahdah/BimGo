@@ -20,6 +20,7 @@ namespace BimGo.Format
     /// comments/…        comment pictures for BCF snapshots (JPEG), referenced from comments.json (optional)
     /// journal.json      ordered edits (replayed on load; never baked into the geometry)
     /// bookmarks.json    saved viewpoints and the home viewpoint (optional; only written when there are some)
+    /// paths.json        keyframed camera paths (optional, Round K; only written when there are some)
     /// sun.json          sun / shadow state: on/off, date, time, intensities (optional)
     /// visibility.json   hidden categories, links and elements (optional; only written when something is hidden)
     /// lighting.json     glowing vertex ranges and lighting-fixture lights (optional; only written when there are some)
@@ -56,6 +57,9 @@ namespace BimGo.Format
         /// <summary>The visibility sidecar suffix used beside a Revit model (next to the comments sidecar).</summary>
         public const string VISIBILITY_SIDECAR_SUFFIX = ".bimgo-visibility.json";
 
+        /// <summary>Round K: the camera path sidecar suffix beside an older snapshot (<c>paths.json</c> in the model folder).</summary>
+        public const string PATHS_SIDECAR_SUFFIX = ".bimgo-paths.json";
+
         /// <summary>Suffix of the clash sidecar beside a Revit model when sharing is on (Round C; <c>clashes.json</c> in the model folder).</summary>
         public const string CLASH_SIDECAR_SUFFIX = ".bimgo-clashes.json";
 
@@ -82,11 +86,17 @@ namespace BimGo.Format
         internal const string ENTRY_MATERIAL_STREAMS = "material.bin";
         internal const string ENTRY_LIBRARY = "library.json";
 
+        /// <summary>Optional (grids round A): the host's and extracted links' grids (<see cref="GridsDto"/>).</summary>
+        internal const string ENTRY_GRIDS = "grids.json";
+
         /// <summary>Optional picture of the view at the last save (review tools round: the start screen's card).</summary>
         internal const string ENTRY_THUMBNAIL = "thumbnail.jpg";
 
         /// <summary>Optional (Round C): clash sets, tests, results and history (<c>Clashes.ClashDocument</c>).</summary>
         internal const string ENTRY_CLASHES = "clashes.json";
+
+        /// <summary>Optional (Round K): keyframed camera paths (<see cref="CameraPathDocument"/>).</summary>
+        internal const string ENTRY_PATHS = "paths.json";
 
         /// <summary>Largest thumbnail read back (bytes).</summary>
         internal const long MAX_THUMBNAIL_BYTES = 2L * 1024 * 1024;

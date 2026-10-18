@@ -69,6 +69,21 @@ namespace BimGo.Format
         /// </summary>
         public float? EyeHeight { get; set; }
 
+        /// <summary>
+        /// Polish round P-C: true when the player was crouching (walking, not flying) when it was saved: GO arrives
+        /// crouched (crouch or jump stands up), the tour films from the crouched eye. Not written when false.
+        /// </summary>
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+        public bool Crouched { get; set; }
+
+        /// <summary>
+        /// Polish round P-C: the colour profile showing when it was saved (the profile's id; "" = none showing). GO and the
+        /// tour show it (or switch profiles off); null (older bookmarks) leaves the profile alone. The profiles themselves
+        /// stay the model's (visibility.json).
+        /// </summary>
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public string ColourProfile { get; set; }
+
         /// <summary>Tour: seconds to hold at this stop, or null for the tour's hold time.</summary>
         public float? TourHold { get; set; }
 
@@ -221,6 +236,9 @@ namespace BimGo.Format
         /// <summary>Highest eye height a bookmark may keep (m).</summary>
         public const float MAX_EYE_HEIGHT = 2.0f;
 
+        /// <summary>Round K-C: slowest and fastest smooth tour (m/s).</summary>
+        public const float MIN_SMOOTH_SPEED = 0.25f, MAX_SMOOTH_SPEED = 6f;
+
         /// <summary>Fade or glide between stops.</summary>
         public TourTransition Transition { get; set; } = TourTransition.Fade;
 
@@ -249,6 +267,17 @@ namespace BimGo.Format
         public bool Loop { get; set; }
 
         /// <summary>
+        /// Round K-C: play the tour as a smooth camera path (a spline through the stops at <see cref="SmoothSpeed"/>,
+        /// holding at each with its swivel) instead of fading or gliding. A field rather than a third
+        /// <see cref="TourTransition"/> value, so older builds still read the file (they play it with <see cref="Transition"/>).
+        /// </summary>
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+        public bool Smooth { get; set; }
+
+        /// <summary>Round K-C: the smooth tour's speed between stops (m/s).</summary>
+        public float SmoothSpeed { get; set; } = 1.5f;
+
+        /// <summary>
         /// The tour-wide swivel in degrees, signed like <see cref="BookmarkRecord.TourSwivel"/> (positive left).
         /// </summary>
         [JsonIgnore]
@@ -271,6 +300,7 @@ namespace BimGo.Format
             FadeSeconds = float.IsFinite(FadeSeconds) ? Math.Clamp(FadeSeconds, 0f, MAX_FADE) : 0.6f;
             GlideSeconds = float.IsFinite(GlideSeconds) ? Math.Clamp(GlideSeconds, MIN_GLIDE, MAX_GLIDE) : 3f;
             SwivelDegrees = float.IsFinite(SwivelDegrees) ? Math.Clamp(SwivelDegrees, 0f, MAX_SWIVEL) : 30f;
+            SmoothSpeed = float.IsFinite(SmoothSpeed) ? Math.Clamp(SmoothSpeed, MIN_SMOOTH_SPEED, MAX_SMOOTH_SPEED) : 1.5f;
             return this;
         }
 

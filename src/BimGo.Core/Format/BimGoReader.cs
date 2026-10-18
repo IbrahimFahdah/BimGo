@@ -102,6 +102,8 @@ namespace BimGo.Format
                 LightingDto lighting = ReadJson<LightingDto>(zip, BimGoFormat.ENTRY_LIGHTING, required: false);
                 MaterialsDto materials = ReadOptionalJson<MaterialsDto>(zip, BimGoFormat.ENTRY_MATERIALS);
                 LibraryDto library = ReadOptionalJson<LibraryDto>(zip, BimGoFormat.ENTRY_LIBRARY);
+                GridsDto grids = ReadOptionalJson<GridsDto>(zip, BimGoFormat.ENTRY_GRIDS); // grids round A
+                CameraPathDocument paths = ReadOptionalJson<CameraPathDocument>(zip, BimGoFormat.ENTRY_PATHS)?.Clean(); // Round K
                 progress?.Step(0.1);
                 progress?.ThrowIfCancelled();
                 ReadGeometry(zip, out SceneVertex[] vertices, out uint[] indices, progress);
@@ -109,7 +111,7 @@ namespace BimGo.Format
 
                 MaterialData materialData = ReadMaterials(zip, materials, vertices.Length);
                 SceneData scene = BuildScene(path, manifest, model, elements, parameters, vertices, indices, settings ?? new LaunchSettings(), lighting, materialData,
-                    records => BuildLibrary(zip, library, records, vertices.Length));
+                    records => BuildLibrary(zip, library, records, vertices.Length), grids);
                 comments.Comments ??= new List<CommentRecord>();
                 comments.Comments.RemoveAll(c => c == null || string.IsNullOrWhiteSpace(c.Text));
                 foreach (CommentRecord comment in comments.Comments)
@@ -134,6 +136,7 @@ namespace BimGo.Format
                     Comments = comments,
                     Journal = new EditJournal(journal.Entries),
                     Bookmarks = bookmarks,
+                    Paths = paths,
                     Sun = sun,
                     Visibility = visibility,
                     CreatedUtc = manifest.CreatedUtc,
@@ -156,7 +159,7 @@ namespace BimGo.Format
 
         private static SceneData BuildScene(string path, ManifestDto manifest, ModelDto model, ElementsDto elementsDto, ParametersDto parametersDto,
             SceneVertex[] vertices, uint[] indices, LaunchSettings settings, LightingDto lightingDto, MaterialData materials,
-            Func<ElementRecord[], LibraryData> buildLibrary = null)
+            Func<ElementRecord[], LibraryData> buildLibrary = null, GridsDto gridsDto = null)
         {
             IReadOnlyList<CategoryDef> catalog = CategoryCatalog.All;
             int genericIndex = CategoryCatalog.Find(CategoryCatalog.KEY_GENERIC)?.Index ?? 0;
@@ -230,7 +233,7 @@ namespace BimGo.Format
             // Levels, rooms, spawn
             LevelInfo[] levels = (model.Levels ?? new List<LevelDto>())
                 .Where(l => l != null)
-                .Select(l => new LevelInfo(l.Name ?? "Level", l.Elevation))
+                .Select(l => new LevelInfo(l.Name ?? "Level", l.Elevation, l.Storey != false))
                 .OrderBy(l => l.Elevation)
                 .ToArray();
 
@@ -290,6 +293,7 @@ namespace BimGo.Format
                 Indices = indices,
                 Elements = records,
                 Levels = levels,
+                Grids = GridFiles.FromDto(gridsDto, links.Length),
                 Rooms = rooms.ToArray(),
                 Links = links,
                 PhaseId = model.PhaseId,

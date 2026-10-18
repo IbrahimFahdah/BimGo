@@ -17,6 +17,7 @@ namespace BimGo.Game
         private bool _geometryOpen;
         private string _geometryMenuLabel;
         private int _geometryMenuLabelFor = -1;
+        private readonly ScrollRegion _geometryScroll = new();
 
         #endregion
 
@@ -30,6 +31,7 @@ namespace BimGo.Game
         {
             if (!_paused) { SetPaused(true); }
             _geometryOpen = true;
+            _geometryScroll.Reset();
         }
 
         /// <summary>Closes the category and link toggles.</summary>
@@ -66,26 +68,19 @@ namespace BimGo.Game
         #region Panel
 
         /// <summary>
-        /// Draws the category cards and the linked models full width, with CLOSE (Esc goes back too).
+        /// Draws the category cards and the linked models in the panel shell (polish round P-A1: one scroll region).
         /// </summary>
         private void BuildGeometryPanel()
         {
             FontAtlas f = _ui.Atlas;
             InputState input = _window.Input;
-            int width = _window.Width, height = _window.Height;
-            _ui.Rect(0, 0, width, height, UiTheme.MENU_BACKGROUND);
+            PanelFrame frame = BeginPanel(PanelSize.Standard, "CATEGORIES & LINKS", UiTheme.ACCENT, "Walkthrough only: Revit is never changed");
 
-            float x = S(56), w = width - S(112);
-            float y = S(48);
-            _ui.Text(f.Small, x, y, "BIMGO", UiTheme.TEXT_MUTED, S(2.6f));
-            y += S(20);
-            _ui.Text(f.Title, x, y, "CATEGORIES & LINKS", UiTheme.TEXT, S(2.4f));
-            _ui.TextRight(f.Small, x + w, y + S(16), "Walkthrough only: Revit is never changed · Esc back", UiTheme.TEXT_MUTED, S(0.6f));
-            y += S(64);
+            float top = BeginScroll(_geometryScroll, input, frame.Ix, frame.BodyTop, frame.Iw, frame.BodyHeight, out float cw);
+            float bottom = BuildCategoryCards(f, input, frame.Ix, top, cw);
+            EndScroll(_geometryScroll, input, bottom);
 
-            BuildCategoryCards(f, input, x, y, w);
-
-            if (MenuButton(f, x, height - S(48) - S(44), S(160), "CLOSE", false, false, height: S(44))) { CloseGeometry(); }
+            EndPanel(frame, null, "Click a category to show or hide it, or a group's heading for the whole group");
         }
 
         #endregion

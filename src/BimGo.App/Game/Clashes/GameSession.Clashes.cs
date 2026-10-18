@@ -170,6 +170,7 @@ namespace BimGo.Game
                 CategoryName = template.CategoryName,
                 FamilyType = template.FamilyType,
                 LevelName = template.LevelName,
+                Phase = template.Phase,
                 Link = template.Link
             };
             return SearchSets.Matches(set, Scene, standIn);
@@ -329,7 +330,8 @@ namespace BimGo.Game
             Sound.Play(SoundId.Commit);
             string other = r.SameModel ? string.Empty : " The report names a different model: check the pairs.";
             Toast($"Report merged: {r.ClashesAdded:N0} clashes added, {r.ClashesUpdated:N0} updated, {r.Unchanged:N0} unchanged; " +
-                $"{r.TestsAdded} tests and {r.SetsAdded} sets added.{other}", 6f, important: !r.SameModel);
+                $"{r.TestsAdded} tests and {r.SetsAdded} sets added" +
+                (r.GroupsAdded > 0 ? $"; {r.GroupsAdded} group{(r.GroupsAdded == 1 ? string.Empty : "s")} added" : string.Empty) + $".{other}", 6f, important: !r.SameModel);
         }
 
         #endregion

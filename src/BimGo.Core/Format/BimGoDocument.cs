@@ -22,6 +22,9 @@ namespace BimGo.Format
         /// <summary>Saved viewpoints (may be empty, never null).</summary>
         public BookmarkDocument Bookmarks { get; init; } = new();
 
+        /// <summary>Round K: the camera paths (paths.json), or null when there are none. Optional: older readers ignore it.</summary>
+        public CameraPathDocument Paths { get; set; }
+
         /// <summary>The sun / shadow state, or null if the file has none (defaults then come from the site).</summary>
         public SunSettings Sun { get; init; }
 

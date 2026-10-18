@@ -4,7 +4,7 @@
 		<Assembly>BimGo/BimGo.Revit.dll</Assembly>
 		<AddInId>C1A459F6-4B86-42DF-8CA9-C9E2042F1ABA</AddInId>
 		<FullClassName>BimGo.Application</FullClassName>
-		<VendorId>Author Name</VendorId>
-		<VendorDescription>Author Description</VendorDescription>
+		<VendorId>AussieBIMGuru</VendorId>
+		<VendorDescription>Aussie BIM Guru · BimGo (MIT-0). Revit is a registered trademark of Autodesk, Inc.; BimGo is not affiliated with or endorsed by Autodesk.</VendorDescription>
 	</AddIn>
 </RevitAddIns>

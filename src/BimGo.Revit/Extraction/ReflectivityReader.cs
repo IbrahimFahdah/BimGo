@@ -1,4 +1,4 @@
-using System.Reflection;
+﻿using System.Reflection;
 using Visual = Autodesk.Revit.DB.Visual;
 
 // The class belongs to the Extraction namespace
@@ -188,10 +188,12 @@ namespace BimGo.Extraction
 
                 if (schema.Contains("Mirror", StringComparison.OrdinalIgnoreCase)) { return Mirror(asset, info, byName: false); }
                 if (IsMirrorByName(material)) { return Mirror(asset, info, byName: true); }
-                if (schema.Contains("Water", StringComparison.OrdinalIgnoreCase)) { return Water(asset, info); }
-                if (IsSeeThrough(asset, schema, material))
+                if (_waterFromAsset && schema.Contains("Water", StringComparison.OrdinalIgnoreCase)) { return Water(asset, info); }
+                bool seeThrough = IsSeeThrough(asset, schema, material);
+                if (seeThrough || (_waterOpaque && IsWaterByName(material)))
                 {
                     // Advanced (Prism) materials have no Water schema: a see-through material named "water" is water
+                    // (QOL round: the keywords are the user's; opaque materials too when they ticked it)
                     return IsWaterByName(material) ? WaterByName(asset, info) : Glass(asset, info);
                 }
                 if (schema.StartsWith("Prism", StringComparison.OrdinalIgnoreCase)) { return Prism(asset, schema, info, mapAverage); }
@@ -211,7 +213,9 @@ namespace BimGo.Extraction
         /// <summary>Same test as the glass sky sheen in build A/B: transparency, Glazing, Prism Transparent or Solid Glass.</summary>
         public static bool IsSeeThrough(Visual.Asset asset, string schema, Material material)
         {
+            schema ??= string.Empty;
             return (material?.Transparency ?? 0) > 0
+                || IsGlassByName(material)
                 || (FindDouble(asset, "generic_transparency") ?? 0.0) > 0.01
                 || schema.Contains("Glazing", StringComparison.OrdinalIgnoreCase)
                 || schema.Contains("Transparent", StringComparison.OrdinalIgnoreCase)
@@ -262,9 +266,38 @@ namespace BimGo.Extraction
         /// </summary>
         public static bool IsWaterByName(Material material)
         {
-            try { return material?.Name?.Contains("water", StringComparison.OrdinalIgnoreCase) == true; }
+            try { return BimGo.Scene.MaterialOverrides.Matches(material?.Name, _waterKeywords); }
             catch { return false; }
         }
+
+        /// <summary>
+        /// QOL round: a glass keyword in the name makes an opaque material see-through glass (never a "mirror" one,
+        /// which the mirror rule draws opaque).
+        /// </summary>
+        public static bool IsGlassByName(Material material)
+        {
+            try { return _glassKeywords.Count > 0 && !IsMirrorByName(material) && BimGo.Scene.MaterialOverrides.Matches(material?.Name, _glassKeywords); }
+            catch { return false; }
+        }
+
+        #region Overrides (QOL round)
+
+        private static bool _waterFromAsset = true, _waterOpaque;
+        private static IReadOnlyList<string> _waterKeywords = BimGo.Scene.LaunchSettings.DefaultWaterKeywords();
+        private static IReadOnlyList<string> _glassKeywords = Array.Empty<string>();
+
+        /// <summary>
+        /// Takes the water / glass overrides from the settings (Go / Export, and the material scan). Call before reading.
+        /// </summary>
+        public static void Configure(BimGo.Scene.LaunchSettings settings)
+        {
+            _waterFromAsset = settings?.WaterFromAsset ?? true;
+            _waterOpaque = settings?.WaterKeywordsOpaque ?? false;
+            _waterKeywords = BimGo.Scene.MaterialOverrides.CleanKeywords(settings?.WaterKeywords ?? BimGo.Scene.LaunchSettings.DefaultWaterKeywords());
+            _glassKeywords = BimGo.Scene.MaterialOverrides.CleanKeywords(settings?.GlassKeywords);
+        }
+
+        #endregion
 
         private static ReflectivityInfo WaterByName(Visual.Asset asset, ReflectivityInfo info)
         {

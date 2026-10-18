@@ -30,7 +30,7 @@ namespace BimGo.Game
         private const int ROOM_SEARCH_MAX = 40;
 
         private bool _roomsOpen;
-        private int _roomScroll;
+        private readonly ScrollRegion _roomScroll = new();
         private readonly char[] _roomSearch = new char[ROOM_SEARCH_MAX];
         private int _roomSearchLength;
         private List<RoomRow> _roomRows;
@@ -57,7 +57,7 @@ namespace BimGo.Game
             }
             if (!_paused) { SetPaused(true); }
             _roomsOpen = true;
-            _roomScroll = 0;
+            _roomScroll.Reset();
             _roomMatchesDirty = true;
         }
 
@@ -141,24 +141,14 @@ namespace BimGo.Game
         {
             FontAtlas f = _ui.Atlas;
             InputState input = _window.Input;
-            int width = _window.Width, height = _window.Height;
-            _ui.Rect(0, 0, width, height, UiTheme.MENU_BACKGROUND);
-
-            float w = MathF.Min(S(820), width - S(80));
-            float h = height - S(96);
-            float x = (width - w) * 0.5f, y = S(48);
-            _ui.Panel(x, y, w, h, UiTheme.CARD, UiTheme.CARD_BORDER);
-
-            float ix = x + S(24), iw = w - S(48);
-            float cy = y + S(20);
-            _ui.Text(f.Small, ix, cy, "FIND ROOM", UiTheme.ACCENT, S(2f));
             Text.Clear().AppendGrouped(Scene.Rooms.Length).Append(" rooms · type a number, name or level");
-            _ui.TextRight(f.Small, ix + iw, cy, Text.Span, UiTheme.TEXT_MUTED, S(0.6f));
-            cy += S(32);
+            PanelFrame frame = BeginPanel(PanelSize.Standard, "FIND ROOM", UiTheme.ACCENT, Text.Span);
+            float ix = frame.Ix, iw = frame.Iw;
+            float cy = frame.BodyTop;
 
             // Search box (typing anywhere in the panel goes here; Enter goes to the first match)
             bool enter = TypeIntoRoomSearch(input);
-            float boxH = S(36);
+            float boxH = S(UiTheme.CONTROL_HEIGHT + 4f);
             _ui.Panel(ix, cy, iw, boxH, UiTheme.CONTROL, UiTheme.CONTROL_BORDER);
             if (_roomSearchLength == 0)
             {
@@ -169,15 +159,13 @@ namespace BimGo.Game
                 float used = _ui.Text(f.Body, ix + S(10), cy + boxH * 0.5f - f.Body.LineHeight * 0.5f, _roomSearch.AsSpan(0, _roomSearchLength), UiTheme.TEXT);
                 if (((int)(_clock * 2f) & 1) == 0) { _ui.Rect(ix + S(11) + used, cy + S(8), S(2), boxH - S(16), UiTheme.TEXT_SOFT); }
             }
-            cy += boxH + S(16);
+            cy += boxH + S(UiTheme.GAP);
 
             RefreshRoomMatches();
-            float buttonsY = y + h - S(24) - S(44);
-            RoomRow go = BuildRoomRows(f, input, ix, cy, iw, buttonsY - S(16));
+            RoomRow go = BuildRoomRows(f, input, ix, cy, iw, frame.BodyBottom);
             if (enter && _roomMatches.Count > 0) { go = _roomMatches[0]; }
 
-            _ui.Text(f.Small, ix + S(176), buttonsY + S(14), "Click a room (or Enter for the first) to go there · Esc back", UiTheme.TEXT_MUTED);
-            if (MenuButton(f, ix, buttonsY, S(160), "CLOSE", false, false, height: S(44))) { CloseRooms(); return; }
+            if (EndPanel(frame, null, "Click a room (or Enter for the first) to go there · Esc back") == FOOTER_LEFT) { return; }
 
             if (go == null) { return; }
             CloseRooms();
@@ -195,7 +183,7 @@ namespace BimGo.Game
         }
 
         /// <summary>
-        /// The matching rooms (wheel scrolls); a click on a row picks it.
+        /// The matching rooms (a scroll region); a click on a row picks it.
         /// </summary>
         /// <returns>The room clicked this frame, or null.</returns>
         private RoomRow BuildRoomRows(FontAtlas f, InputState input, float x, float y, float w, float bottom)
@@ -206,23 +194,19 @@ namespace BimGo.Game
                 return null;
             }
 
-            float rowH = S(44);
-            int visible = Math.Max(1, (int)((bottom - y) / rowH));
-            int maxScroll = Math.Max(0, _roomMatches.Count - visible);
-            if (input.Wheel != 0) { _roomScroll -= input.Wheel * 3; }
-            _roomScroll = Math.Clamp(_roomScroll, 0, maxScroll);
-
+            float rowH = S(UiTheme.ROW_HEIGHT);
+            float top = BeginScroll(_roomScroll, input, x, y, w, bottom - y, out float cw);
+            VisibleRows(_roomScroll, rowH, _roomMatches.Count, out int first, out int last);
             RoomRow picked = null;
-            int last = Math.Min(_roomMatches.Count, _roomScroll + visible);
-            for (int i = _roomScroll; i < last; i++)
+            for (int i = first; i < last; i++)
             {
                 RoomRow row = _roomMatches[i];
-                float ry = y + (i - _roomScroll) * rowH;
-                bool hover = Hover(input, x, ry, w, rowH - S(4));
+                float ry = top + i * rowH;
+                bool hover = Hover(input, x, ry, cw, rowH - S(4));
                 bool current = row.Room == _roomIndex;
-                _ui.Rect(x, ry, w, rowH - S(4), hover ? Rgba.Hex(0xFFFFFF, 0.08f) : ((i & 1) == 0 ? Rgba.Hex(0xFFFFFF, 0.03f) : 0u));
-                _ui.TextWrapped(f.Bold, x + S(12), ry + S(10), w * 0.55f, row.Title, current ? UiTheme.ACCENT : UiTheme.TEXT, maxLines: 1);
-                _ui.TextRight(f.Body, x + w - S(12), ry + S(11), row.Detail, UiTheme.TEXT_MUTED);
+                _ui.Rect(x, ry, cw, rowH - S(4), hover ? UiTheme.HOVER : ((i & 1) == 0 ? UiTheme.ROW_STRIPE : 0u));
+                _ui.TextWrapped(f.Bold, x + S(12), ry + S(10), cw * 0.55f, row.Title, current ? UiTheme.ACCENT : UiTheme.TEXT, maxLines: 1);
+                _ui.TextRight(f.Body, x + cw - S(12), ry + S(11), row.Detail, UiTheme.TEXT_MUTED);
                 if (hover && input.LeftPressed)
                 {
                     input.ConsumeClicks();
@@ -230,11 +214,7 @@ namespace BimGo.Game
                     picked = row;
                 }
             }
-            if (maxScroll > 0)
-            {
-                Text.Clear().Append(_roomScroll + 1).Append('–').Append(last).Append(" of ").Append(_roomMatches.Count).Append(" · wheel to scroll");
-                _ui.TextRight(f.Small, x + w, bottom + S(2), Text.Span, UiTheme.TEXT_FAINT);
-            }
+            EndScroll(_roomScroll, input, top + _roomMatches.Count * rowH);
             return picked;
         }
 
@@ -260,7 +240,7 @@ namespace BimGo.Game
                     _roomMatchesDirty = true;
                 }
             }
-            if (_roomMatchesDirty) { _roomScroll = 0; }
+            if (_roomMatchesDirty) { _roomScroll.Reset(); }
             return enter;
         }
 

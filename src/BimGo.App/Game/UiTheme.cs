@@ -86,5 +86,77 @@ namespace BimGo.Game
         public static readonly uint CARD_BORDER = Rgba.Hex(0xFFFFFF, 0.08f);
         public static readonly uint CONTROL = Rgba.Hex(0x0F1216);
         public static readonly uint CONTROL_BORDER = Rgba.Hex(0xFFFFFF, 0.2f);
+
+        /// <summary>Keyboard / gamepad focus ring and a focused row's tint (polish round P-A).</summary>
+        public static readonly uint FOCUS = Rgba.Hex(0x67E8F9);
+        public static readonly uint HOVER = Rgba.Hex(0xFFFFFF, 0.08f);
+        public static readonly uint ROW_STRIPE = Rgba.Hex(0xFFFFFF, 0.03f);
+        public static readonly uint SCROLL_TRACK = Rgba.Hex(0xFFFFFF, 0.05f);
+        public static readonly uint SCROLL_THUMB = Rgba.Hex(0xFFFFFF, 0.28f);
+        public static readonly uint SCROLL_THUMB_HOT = Rgba.Hex(0x67E8F9, 0.7f);
+        public static readonly uint DIVIDER = Rgba.Hex(0xFFFFFF, 0.1f);
+
+        // ---- Spacing tokens (polish round P-A1): unscaled pixels, scaled by GameSession.S. The panel shell and its
+        // widgets read these instead of per-panel numbers.
+
+        /// <summary>Panel card widths: standard, wide (two panes or a grid), side (the model shows on the left).</summary>
+        public const float PANEL_WIDTH = 1000f, PANEL_WIDTH_WIDE = 1180f, PANEL_WIDTH_SIDE = 780f;
+
+        /// <summary>Space between the window edge and a panel card (small windows, then from 900 px high).</summary>
+        public const float PANEL_MARGIN = 16f, PANEL_MARGIN_LARGE = 40f;
+
+        /// <summary>A card's inner padding: left / right, and top / bottom.</summary>
+        public const float PANEL_PAD = 24f, PANEL_PAD_Y = 16f;
+
+        /// <summary>The header: title and sub-line (the divider sits at its foot).</summary>
+        public const float HEADER_HEIGHT = 56f;
+
+        /// <summary>The footer's button height, and the notice / hint strip above it.</summary>
+        public const float FOOTER_HEIGHT = 40f, NOTICE_HEIGHT = 24f;
+
+        /// <summary>Footer slot widths: BACK and CLOSE, and the bounds of a centre action.</summary>
+        public const float FOOTER_SIDE_WIDTH = 132f, FOOTER_ACTION_MIN = 96f, FOOTER_ACTION_MAX = 230f;
+
+        /// <summary>Standard gaps.</summary>
+        public const float GAP = 12f, GAP_SMALL = 8f, GAP_LARGE = 20f;
+
+        /// <summary>Row heights: a list row, a compact row (settings, checkboxes).</summary>
+        public const float ROW_HEIGHT = 44f, ROW_COMPACT = 28f;
+
+        /// <summary>Control heights: buttons, small buttons, inputs / segmented / dropdowns.</summary>
+        public const float BUTTON_HEIGHT = 40f, SMALL_BUTTON_HEIGHT = 30f, CONTROL_HEIGHT = 32f;
+
+        /// <summary>A label column beside a control (forms).</summary>
+        public const float LABEL_WIDTH = 140f;
+
+        /// <summary>A scroll region's bar, the gutter kept for it, and one wheel notch.</summary>
+        public const float SCROLLBAR_WIDTH = 6f, SCROLL_GUTTER = 14f, WHEEL_STEP = 72f;
+
+        /// <summary>The cursor-mode docks (sun, study, section, grids, clash dock): width and header height (P-A2).</summary>
+        public const float DOCK_WIDTH = 340f, DOCK_HEADER_HEIGHT = 34f;
+
+        /// <summary>The wider dock (the sun and daylight study).</summary>
+        public const float DOCK_WIDTH_WIDE = 380f;
+
+        /// <summary>A dock's inner padding: left / right, and top / bottom.</summary>
+        public const float DOCK_PAD = 16f, DOCK_PAD_Y = 10f;
+
+        /// <summary>A dock's footer buttons, and its notice strip (two small lines) above them.</summary>
+        public const float DOCK_FOOTER_HEIGHT = 30f, DOCK_NOTICE_HEIGHT = 32f;
+
+        /// <summary>
+        /// The right-hand column's edge margin and the gap under the minimap. A window whose column under the minimap is
+        /// shorter than <see cref="DOCK_MIN_HEIGHT"/> puts the dock at the top instead (the minimap hides while it's open).
+        /// </summary>
+        public const float COLUMN_MARGIN = 20f, COLUMN_GAP = 12f, DOCK_MIN_HEIGHT = 320f;
+
+        /// <summary>The minimap's size (the right column's top), and the sun icon's (the column's foot).</summary>
+        public const float MINIMAP_WIDTH = 220f, MINIMAP_HEIGHT = 208f, SUN_ICON_SIZE = 52f;
+
+        /// <summary>The left column's panels: status and coordinates (their heights), and its width.</summary>
+        public const float STATUS_HEIGHT = 146f, COORDS_HEIGHT = 100f, INFO_WIDTH = 250f;
+
+        /// <summary>A legend collapsed to its title row (the F1 sheet is open, or the column ran out of room).</summary>
+        public const float LEGEND_COLLAPSED_HEIGHT = 30f;
     }
 }

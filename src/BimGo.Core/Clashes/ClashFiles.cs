@@ -7,7 +7,7 @@ namespace BimGo.Clashes
     /// <summary>
     /// What importing a report changed.
     /// </summary>
-    public readonly record struct ClashImportResult(int SetsAdded, int TestsAdded, int ClashesAdded, int ClashesUpdated, int Unchanged, bool SameModel);
+    public readonly record struct ClashImportResult(int SetsAdded, int TestsAdded, int ClashesAdded, int ClashesUpdated, int Unchanged, bool SameModel, int GroupsAdded = 0);
 
     /// <summary>
     /// Clash storage (Round C): <c>clashes.json</c> inside a .bimgo (kept as raw bytes until clash detection is
@@ -154,6 +154,8 @@ namespace BimGo.Clashes
         /// Reads a report (or a stored clash file) and merges it into <paramref name="into"/>: sets and tests it has
         /// that are missing are added; clashes matched by test + element pair take the report's status, assignee and
         /// notes when the report's change is newer; other clashes are added; history entries not already there are added.
+        /// C-C1: groups too (<see cref="ClashGroups.MergeFrom"/>: newer changes win, members matched by clash, a clash
+        /// already grouped here stays in its group).
         /// </summary>
         /// <returns>What changed, or null with an error.</returns>
         public static ClashImportResult? ImportReport(string path, ClashDocument into, string modelKey, out string error)
@@ -188,15 +190,21 @@ namespace BimGo.Clashes
 
             var ours = new Dictionary<string, ClashRecord>(StringComparer.Ordinal);
             foreach (ClashRecord clash in into.Clashes) { ours.TryAdd(clash.Key, clash); }
+            var oursById = new HashSet<string>(into.Clashes.Select(c => c.Id), StringComparer.Ordinal);
+            var theirToOurs = new Dictionary<string, string>(StringComparer.Ordinal); // C-C1: group members by clash
             foreach (ClashRecord theirs in from.Clashes)
             {
                 if (!ours.TryGetValue(theirs.Key, out ClashRecord mine))
                 {
+                    string theirId = theirs.Id;
+                    if (!oursById.Add(theirs.Id)) { theirs.Id = Guid.NewGuid().ToString("N"); oursById.Add(theirs.Id); } // an id we use for another pair
                     into.Clashes.Add(theirs);
                     ours[theirs.Key] = theirs;
+                    theirToOurs[theirId] = theirs.Id;
                     added++;
                     continue;
                 }
+                theirToOurs[theirs.Id] = mine.Id;
                 bool newer = theirs.Updated.HasValue && (!mine.Updated.HasValue || theirs.Updated.Value > mine.Updated.Value);
                 if (!newer && (mine.CommentId != null || theirs.CommentId == null))
                 {
@@ -222,11 +230,12 @@ namespace BimGo.Clashes
                 if (runs.Add((run.Utc, run.TestId))) { into.Runs.Add(run); }
             }
             into.Runs.Sort((a, b) => a.Utc.CompareTo(b.Utc));
+            int groupsAdded = ClashGroups.MergeFrom(from, into, theirToOurs); // C-C1
             into.Clean();
 
             bool sameModel = string.IsNullOrEmpty(from.ModelKey) || string.IsNullOrEmpty(modelKey)
                 || string.Equals(from.ModelKey, modelKey, StringComparison.OrdinalIgnoreCase);
-            return new ClashImportResult(setsAdded, testsAdded, added, updated, unchanged, sameModel);
+            return new ClashImportResult(setsAdded, testsAdded, added, updated, unchanged, sameModel, groupsAdded);
         }
 
         #endregion

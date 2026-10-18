@@ -1,4 +1,4 @@
-using System.Numerics;
+﻿using System.Numerics;
 using BimGo.Audio;
 using BimGo.Format;
 using BimGo.Game.Guns;
@@ -20,69 +20,48 @@ namespace BimGo.Game
         private readonly Vector4[] _mapPlanes = new Vector4[6];
         private readonly List<Highlight> _highlights = new();
 
-        // Help panel column widths (measured from the text; recomputed when the UI scale changes)
-        private float _helpScale = -1f, _helpKeyWidth, _helpActionWidth;
+        // Help panel column widths (measured from the text; recomputed when the UI scale or the rows change)
+        private float _helpScale = -1f, _helpKeyWidth, _helpPadWidth, _helpActionWidth;
 
-        // F1 help rows: built from the key map (input round B2), rebuilt when a binding changes
-        private (string Key, string Action)[] _helpRows;
+        // F1 help rows (polish round P-B: generated from the catalogue for the current situation), rebuilt when a binding,
+        // the situation or the gamepad's presence changes. Row 0 is the situation's title; the last row always shows.
+        private (string Key, string Pad, string Action)[] _helpRows;
         private int _helpRowsVersion = int.MinValue;
         private bool _helpRowsPad;
+        private string _helpRowsSituation;
 
         /// <summary>
-        /// The F1 help rows with the keys currently bound (the descriptions are fixed; the keys come from the map).
+        /// The F1 sheet for what you are doing (polish round P-B): the situation's title, its rows from
+        /// <see cref="InputSituation.Help"/> with the keys bound now (a gamepad column while one is connected; rows with
+        /// nothing bound are left out), then "Esc → CONTROLS" and the F1 row.
         /// </summary>
-        private (string Key, string Action)[] HelpRows()
+        private (string Key, string Pad, string Action)[] HelpRows()
         {
             bool pad = Gamepad.Connected;
-            if (_helpRows != null && _helpRowsVersion == Hotkeys.Version && _helpRowsPad == pad) { return _helpRows; }
+            string name = CurrentSituation();
+            if (_helpRows != null && _helpRowsVersion == Hotkeys.Version && _helpRowsPad == pad && ReferenceEquals(_helpRowsSituation, name)) { return _helpRows; }
             KeyMap m = Hotkeys.Map;
-            string J(string separator, params InputAction[] actions) => m.DescribeJoined(separator, false, actions).ToUpperInvariant();
+            InputSituation situation = InputCatalog.Situation(name) ?? InputCatalog.Situation(InputCatalog.SIT_WALKING);
 
-            _helpRows = new[]
+            var rows = new List<(string Key, string Pad, string Action)>(situation.Help.Count + 3)
             {
-                (m.DescribeJoined(" ", true, InputAction.MoveForward, InputAction.MoveLeft, InputAction.MoveBack, InputAction.MoveRight).ToUpperInvariant(), "Move"),
-                (J(" / ", InputAction.Jump, InputAction.Crouch), "Jump / Crouch"),
-                (J(" ", InputAction.Run), "Run"),
-                (J(" ", InputAction.Fly), "Fly / walk (no-clip)"),
-                (J(" / ", InputAction.LevelUp, InputAction.LevelDown), "Level up / down"),
-                (J(" · ", InputAction.GoHome, InputAction.SetHome), "Go home · Set home here"),
-                ((m.DescribeRange(InputAction.Gun1, 9) + " · " + m.DescribeJoined(" · ", false, InputAction.PreviousGun, InputAction.NextGun)).ToUpperInvariant(), "Select gun (9 Place: family library)"),
-                (J(" / ", InputAction.GunModePrevious, InputAction.GunModeNext), "Gun mode (Measure, Demolish)"),
-                (J(" ", InputAction.Unarmed), "Unarmed: no gun, no gun panel or hints (again takes it out)"),
-                (m.Label(InputAction.Gun2).ToUpperInvariant() + " AGAIN", "Measure: distance / area / angle / clearance"),
-                (J(" ", InputAction.GizmoDrop), "Gizmo / Clone / Place: drop onto the surface below"),
-                (J(" · ", InputAction.ScanHide, InputAction.ScanIsolate), "Scan gun: hide target · isolate its category"),
-                (J(" ", InputAction.ClearMarkers), "Clear this gun's markers"),
-                ((m.Label(InputAction.AddBookmark) + " · " + m.DescribeRange(InputAction.Bookmark1, 9)).ToUpperInvariant(), "Bookmark this view · Go to bookmark"),
-                ("ESC → BOOKMARKS", "Play the bookmark tour (eye height: pause menu)"),
-                (J(" ", InputAction.Coordinates), "Coordinate readout"),
-                (J(" ", InputAction.Lights), "Artificial lights: off / glow / light"),
-                (J(" · ", InputAction.Shadows, InputAction.SunPanel), "Shadows on/off · Sun panel"),
-                (J(" ", InputAction.SunStudy), "Sun / daylight study (click surfaces, RMB-drag looks)"),
-                (J(" · ", InputAction.SectionBox, InputAction.SectionPlane, InputAction.SectionClear), "Section box · cut at aimed surface · clear"),
-                (J(" ", InputAction.SunEarlier, InputAction.SunLater), $"Sun time −/+ 5 min ({m.DescribeModifierVariant(InputAction.SunEarlier, InputAction.SunEarlierFine)}: 1 min)"),
-                (J(" · ", InputAction.Save, InputAction.Undo, InputAction.Redo), "Save · Undo · Redo (files)"),
-                (J(" ", InputAction.FindRoom), "Find a room and go there"),
-                (J(" ", InputAction.ClashMode), "Clash mode: review clashes (Esc → CLASHES: tests and sets)"),
-                (J(" ", InputAction.Refresh), "Refresh from Revit (live sessions)"),
-                (J(" ", InputAction.Minimap) + " · ESC", "Minimap · Pause menu"),
-                (J(" ", InputAction.HideUi), $"Hide the UI (Esc or {m.Label(InputAction.HideUi)} shows it)"),
-                (J(" ", InputAction.PhotoMode), "Photo mode: hi-res stills and 360° panoramas"),
-                (J(" · ", InputAction.Fullscreen, InputAction.Screenshot), "Fullscreen · Screenshot"),
-                ("ESC → CONTROLS", "Every key, and changing them"),
-                (J(" ", InputAction.Help), "Hide help · BimGo " + Program.Version)
+                (string.Empty, string.Empty, situation.Name.ToUpperInvariant())
             };
-            if (pad)
+            foreach (HelpEntry entry in situation.Help)
             {
-                // A gamepad is connected (build B): two rows of its main buttons, before the last row
-                string P(InputAction action) => m.PadLabel(action).Length > 0 ? m.PadLabel(action) : "—";
-                string StickOf(string label) => label.StartsWith("LS ", StringComparison.Ordinal) || label.StartsWith("RS ", StringComparison.Ordinal) ? label[..2] : label;
-                var rows = new List<(string Key, string Action)>(_helpRows);
-                rows.Insert(rows.Count - 1, ("GAMEPAD", $"{StickOf(P(InputAction.LookUp))} look · {StickOf(P(InputAction.MoveForward))} move · {P(InputAction.Jump)} jump · {P(InputAction.Crouch)} crouch · {P(InputAction.Fly)} fly · {P(InputAction.Run)} sprint"));
-                rows.Insert(rows.Count - 1, (string.Empty, $"{P(InputAction.GunPrimary)} / {P(InputAction.GunSecondary)} gun · {P(InputAction.GunWheel)} gun wheel · LB / RB + D-pad: views and tools · {P(InputAction.Back)} menu"));
-                _helpRows = rows.ToArray();
+                string keys = m.HelpKeys(entry);
+                string padText = pad ? m.HelpPad(entry) : string.Empty;
+                if (keys.Length == 0 && padText.Length == 0) { continue; } // nothing bound
+                rows.Add((keys, padText, entry.Label));
             }
+            rows.Add(("ESC → CONTROLS", pad && m.PadLabel(InputAction.Back).Length > 0 ? m.PadLabel(InputAction.Back) + " → CONTROLS" : string.Empty,
+                "Every key and gamepad button, and changing them"));
+            rows.Add((m.Label(InputAction.Help).ToUpperInvariant(), pad ? m.PadLabel(InputAction.Help) : string.Empty,
+                "Hide help · BimGo " + Program.Version + " · Revit® is a trademark of Autodesk, Inc."));
+
+            _helpRows = rows.ToArray();
             _helpRowsPad = pad;
+            _helpRowsSituation = name;
             _helpRowsVersion = Hotkeys.Version;
             _helpScale = -1f; // re-measure the columns
             return _helpRows;
@@ -114,7 +93,17 @@ namespace BimGo.Game
 
             _target.BlitToWindow();
             if (ThumbnailDue) { CaptureThumbnail(width, height); }
-            if (_screenshotRequested) { CaptureScreenshot(width, height); }
+            if (_screenshotRequested)
+            {
+                // Colour round B: the profile's legend in the screenshot when ticked
+                if (ProfileLegendInShots)
+                {
+                    Gl.Viewport(0, 0, width, height);
+                    QueueProfileLegendForShot(width, height);
+                    _ui.Flush(width, height);
+                }
+                CaptureScreenshot(width, height);
+            }
             if (_sunShotRequested)
             {
                 // The study's screenshot: the 3D view plus the legend (drawn and flushed first), no other UI
@@ -128,8 +117,11 @@ namespace BimGo.Game
             // ---- Window pass: minimap 3D, then all 2D UI in one batch
             Gl.Viewport(0, 0, width, height);
             float mapX = width - S(20) - S(220), mapY = S(20);
-            if (_showMap && !_paused && !_uiHidden && !_photoOpen && !_clashModeOn) { DrawMinimapPlan(mapX + S(8), mapY + S(30), S(204), S(170)); }
+            _dockOverMap = _dockOverMapNext; // P-A2: last frame's dock sat over the minimap (a short window): it hides
+            _dockOverMapNext = false;
+            if (_showMap && !_paused && !_uiHidden && !_photoOpen && !_clashModeOn && !_dockOverMap) { DrawMinimapPlan(mapX + S(8), mapY + S(30), S(204), S(170)); }
 
+            BeginFocusFrame(); // polish round P-A2: the controls drawn now are the next frame's gamepad focus targets
             if (_paused)
             {
                 // A text box opened from a panel (reply, assignee) sits over the menu and takes the clicks
@@ -155,6 +147,8 @@ namespace BimGo.Game
                 else { BuildHud(mapX, mapY); }
                 if (IsEditingComment) { BuildCommentEditor(); }
             }
+            _ui.ResetClip(); // polish round P-A1: a scroll region left open by an early return never outlives the frame
+            EndFocusFrame(); // P-A2: the focus ring, over everything
             _ui.Flush(width, height);
         }
 
@@ -169,6 +163,9 @@ namespace BimGo.Game
         /// <param name="photo">A photo: no probe baking, no highlights, markers or gizmos.</param>
         private void RenderScene(int width, int height, RenderTarget target, int samples, bool photo)
         {
+            // ---- Colour round A: the active colour profile (evaluated again only when something changed)
+            UpdateProfile();
+
             // ---- Sun lighting and shadow maps (only changed cascades re-render). Clash pictures (C-B2) other than the real
             // model view draw without the sun, so they leave the cascades as the main view needs them
             _renderer.Lighting = CurrentLighting();
@@ -221,6 +218,7 @@ namespace BimGo.Game
             Gl.Disable(Gl.BLEND);
 
             _renderer.DrawSky(Camera);
+            UpdateGrass(); // grass round: builds / uploads the grass field when needed
 
             var p = new SceneDrawParams
             {
@@ -259,6 +257,7 @@ namespace BimGo.Game
                     _renderer.DrawSectionCaps(Camera.ViewProjection, Camera.Planes, Camera.Position, _groupVisible, Dynamics, _capColour, extent);
                 }
                 _renderer.DrawGround(Camera, _groundZ);
+                DrawGrass(p); // grass round: blades over the grass materials (Realistic)
 
                 // Gun highlights (scan target, primed demolitions, gizmo target…)
                 Gun active = _guns[_activeGun];
@@ -276,10 +275,11 @@ namespace BimGo.Game
                     Gl.Disable(Gl.BLEND);
                 }
 
-                // Transparent pass (glass etc.)
+                // Transparent pass (glass etc.), after the colour profile's ghosted elements (colour round A)
                 Gl.Enable(Gl.BLEND);
                 Gl.BlendFunc(Gl.SRC_ALPHA, Gl.ONE_MINUS_SRC_ALPHA);
                 Gl.DepthMask(false);
+                _renderer.DrawProfileGhosts(p, _groupVisible, Dynamics);
                 _renderer.DrawStatic(p, _groupVisible, transparent: true);
                 _renderer.DrawDynamic(p, Dynamics, transparent: true);
                 Gl.DepthMask(true);
@@ -299,8 +299,15 @@ namespace BimGo.Game
                 _overlay.Begin(Camera);
                 for (int i = 0; i < _guns.Length; i++) { _guns[i].DrawWorld(_overlay, i == _activeGun && !_unarmed); }
                 DrawClashMarkers(_overlay);
+                DrawGrids(); // grids round A: the lines under the markers
                 _overlay.Draw(Camera, depthTest: true, alpha: 1f, additive: false);
                 _overlay.Draw(Camera, depthTest: false, alpha: 0.16f, additive: false);
+                DrawClashToolOverlay(); // C-C2: a grouping tool's dots (brighter through walls), the cluster sphere
+                DrawPathEditor(); // Round K-B: the path, keys and handles while the path editor is on
+            }
+            else if (_photoGridLines && !_clashShot && ((_photoOpen && !photo) || (photo && _photoShooting)))
+            {
+                DrawGrids(photo ? _photoLineScale : 1f); // polish round P-C: grids in photo mode and its photos (ticked)
             }
 
             // Sun hours grid (study results are content, so they show with the UI hidden too)
@@ -420,6 +427,8 @@ namespace BimGo.Game
             float levelZ = _player.Feet.Z;
             int levelIndex = LevelIndexAt(levelZ);
 
+            DrawMinimapGrids(f, mapX, mapY, mapW, mapH, cx, cy, metresPerPixel); // grids round B: under the markers
+
             // Portals and comments on this level
             for (int i = 0; i < 2; i++)
             {
@@ -481,6 +490,13 @@ namespace BimGo.Game
                 return;
             }
 
+            // Round K-B: the path editor's HUD (dock, scrubber; no crosshair or guns)
+            if (_pathEditOn)
+            {
+                BuildPathEditorHud(f, width, height, mapX, mapY);
+                return;
+            }
+
             // Screen flash (portals)
             if (_clock < _flashUntil)
             {
@@ -488,8 +504,10 @@ namespace BimGo.Game
                 _ui.Rect(0, 0, width, height, Rgba.WithAlpha(_flashColour, 0.35f * t));
             }
 
-            // World-anchored labels
+            // World-anchored labels (grids round A: grid bubbles and level tags first, under the rest)
+            DrawGridLabels(f);
             for (int i = 0; i < _guns.Length; i++) { _guns[i].DrawLabels(_ui, i == _activeGun && !_unarmed); }
+            DrawGridHoverLabel(f); // grids round B: the hovered node, over the other labels
 
             // Crosshair
             float cx = MathF.Round(width * 0.5f), cy = MathF.Round(height * 0.5f);
@@ -500,7 +518,7 @@ namespace BimGo.Game
             _ui.Rect(cx + gap, cy - t1 * 0.5f, arm, t1, UiTheme.TEXT);
             _ui.Circle(cx, cy, S(1.8f), active.Colour, 10);
 
-            if (!_window.IsCaptured && !IsEditingComment && !_sunPanelOpen && !_sunHoursOpen)
+            if (!_window.IsCaptured && !IsEditingComment && !_sunPanelOpen && !_sunHoursOpen && !_gridsPanelOpen)
             {
                 const string hint = "Click to look around";
                 float hintWidth = UiBatch.Measure(f.Body, hint) + S(24);
@@ -508,16 +526,13 @@ namespace BimGo.Game
                 _ui.TextCentred(f.Body, cx, cy + S(34), hint, UiTheme.TEXT);
             }
 
-            BuildStatusPanel(f);
-            BuildCoordinatePanel(f, S(20), S(20) + S(146) + S(10));
-
-            // Minimap and the gun's context panel beneath it
-            if (_showMap) { DrawMinimapOverlay(mapX, mapY); }
-            // (hidden while the sun panel is open: the two would overlap on smaller screens)
-            if (!_sunPanelOpen && !_sunHoursOpen && !_sectionOpen && !_unarmed)
+            // Polish round P-A2: the right-hand column (tools): the minimap (hidden while a dock sits over it on a short
+            // window), then the gun's context panel or the open dock beneath it
+            if (_showMap && !_dockOverMap) { DrawMinimapOverlay(mapX, mapY); }
+            if (!AnyDockOpen && !_unarmed)
             {
-                float panelTop = _showMap ? mapY + S(208) + S(12) : S(20);
-                float panelWidth = S(260), panelX = width - S(20) - panelWidth;
+                float panelTop = _showMap ? mapY + S(UiTheme.MINIMAP_HEIGHT) + S(UiTheme.COLUMN_GAP) : S(UiTheme.COLUMN_MARGIN);
+                float panelWidth = S(260), panelX = width - S(UiTheme.COLUMN_MARGIN) - panelWidth;
                 float panelHeight = S(active.PanelHeight) + S(24);
                 _ui.Panel(panelX, panelTop, panelWidth, panelHeight, UiTheme.PANEL, UiTheme.PANEL_BORDER);
                 active.DrawPanel(_ui, panelX + S(14), panelTop + S(12), panelWidth - S(28));
@@ -526,10 +541,11 @@ namespace BimGo.Game
             BuildSunIcon(f, _window.Input);
             if (_sunPanelOpen) { BuildSunPanel(f, _window.Input); }
             if (_sunHoursOpen) { BuildSunHoursPanel(f, _window.Input); }
+            BuildGridsPanel(f, _window.Input); // grids round A
             BuildSectionPanel(f, _window.Input);
-            BuildSunLegend(f, S(20), height - S(52) - S(78));
 
-            BuildHelp(f, height);
+            // P-A2: the left-hand column (information): status, coordinates, the legends and the F1 sheet
+            BuildInfoColumn(f, height, sunLegend: true, profileLegend: true, help: true);
             BuildGunBar(f, width, height, active);
             BuildGunWheel(f, width, height);
             BuildRoomBanner(f, width);
@@ -626,46 +642,116 @@ namespace BimGo.Game
             _ui.Text(f.Body, valueX, rowY, ColourModeLabel(), UiTheme.TEXT);
         }
 
+        /// <summary>True while one of the docks (sun, study, section box, grids) is open.</summary>
+        private bool AnyDockOpen => _sunPanelOpen || _sunHoursOpen || _sectionOpen || _gridsPanelOpen;
+
         /// <summary>
-        /// Bottom-left controls hint (F1 toggles).
+        /// Polish round P-A2: the left-hand column (information), stacked from the top: the status panel and the
+        /// coordinates; from the bottom: the F1 note or sheet, then the sun legend; the colour legend fills what is left.
+        /// While the F1 sheet is open, or when the column runs out of room, the legends collapse to their title rows.
         /// </summary>
-        private void BuildHelp(FontAtlas f, int height)
+        /// <param name="f">Fonts.</param>
+        /// <param name="height">The target's height (the window, or a video frame).</param>
+        /// <param name="sunLegend">Show the study's legend (when there are results).</param>
+        /// <param name="profileLegend">Show the colour profile's legend (when one shows).</param>
+        /// <param name="help">Show the F1 note or sheet.</param>
+        private void BuildInfoColumn(FontAtlas f, int height, bool sunLegend, bool profileLegend, bool help)
+        {
+            float x = S(UiTheme.COLUMN_MARGIN), gap = S(10);
+            BuildStatusPanel(f);
+            float top = S(UiTheme.COLUMN_MARGIN) + S(UiTheme.STATUS_HEIGHT) + gap;
+            if (_coordinateReadout != CoordinateReadout.Off)
+            {
+                BuildCoordinatePanel(f, x, top);
+                top += S(UiTheme.COORDS_HEIGHT) + gap;
+            }
+            if (!sunLegend && !profileLegend && !help) { return; }
+
+            float bottom = height - S(UiTheme.COLUMN_MARGIN);
+            if (help) { bottom = BuildHelp(f, height, top) - gap; }
+            bool collapse = help && _showHelp;
+
+            if (sunLegend && _sunStudy.Hours != null && _sunLegendTitle != null)
+            {
+                float full = S(78), small = S(UiTheme.LEGEND_COLLAPSED_HEIGHT);
+                bool profileWanted = profileLegend && ProfileLegendWanted;
+                bool open = !collapse && bottom - top >= full + (profileWanted ? small + S(12) : 0f);
+                float lh = open ? full : small;
+                if (bottom - lh >= top)
+                {
+                    BuildSunLegend(f, x, bottom - lh, collapsed: !open);
+                    bottom -= lh + S(12);
+                }
+            }
+            if (profileLegend) { BuildProfileLegend(f, top, bottom, collapse); }
+        }
+
+        /// <summary>
+        /// Bottom-left controls hint (F1 toggles): a one-line note, or the sheet stacked up from the bottom no higher
+        /// than <paramref name="minTop"/> (P-A2: rows that don't fit are left out, the last "F1 hides" row stays).
+        /// </summary>
+        /// <returns>The top of what was drawn (the legends stack above it).</returns>
+        private float BuildHelp(FontAtlas f, int height, float minTop)
         {
             float x = S(20);
             if (!_showHelp)
             {
                 _ui.Text(f.Small, x, height - S(30), HINT_HELP.Text, UiTheme.TEXT_MUTED); // help is off by default: a small note
-                return;
+                return height - S(42);
             }
 
-            // Columns sized to the widest key and action (measured again when the UI scale or a binding changes)
-            (string Key, string Action)[] rows = HelpRows();
+            // Columns sized to the widest key, gamepad button and action (measured again when the UI scale or the rows change)
+            (string Key, string Pad, string Action)[] rows = HelpRows();
             if (_helpScale != UiScale)
             {
                 _helpScale = UiScale;
                 _helpKeyWidth = 0f;
+                _helpPadWidth = 0f;
                 _helpActionWidth = 0f;
-                foreach ((string key, string action) in rows)
+                for (int i = 0; i < rows.Length; i++)
                 {
-                    _helpKeyWidth = MathF.Max(_helpKeyWidth, UiBatch.Measure(f.Mono, key));
-                    _helpActionWidth = MathF.Max(_helpActionWidth, UiBatch.Measure(f.Body, action));
+                    if (i == 0)
+                    {
+                        _helpActionWidth = MathF.Max(_helpActionWidth, UiBatch.Measure(f.Small, rows[i].Action, S(1.2f)) - S(16)); // the title spans the columns
+                        continue;
+                    }
+                    _helpKeyWidth = MathF.Max(_helpKeyWidth, UiBatch.Measure(f.Mono, rows[i].Key));
+                    _helpPadWidth = MathF.Max(_helpPadWidth, UiBatch.Measure(f.Mono, rows[i].Pad));
+                    _helpActionWidth = MathF.Max(_helpActionWidth, UiBatch.Measure(f.Body, rows[i].Action));
                 }
             }
 
             float row = S(17);
-            float h = rows.Length * row + S(20);
+            int fit = Math.Max(0, (int)((height - S(20) - minTop - S(20)) / row));
+            int shown = Math.Min(rows.Length, fit);
+            if (shown < 3)
+            {
+                _ui.Text(f.Small, x, height - S(30), HINT_HELP.Text, UiTheme.TEXT_MUTED); // no room for the sheet
+                return height - S(42);
+            }
+            float h = shown * row + S(20);
             float y = height - S(20) - h;
             float keyWidth = _helpKeyWidth + S(16);
-            _ui.Panel(x, y, S(12) + keyWidth + _helpActionWidth + S(14), h, Rgba.Hex(0x0C0E12, 0.66f), Rgba.Hex(0xFFFFFF, 0.1f));
+            float padWidth = _helpPadWidth > 0f ? _helpPadWidth + S(16) : 0f;
+            _ui.Panel(x, y, S(12) + keyWidth + padWidth + _helpActionWidth + S(14), h, Rgba.Hex(0x0C0E12, 0.66f), Rgba.Hex(0xFFFFFF, 0.1f));
 
             float rowY = y + S(10);
-            for (int i = 0; i < rows.Length; i++)
+            for (int n = 0; n < shown; n++)
             {
-                bool last = i == rows.Length - 1;
+                int i = n == shown - 1 ? rows.Length - 1 : n; // the last row ("F1 hides") always shows
+                if (i == 0)
+                {
+                    _ui.Text(f.Small, x + S(12), rowY + S(2), rows[0].Action, UiTheme.ACCENT, S(1.2f)); // the situation
+                    rowY += row;
+                    continue;
+                }
+                bool last = i >= rows.Length - 2;
                 _ui.Text(f.Mono, x + S(12), rowY, rows[i].Key, last ? UiTheme.TEXT_MUTED : UiTheme.TEXT);
-                _ui.Text(f.Body, x + S(12) + keyWidth, rowY - S(1), rows[i].Action, last ? UiTheme.TEXT_MUTED : UiTheme.TEXT_SOFT);
+                if (padWidth > 0f && rows[i].Pad.Length > 0) { _ui.Text(f.Mono, x + S(12) + keyWidth, rowY, rows[i].Pad, last ? UiTheme.TEXT_MUTED : UiTheme.GOOD); }
+                _ui.Text(f.Body, x + S(12) + keyWidth + padWidth, rowY - S(1), rows[i].Action, last ? UiTheme.TEXT_MUTED : UiTheme.TEXT_SOFT);
                 rowY += row;
             }
+            return y;
         }
 
         /// <summary>

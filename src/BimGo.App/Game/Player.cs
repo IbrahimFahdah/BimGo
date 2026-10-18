@@ -153,7 +153,10 @@ namespace BimGo.Game
         /// <param name="inputEnabled">False freezes the player's own keys.</param>
         /// <param name="upAction">What flies up (clash mode uses its own keys so the gamepad's A still clicks).</param>
         /// <param name="downAction">What flies down / crouches.</param>
-        public void FixedUpdate(float dt, InputState input, bool inputEnabled, InputAction upAction = InputAction.Jump, InputAction downAction = InputAction.Crouch)
+        /// <param name="moves">Round K-B: the move and run actions (forward, back, left, right, run), or null for the walking
+        /// ones (the path editor flies on its own: its ← / → pick keys).</param>
+        public void FixedUpdate(float dt, InputState input, bool inputEnabled, InputAction upAction = InputAction.Jump, InputAction downAction = InputAction.Crouch,
+            InputAction[] moves = null)
         {
             _previousFeet = _currentFeet;
 
@@ -162,12 +165,22 @@ namespace BimGo.Game
             if (inputEnabled)
             {
                 // Keys read 0 or 1 (as before); a gamepad stick anything in between (build B)
-                forward = input.Axis(InputAction.MoveForward) - input.Axis(InputAction.MoveBack);
-                strafe = input.Axis(InputAction.MoveRight) - input.Axis(InputAction.MoveLeft);
-                run = input.Down(InputAction.Run) || PadSprint;
+                if (moves != null && moves.Length >= 5)
+                {
+                    forward = input.Axis(moves[0]) - input.Axis(moves[1]);
+                    strafe = input.Axis(moves[3]) - input.Axis(moves[2]);
+                    run = input.Down(moves[4]);
+                }
+                else
+                {
+                    forward = input.Axis(InputAction.MoveForward) - input.Axis(InputAction.MoveBack);
+                    strafe = input.Axis(InputAction.MoveRight) - input.Axis(InputAction.MoveLeft);
+                    run = input.Down(InputAction.Run) || PadSprint;
+                }
                 up = input.Down(upAction);
                 down = input.Down(downAction);
             }
+            if (Controller.HoldCrouch && (up || down || _jumpQueued || Flying)) { Controller.HoldCrouch = false; } // P-C: stand up again
 
             float cy = MathF.Cos(Yaw), sy = MathF.Sin(Yaw);
             var flatForward = new Vector3(cy, sy, 0f);

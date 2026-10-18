@@ -219,6 +219,13 @@ namespace BimGo.Format
         public bool Flying { get; set; }
 
         /// <summary>
+        /// Polish round P-C: the standing eye height when the view was saved (m; the eye-height preset). GO, BCF export
+        /// and the camera use it; null (older comments) uses the current preset.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+        public float? EyeHeight { get; set; }
+
+        /// <summary>
         /// The section cut when the view was saved (section box round): GO restores it, BCF exports it as clipping
         /// planes; a cut with nothing on clears the cut; null (older comments) leaves the current cut alone.
         /// </summary>

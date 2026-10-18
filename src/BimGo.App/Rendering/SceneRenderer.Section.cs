@@ -30,6 +30,10 @@ namespace BimGo.Rendering
         private Vector4[] _clipPlanes = new Vector4[BimGo.Scene.SectionCut.MAX_PLANES];
         private int _clipCount;
         private bool _clipBox;
+        private int _capStencilProfile, _capStencilColourPass;
+
+        /// <summary>How light a profile-coloured cap is against the element's colour (P-C: a cut reads as a cut).</summary>
+        private const float PROFILE_CAP_SHADE = 0.8f;
 
         #endregion
 
@@ -42,6 +46,10 @@ namespace BimGo.Rendering
             _capStencilModel = _capStencilProgram.Uniform("uModel");
             _capStencilPlane = _capStencilProgram.Uniform("uCapPlane");
             _capStencilShade = _capStencilProgram.Uniform("uCapShade");
+            _capStencilProfile = _capStencilProgram.Uniform("uProfilePass");
+            _capStencilColourPass = _capStencilProgram.Uniform("uCapColourPass"); // P-C
+            _capStencilProgram.Use();
+            Gl.Uniform1(_capStencilProgram.Uniform("uProfileTex"), PROFILE_UNIT); // colour round A: SCENE_VS's sampler (ghosted elements are left out of the caps)
 
             _capProgram = ShaderProgram.Create("section cap", Shaders.CAP_VS, Shaders.CAP_FS);
             _capViewProj = _capProgram.Uniform("uViewProj");
@@ -131,16 +139,36 @@ namespace BimGo.Rendering
                 Gl.Disable(Gl.DEPTH_TEST);
                 Gl.StencilFunc(Gl.ALWAYS, 0, 1);
                 Gl.StencilOp(Gl.KEEP, Gl.KEEP, Gl.INVERT);
+                Gl.StencilMask(1); // P-C: the parity in bit 1 only (bit 2 marks profile-coloured caps)
                 DrawCapScene(viewProjection, frustum, groupVisible, dynamics, plane, 1f);
+                Gl.StencilMask(0xFF);
 
                 Gl.ColorMask(true, true, true, true);
                 Gl.Enable(Gl.DEPTH_TEST);
+                if (!CapPolygon(i, eye, extent)) { continue; }
+
+                // (1b) Polish round P-C: a colour profile shows: inside cut solids it coloured, the surface seen through the
+                // cut (already in the depth buffer) takes the element's colour and marks stencil bit 2
+                bool coloured = ProfileOn && _profileReady && GhostAlpha <= 0f;
+                if (coloured)
+                {
+                    Gl.DepthFunc(Gl.LEQUAL);
+                    Gl.Enable(Gl.POLYGON_OFFSET_FILL);
+                    Gl.PolygonOffset(-1f, -4f);
+                    Gl.StencilFunc(Gl.EQUAL, 3, 1); // test bit 1 only (ref's bit 1 is set), write 3
+                    Gl.StencilOp(Gl.KEEP, Gl.KEEP, Gl.REPLACE);
+                    _capStencilProgram.Use();
+                    Gl.Uniform1(_capStencilColourPass, 1);
+                    DrawCapScene(viewProjection, frustum, groupVisible, dynamics, plane, PROFILE_CAP_SHADE);
+                    Gl.Uniform1(_capStencilColourPass, 0);
+                    Gl.Disable(Gl.POLYGON_OFFSET_FILL);
+                }
+
                 Gl.DepthFunc(Gl.LESS);
-                Gl.StencilFunc(Gl.EQUAL, 1, 1);
                 Gl.StencilOp(Gl.KEEP, Gl.KEEP, Gl.KEEP);
+                Gl.StencilFunc(Gl.EQUAL, 1, coloured ? 3u : 1u); // the flat cap: where no element colour went
 
                 // (2) The cap polygon in the flat cap colour
-                if (!CapPolygon(i, eye, extent)) { continue; }
                 Gl.DepthMask(true);
                 _capProgram.Use();
                 Gl.UniformMatrix4(_capViewProj, viewProjection);
@@ -155,6 +183,13 @@ namespace BimGo.Rendering
                     Gl.BufferSubData(Gl.ARRAY_BUFFER, 0, 6 * 12, corners);
                 }
                 Gl.DrawArrays(Gl.TRIANGLES, 0, 6);
+                if (coloured)
+                {
+                    // P-C: the coloured pixels get the cap plane's depth too (nothing behind the cut shows through later)
+                    Gl.ColorMask(false, false, false, false);
+                    Gl.StencilFunc(Gl.EQUAL, 3, 3);
+                    Gl.DrawArrays(Gl.TRIANGLES, 0, 6);
+                }
                 Gl.BindVertexArray(0);
                 Gl.ColorMask(true, true, true, true);
             }
@@ -173,6 +208,7 @@ namespace BimGo.Rendering
             Gl.UniformMatrix4(_capStencilModel, Matrix4x4.Identity);
             Gl.Uniform4(_capStencilPlane, plane.X, plane.Y, plane.Z, plane.W);
             Gl.Uniform1(_capStencilShade, shade);
+            Gl.Uniform1(_capStencilProfile, BindProfile(GhostAlpha <= 0f) ? 1 : 0); // colour round A: no caps on ghosts
             DrawBatches(frustum, groupVisible, transparent: false, countStats: false);
             if (dynamics != null && dynamics.Instances.Count > 0) { DrawDynamicInstances(dynamics, frustum, transparent: false, _capStencilModel); }
         }

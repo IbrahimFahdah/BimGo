@@ -841,6 +841,79 @@ namespace BimGo.Scene
             return Label(fine);
         }
 
+        /// <summary>
+        /// Polish round P-B: an F1 row's key column: the row's fixed text, or its actions' primary keys joined by " · "
+        /// (unbound ones left out; a run of five or more consecutive actions reads as a range, "SHIFT+1–9"; the four move
+        /// keys run together, "WASD"; the wheel pair reads "WHEEL"). Upper case, as the sheet shows it.
+        /// </summary>
+        public string HelpKeys(HelpEntry entry)
+        {
+            if (entry == null) { return string.Empty; }
+            if (entry.KeyText != null) { return entry.KeyText; }
+            IReadOnlyList<InputAction> actions = entry.Actions;
+            if (actions.Count == 4 && actions.All(IsMoveAction))
+            {
+                return DescribeJoined(" ", true, actions.ToArray()).ToUpperInvariant();
+            }
+            if (actions.Count == 2 && !IsUnbound(actions[0]) && !IsUnbound(actions[1]))
+            {
+                return DescribeJoined(" · ", false, actions[0], actions[1]).ToUpperInvariant();
+            }
+
+            var parts = new List<string>(actions.Count);
+            for (int i = 0; i < actions.Count;)
+            {
+                int run = 1;
+                while (i + run < actions.Count && (int)actions[i + run] == (int)actions[i] + run) { run++; }
+                if (run >= 5)
+                {
+                    parts.Add(DescribeRange(actions[i], run));
+                    i += run;
+                    continue;
+                }
+                if (!IsUnbound(actions[i])) { parts.Add(Label(actions[i])); }
+                i++;
+            }
+            return string.Join(" · ", parts).ToUpperInvariant();
+        }
+
+        /// <summary>
+        /// Polish round P-B: an F1 row's gamepad column: its actions' gamepad bindings (none left out) joined by " · ", a
+        /// shared prefix written once ("D-pad ← · →"); a stick's four directions read as the stick ("LS"). Empty when the
+        /// row has none.
+        /// </summary>
+        public string HelpPad(HelpEntry entry)
+        {
+            if (entry == null) { return string.Empty; }
+            var labels = new List<string>(entry.Actions.Count);
+            foreach (InputAction action in entry.Actions)
+            {
+                string label = PadLabel(action);
+                if (label.Length > 0 && !labels.Contains(label)) { labels.Add(label); }
+            }
+            if (labels.Count == 0) { return string.Empty; }
+            if (labels.Count == 1) { return labels[0]; }
+
+            // The common prefix up to a space ("LS ", "D-pad ", "LB+D-pad ")
+            string first = labels[0];
+            int common = first.Length;
+            foreach (string label in labels)
+            {
+                int n = 0;
+                while (n < common && n < label.Length && label[n] == first[n]) { n++; }
+                common = n;
+            }
+            int space = first.LastIndexOf(' ', Math.Max(0, Math.Min(common, first.Length) - 1));
+            if (space <= 0 || labels.Any(l => l.Length <= space + 1)) { return string.Join(" · ", labels); }
+            string prefix = first.Substring(0, space);
+            var rests = labels.Select(l => l.Substring(space + 1)).ToList();
+            if (rests.Count == 4 && rests.Contains("↑") && rests.Contains("↓") && rests.Contains("←") && rests.Contains("→")) { return prefix; }
+            return prefix + " " + string.Join(" · ", rests);
+        }
+
+        private static bool IsMoveAction(InputAction action) =>
+            action is InputAction.MoveForward or InputAction.MoveBack or InputAction.MoveLeft or InputAction.MoveRight;
+
         #endregion
 
         #region README

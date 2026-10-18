@@ -1,4 +1,4 @@
-using BimGo.Audio;
+﻿using BimGo.Audio;
 using BimGo.Platform;
 using BimGo.Rendering;
 
@@ -106,10 +106,14 @@ namespace BimGo.Game
             hash.Add(l.Horizon);
             hash.Add(l.ShadowStrength);
             hash.Add(l.Glass);
+            hash.Add(_sun?.CloudCover ?? 0f); // sky round: probes re-bake when the cover changes (not as the clouds drift)
             hash.Add(_lightMode);
             hash.Add(_lightIntensity);
             hash.Add(_realistic);
             hash.Add(_tintMode);
+            hash.Add(_renderer.ProbeGrass); // polish round P-C: blades came (or went), or the field was rebuilt
+            hash.Add(_grassField.GrassCells);
+            hash.Add(_grassHeightMm);
             long key = ShadowSceneKey() ^ ((long)hash.ToHashCode() << 17);
             return key == 0 ? 1 : key;
         }

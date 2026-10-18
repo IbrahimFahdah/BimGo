@@ -843,5 +843,75 @@ namespace BimGo.Tests
         }
 
         #endregion
+
+        [TestMethod]
+        public void Sets_Groups_NestAnyDepth()
+        {
+            // Polish round P-C: groups inside groups (0 ducts L1, 1 pipes L2, 2 framing L3, 3 walls L2)
+            SceneData scene = Scene(
+                new BoxSpec(Vector3.Zero, Vector3.One, "ducts", FamilyType: "Rectangular Duct: 600x300", Level: "Level 1"),
+                new BoxSpec(Vector3.Zero, Vector3.One, "pipes", FamilyType: "Pipe Types: Copper", Level: "Level 2"),
+                new BoxSpec(Vector3.Zero, Vector3.One, "framing", FamilyType: "310UB40", Level: "Level 3"),
+                new BoxSpec(Vector3.Zero, Vector3.One, "walls", FamilyType: "Generic - 200mm", Level: "Level 2"));
+            SetRule Rule(string field, string op, params string[] values) => new SetRule { Field = field, Op = op, Values = values.ToList() };
+
+            // Level 2 AND (pipes OR (walls AND type contains 200))
+            var inner = new RuleGroup { MatchAll = true, Rules = { Rule(RuleField.CATALOG, RuleOp.IS, "walls"), Rule(RuleField.TYPE, RuleOp.CONTAINS, "200") } };
+            var middle = new RuleGroup { MatchAll = false, Rules = { Rule(RuleField.CATALOG, RuleOp.IS, "pipes") }, Groups = new List<RuleGroup> { inner } };
+            var set = new SearchSet
+            {
+                MatchAll = true,
+                Rules = { Rule(RuleField.LEVEL, RuleOp.IS, "Level 2") },
+                Groups = new List<RuleGroup> { middle }
+            };
+            CollectionAssert.AreEqual(new[] { 1, 3 }, SearchSets.ElementsIn(set, scene));
+            inner.Rules[1] = Rule(RuleField.TYPE, RuleOp.CONTAINS, "300");
+            CollectionAssert.AreEqual(new[] { 1 }, SearchSets.ElementsIn(set, scene), "the inner group no longer matches the walls");
+
+            // A group whose only condition sits deeper still counts; an empty inner group is no condition
+            var deepOnly = new SearchSet { Groups = new List<RuleGroup> { new RuleGroup { Groups = new List<RuleGroup> { new RuleGroup { Rules = { Rule(RuleField.CATALOG, RuleOp.IS, "framing") } } } } } };
+            Assert.IsTrue(deepOnly.Groups[0].HasConditions);
+            CollectionAssert.AreEqual(new[] { 2 }, SearchSets.ElementsIn(deepOnly, scene));
+            var emptyInner = new RuleGroup { Groups = new List<RuleGroup> { new RuleGroup() } };
+            Assert.IsFalse(emptyInner.HasConditions);
+
+            // Copy, AllRules and Normalise go all the way down; depth beyond the cap is dropped
+            SearchSet copy = set.Copy(newId: true);
+            copy.Groups[0].Groups[0].Rules[0].SetOperator(RuleOp.IS_NOT);
+            Assert.AreEqual(RuleOp.IS, inner.Rules[0].Op, "the copy is deep");
+            Assert.AreEqual(4, set.AllRules().Count());
+            Assert.AreEqual(3, middle.RuleCount);
+            var tower = new RuleGroup();
+            RuleGroup top = tower;
+            for (int i = 0; i < RuleGroup.MAX_DEPTH + 4; i++)
+            {
+                var next = new RuleGroup { Rules = { Rule(RuleField.CATALOG, RuleOp.IS, "ducts") } };
+                top.Groups = new List<RuleGroup> { next };
+                top = next;
+            }
+            tower.Normalise();
+            int depth = 0;
+            for (RuleGroup g = tower; g.Groups != null; g = g.Groups[0]) { depth++; }
+            Assert.IsTrue(depth < RuleGroup.MAX_DEPTH, $"depth {depth}");
+
+            // clashes.json: nested groups round-trip; a group without inner groups writes none
+            ClashDocument document = SearchSets.Seeded();
+            document.Sets[0].Groups = new List<RuleGroup> { middle.Copy() };
+            ClashDocument again = ClashFiles.Parse(ClashFiles.Serialize(document), out string error);
+            Assert.IsNotNull(again, error);
+            RuleGroup readInner = again.Sets[0].Groups[0].Groups[0];
+            Assert.IsTrue(readInner.MatchAll);
+            Assert.AreEqual("300", readInner.Rules[1].ValueAt(0));
+            Assert.IsNull(readInner.Groups);
+            string json = System.Text.Encoding.UTF8.GetString(ClashFiles.Serialize(again));
+            Assert.AreEqual(2, CountOf(json, "\"groups\""), "the set's groups and the middle group's: none for the innermost or the other set");
+        }
+
+        private static int CountOf(string text, string part)
+        {
+            int count = 0;
+            for (int i = text.IndexOf(part, StringComparison.Ordinal); i >= 0; i = text.IndexOf(part, i + part.Length, StringComparison.Ordinal)) { count++; }
+            return count;
+        }
     }
 }

@@ -96,13 +96,25 @@ namespace BimGo.Game
                 foreach (CommentRecord record in records)
                 {
                     BcfTopic topic = BcfMapping.ToTopic(record);
-                    topic.Viewpoint = BcfMapping.ToViewpoint(ViewForBcf(record), CharacterController.STAND_EYE, frame, _fov);
+                    CommentView bcfView = ViewForBcf(record);
+                    topic.Viewpoint = BcfMapping.ToViewpoint(bcfView, bcfView.EyeHeight ?? CurrentStandingEye, frame, _fov); // P-C: the view's eye height
                     if (record.View?.Section != null) { topic.Viewpoint.ClippingPlanes.AddRange(BcfMapping.ToClippingPlanes(record.View.Section, frame)); }
                     if (record.ClashId != null && clashes != null && clashes.TryGetValue(record.ClashId, out BimGo.Clashes.ClashRecord clash))
                     {
                         // A clash comment (C-B2): both elements of the pair
                         AddClashComponent(topic.Viewpoint.Selection, clash.A, system);
                         AddClashComponent(topic.Viewpoint.Selection, clash.B, system);
+                    }
+                    else if (record.ClashId != null && clashes != null && BimGo.Clashes.ClashGroups.Find(_clashDocument, record.ClashId) is BimGo.Clashes.ClashGroup group)
+                    {
+                        // A group comment (C-C1): every element of every member, once each
+                        var seen = new HashSet<string>(StringComparer.Ordinal);
+                        foreach (string id in group.ClashIds)
+                        {
+                            if (!clashes.TryGetValue(id, out BimGo.Clashes.ClashRecord member)) { continue; }
+                            if (seen.Add(member.A.Key)) { AddClashComponent(topic.Viewpoint.Selection, member.A, system); }
+                            if (seen.Add(member.B.Key)) { AddClashComponent(topic.Viewpoint.Selection, member.B, system); }
+                        }
                     }
                     else
                     {
@@ -147,7 +159,7 @@ namespace BimGo.Game
             if (record.View != null) { return record.View; }
             ApproachMarker(record.Local, out Vector3 feet, out float yaw, out float pitch);
             Vector3 world = ToRevit(feet);
-            return new CommentView { X = world.X, Y = world.Y, Z = world.Z, Yaw = yaw, Pitch = pitch };
+            return new CommentView { X = world.X, Y = world.Y, Z = world.Z, Yaw = yaw, Pitch = pitch, EyeHeight = CurrentStandingEye };
         }
 
         /// <summary>
@@ -310,14 +322,16 @@ namespace BimGo.Game
             int element = FindBcfElement(topic.Viewpoint, ref byIfcGuid);
 
             Vector3 marker;
-            if (BcfMapping.TryToView(topic.Viewpoint, CharacterController.STAND_EYE, frame, out CommentView view))
+            float importEye = CurrentStandingEye; // P-C: the eye-height preset (was a fixed 1.62 m)
+            if (BcfMapping.TryToView(topic.Viewpoint, importEye, frame, out CommentView view))
             {
+                view.EyeHeight = importEye;
                 var feet = new Vector3((float)(view.X - origin.X), (float)(view.Y - origin.Y), (float)(view.Z - origin.Z));
                 view.Flying = !(Pick(feet + new Vector3(0f, 0f, 0.5f), -Vector3.UnitZ, 0.9f, out RayHit floor) && floor.Normal.Z > 0.7f);
                 view.Section = BcfMapping.ToSection(topic.Viewpoint.ClippingPlanes, frame, out _) ?? new SectionCut();
                 record.View = view;
 
-                Vector3 eye = feet + new Vector3(0f, 0f, CharacterController.STAND_EYE);
+                Vector3 eye = feet + new Vector3(0f, 0f, importEye);
                 float cp = MathF.Cos(view.Pitch);
                 var look = new Vector3(cp * MathF.Cos(view.Yaw), cp * MathF.Sin(view.Yaw), MathF.Sin(view.Pitch));
                 if (Pick(eye, look, 300f, out RayHit hit))

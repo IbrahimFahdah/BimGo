@@ -1,4 +1,4 @@
-using System.Numerics;
+﻿using System.Numerics;
 using System.Text.Json.Serialization;
 
 // The class belongs to the Scene namespace
@@ -269,6 +269,13 @@ namespace BimGo.Scene
         [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
         public float WaterBump { get; set; }
 
+        /// <summary>
+        /// QOL round: the material is see-through (transparency, a glass schema or a glass keyword) at extraction. Lets
+        /// the session re-apply the water keyword rule; older files infer it (<see cref="MaterialOverrides.IsSeeThrough"/>).
+        /// </summary>
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+        public bool SeeThrough { get; set; }
+
         /// <summary>Which Revit property the reflection values came from (diagnostics), or null.</summary>
         public string ReflectSource { get; set; }
 
@@ -306,6 +313,7 @@ namespace BimGo.Scene
                 Roughness = Roughness is float rough && float.IsFinite(rough) ? Math.Clamp(rough, 0f, 1f) : null,
                 Metallic = Metallic,
                 Water = Water,
+                SeeThrough = SeeThrough,
                 WaterBump = float.IsFinite(WaterBump) ? Math.Clamp(WaterBump, 0f, 1f) : 0f,
                 ReflectSource = string.IsNullOrWhiteSpace(ReflectSource) ? null : ReflectSource
             };

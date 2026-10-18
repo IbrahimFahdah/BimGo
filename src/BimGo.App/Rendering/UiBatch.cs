@@ -105,6 +105,11 @@ namespace BimGo.Rendering
         /// <summary>A filled rectangle.</summary>
         public void Rect(float x, float y, float w, float h, uint colour)
         {
+            if (_clipDepth > 0)
+            {
+                Quad(x, y, x + w, y + h, _wu, _wv, _wu, _wv, colour);
+                return;
+            }
             Push(x, y, _wu, _wv, colour);
             Push(x + w, y, _wu, _wv, colour);
             Push(x + w, y + h, _wu, _wv, colour);
@@ -143,6 +148,11 @@ namespace BimGo.Rendering
         /// <summary>A filled triangle.</summary>
         public void Triangle(float x0, float y0, float x1, float y1, float x2, float y2, uint colour)
         {
+            if (_clipDepth > 0)
+            {
+                ClippedTriangle(x0, y0, x1, y1, x2, y2, colour);
+                return;
+            }
             Push(x0, y0, _wu, _wv, colour);
             Push(x1, y1, _wu, _wv, colour);
             Push(x2, y2, _wu, _wv, colour);
@@ -207,12 +217,7 @@ namespace BimGo.Rendering
                 {
                     float gx = MathF.Round(pen + glyph.OffsetX), gy = top + glyph.OffsetY;
                     float gx1 = gx + glyph.Width, gy1 = gy + glyph.Height;
-                    Push(gx, gy, glyph.U0, glyph.V0, colour);
-                    Push(gx1, gy, glyph.U1, glyph.V0, colour);
-                    Push(gx1, gy1, glyph.U1, glyph.V1, colour);
-                    Push(gx, gy, glyph.U0, glyph.V0, colour);
-                    Push(gx1, gy1, glyph.U1, glyph.V1, colour);
-                    Push(gx, gy1, glyph.U0, glyph.V1, colour);
+                    Quad(gx, gy, gx1, gy1, glyph.U0, glyph.V0, glyph.U1, glyph.V1, colour);
                 }
                 pen += glyph.Advance + tracking;
             }
@@ -320,6 +325,199 @@ namespace BimGo.Rendering
 
         #endregion
 
+        #region Clipping
+
+        // The clip stack (panel shell, polish round P-A1): each entry is the clip rectangle in force before a push.
+        // Clipping is done on the CPU as shapes are queued (no GL scissor, so the single batch is kept): rectangles,
+        // glyphs and images are cut with their texture coordinates; triangles (lines, circles) are cut to polygons.
+        private const int MAX_CLIP_DEPTH = 16;
+        private readonly float[] _clipStack = new float[MAX_CLIP_DEPTH * 4];
+        private int _clipDepth;
+        private float _clipX0, _clipY0, _clipX1, _clipY1;
+
+        /// <summary>True while a clip rectangle is in force.</summary>
+        public bool ClipActive => _clipDepth > 0;
+
+        /// <summary>
+        /// Clips what is queued next to a rectangle (intersected with the clip already in force) until
+        /// <see cref="PopClip"/>.
+        /// </summary>
+        public void PushClip(float x, float y, float w, float h)
+        {
+            if (_clipDepth >= MAX_CLIP_DEPTH) { throw new InvalidOperationException("UI clip stack overflow."); }
+            int at = _clipDepth * 4;
+            _clipStack[at] = _clipX0;
+            _clipStack[at + 1] = _clipY0;
+            _clipStack[at + 2] = _clipX1;
+            _clipStack[at + 3] = _clipY1;
+
+            float x0 = x, y0 = y, x1 = x + MathF.Max(w, 0f), y1 = y + MathF.Max(h, 0f);
+            if (_clipDepth > 0)
+            {
+                x0 = MathF.Max(x0, _clipX0);
+                y0 = MathF.Max(y0, _clipY0);
+                x1 = MathF.Min(x1, _clipX1);
+                y1 = MathF.Min(y1, _clipY1);
+            }
+            _clipX0 = x0;
+            _clipY0 = y0;
+            _clipX1 = MathF.Max(x1, x0);
+            _clipY1 = MathF.Max(y1, y0);
+            _clipDepth++;
+        }
+
+        /// <summary>Ends the innermost <see cref="PushClip"/>.</summary>
+        public void PopClip()
+        {
+            if (_clipDepth == 0) { return; }
+            _clipDepth--;
+            int at = _clipDepth * 4;
+            _clipX0 = _clipStack[at];
+            _clipY0 = _clipStack[at + 1];
+            _clipX1 = _clipStack[at + 2];
+            _clipY1 = _clipStack[at + 3];
+        }
+
+        /// <summary>Drops every clip (a frame that ended without popping them all).</summary>
+        public void ResetClip() => _clipDepth = 0;
+
+        /// <summary>
+        /// The clip rectangle in force (polish round P-A2: gamepad focus targets keep the part that shows).
+        /// </summary>
+        /// <returns>False when no clip is in force (the outputs are then unbounded).</returns>
+        public bool GetClip(out float x0, out float y0, out float x1, out float y1)
+        {
+            if (_clipDepth == 0)
+            {
+                x0 = y0 = float.MinValue;
+                x1 = y1 = float.MaxValue;
+                return false;
+            }
+            x0 = _clipX0;
+            y0 = _clipY0;
+            x1 = _clipX1;
+            y1 = _clipY1;
+            return true;
+        }
+
+        /// <summary>True when a point is inside the clip in force (always true without one).</summary>
+        public bool ClipContains(float x, float y) =>
+            _clipDepth == 0 || (x >= _clipX0 && x < _clipX1 && y >= _clipY0 && y < _clipY1);
+
+        /// <summary>
+        /// An axis-aligned textured quad, cut to the clip with its texture coordinates (two triangles).
+        /// </summary>
+        private void Quad(float x0, float y0, float x1, float y1, float u0, float v0, float u1, float v1, uint colour)
+        {
+            if (x1 < x0)
+            {
+                (x0, x1) = (x1, x0);
+                (u0, u1) = (u1, u0);
+            }
+            if (y1 < y0)
+            {
+                (y0, y1) = (y1, y0);
+                (v0, v1) = (v1, v0);
+            }
+            if (_clipDepth > 0)
+            {
+                if (x1 <= _clipX0 || x0 >= _clipX1 || y1 <= _clipY0 || y0 >= _clipY1) { return; }
+                float w = x1 - x0, h = y1 - y0;
+                if (x0 < _clipX0) { u0 += (u1 - u0) * (_clipX0 - x0) / w; x0 = _clipX0; }
+                if (x1 > _clipX1) { u1 -= (u1 - u0) * (x1 - _clipX1) / (x1 - x0); x1 = _clipX1; }
+                if (y0 < _clipY0) { v0 += (v1 - v0) * (_clipY0 - y0) / h; y0 = _clipY0; }
+                if (y1 > _clipY1) { v1 -= (v1 - v0) * (y1 - _clipY1) / (y1 - y0); y1 = _clipY1; }
+            }
+            Push(x0, y0, u0, v0, colour);
+            Push(x1, y0, u1, v0, colour);
+            Push(x1, y1, u1, v1, colour);
+            Push(x0, y0, u0, v0, colour);
+            Push(x1, y1, u1, v1, colour);
+            Push(x0, y1, u0, v1, colour);
+        }
+
+        /// <summary>
+        /// A flat-coloured triangle cut to the clip (Sutherland-Hodgman against the four edges, then a fan). Triangles
+        /// wholly inside or outside skip the cutting.
+        /// </summary>
+        private void ClippedTriangle(float x0, float y0, float x1, float y1, float x2, float y2, uint colour)
+        {
+            float minX = MathF.Min(x0, MathF.Min(x1, x2)), maxX = MathF.Max(x0, MathF.Max(x1, x2));
+            float minY = MathF.Min(y0, MathF.Min(y1, y2)), maxY = MathF.Max(y0, MathF.Max(y1, y2));
+            if (maxX <= _clipX0 || minX >= _clipX1 || maxY <= _clipY0 || minY >= _clipY1) { return; }
+            if (minX >= _clipX0 && maxX <= _clipX1 && minY >= _clipY0 && maxY <= _clipY1)
+            {
+                Push(x0, y0, _wu, _wv, colour);
+                Push(x1, y1, _wu, _wv, colour);
+                Push(x2, y2, _wu, _wv, colour);
+                return;
+            }
+
+            // A triangle cut by four edges has at most seven corners
+            Span<float> ax = stackalloc float[8], ay = stackalloc float[8];
+            Span<float> bx = stackalloc float[8], by = stackalloc float[8];
+            ax[0] = x0; ay[0] = y0;
+            ax[1] = x1; ay[1] = y1;
+            ax[2] = x2; ay[2] = y2;
+            int count = 3;
+            count = ClipEdge(ax, ay, count, bx, by, 0, _clipX0);
+            count = ClipEdge(bx, by, count, ax, ay, 1, _clipX1);
+            count = ClipEdge(ax, ay, count, bx, by, 2, _clipY0);
+            count = ClipEdge(bx, by, count, ax, ay, 3, _clipY1);
+            for (int i = 1; i + 1 < count; i++)
+            {
+                Push(ax[0], ay[0], _wu, _wv, colour);
+                Push(ax[i], ay[i], _wu, _wv, colour);
+                Push(ax[i + 1], ay[i + 1], _wu, _wv, colour);
+            }
+        }
+
+        /// <summary>
+        /// One Sutherland-Hodgman pass: keeps the part of a polygon on the inside of one clip edge.
+        /// </summary>
+        /// <param name="edge">0 left (x >= value), 1 right (x <= value), 2 top (y >= value), 3 bottom (y <= value).</param>
+        /// <returns>The corner count written to the output.</returns>
+        private static int ClipEdge(Span<float> inX, Span<float> inY, int count, Span<float> outX, Span<float> outY, int edge, float value)
+        {
+            int written = 0;
+            if (count == 0) { return 0; }
+            float px = inX[count - 1], py = inY[count - 1];
+            bool pIn = Inside(px, py, edge, value);
+            for (int i = 0; i < count; i++)
+            {
+                float cx = inX[i], cy = inY[i];
+                bool cIn = Inside(cx, cy, edge, value);
+                if (cIn != pIn && written < outX.Length)
+                {
+                    // The crossing point on the edge
+                    float t = edge < 2 ? (value - px) / (cx - px) : (value - py) / (cy - py);
+                    outX[written] = px + (cx - px) * t;
+                    outY[written] = py + (cy - py) * t;
+                    written++;
+                }
+                if (cIn && written < outX.Length)
+                {
+                    outX[written] = cx;
+                    outY[written] = cy;
+                    written++;
+                }
+                px = cx;
+                py = cy;
+                pIn = cIn;
+            }
+            return written;
+        }
+
+        private static bool Inside(float x, float y, int edge, float value) => edge switch
+        {
+            0 => x >= value,
+            1 => x <= value,
+            2 => y >= value,
+            _ => y <= value
+        };
+
+        #endregion
+
         #region Flush
 
         private void Push(float x, float y, float u, float v, uint colour)
@@ -348,12 +546,7 @@ namespace BimGo.Rendering
         {
             if (texture == 0) { return; }
             Flush(screenWidth, screenHeight, 0);
-            Push(x, y, 0f, 0f, tint);
-            Push(x + w, y, 1f, 0f, tint);
-            Push(x + w, y + h, 1f, 1f, tint);
-            Push(x, y, 0f, 0f, tint);
-            Push(x + w, y + h, 1f, 1f, tint);
-            Push(x, y + h, 0f, 1f, tint);
+            Quad(x, y, x + w, y + h, 0f, 0f, 1f, 1f, tint);
             Flush(screenWidth, screenHeight, texture);
         }
 

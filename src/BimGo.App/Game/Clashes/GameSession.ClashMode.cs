@@ -1,4 +1,4 @@
-using System.Numerics;
+﻿using System.Numerics;
 using BimGo.Audio;
 using BimGo.Clashes;
 using BimGo.Live;
@@ -15,7 +15,8 @@ namespace BimGo.Game
     /// Clash mode (Round C, build C-B1): Y (or REVIEW in the CLASHES panel) docks the clash list on the right while
     /// you fly: free cursor, the move keys fly, RMB-drag looks. GO (a row, `,` / `.`, Enter) flies to a clash in about
     /// a second (or jumps, with INSTANT on), puts the section box around it (the clash region + 1 m), draws the pair in
-    /// red (A) and green (B) and the rest as faint grey glass without shadows. 1–5 set the status; R selects the pair in
+    /// red (A) and green (B) and the rest as faint grey glass without shadows (C-C3: a click on a dot goes there too, with a
+    /// label on hover). 1–5 set the status; R selects the pair in
     /// Revit (live). The test's clashes show as dots in the model while the mode is on (overlay only: never saved).
     /// C-B1 fixes: G cycles the rest of the model through ghost / wireframe / real / hidden; B switches the section box
     /// off and back on (on again = round the current clash). Leaving keeps the section box (Ctrl+P clears it) and flying
@@ -70,8 +71,12 @@ namespace BimGo.Game
                 || (ClashMultiActive && _clashMultiA.Count + _clashMultiB.Count + _clashMultiDynamicA.Count + _clashMultiDynamicB.Count
                     + _clashMultiBoth.Count + _clashMultiDynamicBoth.Count > 0));
 
-        /// <summary>True when the player's own movement waits (a flight, or typing in the search box).</summary>
-        private bool ClashFreezesPlayer => _clashModeOn && (_clashFlying || _clashSearchFocused);
+        /// <summary>
+        /// True when the player's own movement waits (a flight, or typing in the search box; C-C2: picking points with Ctrl
+        /// held, since Ctrl+drag draws a marquee and Ctrl also flies down).
+        /// </summary>
+        private bool ClashFreezesPlayer => _clashModeOn && (_clashFlying || _clashSearchFocused
+            || (_clashTool == CLASH_TOOL_PICK && (_clashMarquee || _window.Input.IsDown(Win32.VK_CONTROL))));
 
         #endregion
 
@@ -91,6 +96,7 @@ namespace BimGo.Game
         private void EnterClashMode(ClashRecord clash, string testId = null)
         {
             EnsureClashes();
+            ExitPathEditor(); // Round K-B: one free-cursor mode at a time
             _clashPickerRule = null;
             CloseOverlay();
             CloseClashes();
@@ -124,19 +130,36 @@ namespace BimGo.Game
         }
 
         /// <summary>
-        /// Leaves clash mode: the clash view goes, the section box and flying stay.
+        /// Leaves clash mode: the clash view goes, flying stays. QOL round: the clash section box goes too (BOX stays on,
+        /// so coming back puts it round the clash again).
         /// </summary>
         private void ExitClashMode()
         {
             if (!_clashModeOn) { return; }
+            CloseGridsPanel(); // grids round A (clash mode's cursor handling follows)
             if (_clashBatch != null) { FinishClashBatch(cancelled: true); }
+            CancelClashReport(); // C-C3
+            _clashReportCardOpen = false;
+            LeaveClashTool(); // C-C2: a box tool puts the cut back first
+            _clashToolHover = null;
             _clashModeOn = false;
             _clashFlying = false;
             _clashSearchFocused = false;
+            _clashMenuLook = false;
             CloseOverlay();
             _window.Input.ReleaseAll();
             if (!_paused && _window.IsActive) { _window.SetCaptured(true); }
-            Toast($"Clash mode off · still flying ({Key(InputAction.Fly)} walks) · the section box stays ({Key(InputAction.SectionClear)} clears)", 3.5f);
+            bool boxCleared = false;
+            if (_clashBoxOn && _section.IsActive)
+            {
+                _section.BoxOn = false;
+                _section.PlaneOn = false;
+                SectionChanged();
+                boxCleared = true;
+            }
+            Toast(boxCleared
+                ? $"Clash mode off · still flying ({Key(InputAction.Fly)} walks) · section box off"
+                : $"Clash mode off · still flying ({Key(InputAction.Fly)} walks)", 3f);
         }
 
         #endregion
@@ -156,11 +179,38 @@ namespace BimGo.Game
                 return;
             }
 
-            // Esc closes an open dropdown first, then stops making comments (C-B2)
+            // Grids round A: the grids keys stay live in clash mode (Esc closes an open grids panel first)
+            if (input.Pressed(InputAction.GridsPanel)) { ToggleGridsPanel(); }
+            if (input.Pressed(InputAction.GridsCycle)) { CycleGrids(); }
+            if (input.Pressed(InputAction.ColourProfile)) { ToggleProfile(); } // colour round A: shows in the real model view
+            if (_gridsPanelOpen && _clashTool == CLASH_TOOL_NONE && !OverlayOpen && input.Pressed(InputAction.Back))
+            {
+                CloseGridsPanel();
+                return;
+            }
+
+            // C-C2: a grouping tool (box, pick points, cluster) has the keys and the mouse
+            if (_clashTool != CLASH_TOOL_NONE)
+            {
+                UpdateClashTool(input, dt);
+                return;
+            }
+
+            // Esc closes an open dropdown first, then stops making comments (C-B2) or the report (C-C3), closes its card
             if (input.Pressed(InputAction.Back) && CloseOverlay()) { return; }
             if (input.Pressed(InputAction.Back) && _clashBatch != null)
             {
                 FinishClashBatch(cancelled: true);
+                return;
+            }
+            if (input.Pressed(InputAction.Back) && _clashReportJob != null)
+            {
+                CancelClashReport();
+                return;
+            }
+            if (input.Pressed(InputAction.Back) && _clashReportCardOpen)
+            {
+                _clashReportCardOpen = false;
                 return;
             }
             if (input.Pressed(InputAction.Back) || input.Pressed(InputAction.ClashMode))
@@ -172,8 +222,23 @@ namespace BimGo.Game
             if (input.Pressed(InputAction.HideUi)) { ToggleUiHidden(); }
             if (input.Pressed(InputAction.Fullscreen)) { _window.ToggleFullscreen(); }
             if (input.Pressed(InputAction.Screenshot)) { RequestScreenshot(); }
-            if (input.Down(InputAction.DragLook) && !_clashFlying) { _player.Look(input.MouseDeltaX, input.MouseDeltaY, _sensitivity, _invertY); }
+            // C-C1: RMB pressed over the dock opens a row menu, so it doesn't look until it is released
+            if (input.RightPressed && _clashDockW > 0f && Hover(input, _clashDockX, _clashDockY, _clashDockW, _clashDockH, focus: false)) { _clashMenuLook = true; }
+            if (!input.RightDown) { _clashMenuLook = false; }
+            if (input.Down(InputAction.DragLook) && !_clashFlying && !_clashMenuLook) { _player.Look(input.MouseDeltaX, input.MouseDeltaY, _sensitivity, _invertY); }
             UpdateRoom();
+
+            // C-C3: the dots take clicks as list rows do: a click goes to that clash, Ctrl adds / removes, Shift a run
+            bool overDock = OverClashDock(input.MousePosition);
+            UpdateClashToolHover(input.MousePosition, overDock || OverlayOpen || input.Down(InputAction.DragLook) || _clashFlying);
+            if (input.LeftPressed && _clashToolHover != null && !overDock && !OverlayOpen)
+            {
+                ClashRecord hit = _clashToolHover;
+                input.ConsumeClicks();
+                Sound.Play(SoundId.UiClick);
+                ClickClashRow(hit, input.IsDown(Win32.VK_CONTROL), input.IsDown(Win32.VK_SHIFT));
+            }
+            else if (!overDock && _clashToolHover == null) { ClickGridNode(input); } // grids round B: a node flies there
 
             if (input.PressedOrRepeated(InputAction.ClashNext)) { StepClash(+1); }
             else if (input.PressedOrRepeated(InputAction.ClashPrevious)) { StepClash(-1); }
@@ -186,6 +251,11 @@ namespace BimGo.Game
             else if (input.Pressed(InputAction.ClashView)) { SetClashView((_clashView + 1) % CLASH_VIEW_NAMES.Length); }
             else if (input.Pressed(InputAction.ClashSectionToggle)) { ToggleClashBox(); }
             else if (input.Pressed(InputAction.ClashSelectAll)) { ToggleSelectAllShownClashes(); }
+            else if (input.Pressed(InputAction.ClashPictures)) { ToggleClashThumbnails(); } // sky round: P / the pad's Back
+            else if (input.Pressed(InputAction.ClashUngroup)) { UngroupFromKeys(); } // C-C1: Ctrl+Shift+G
+            else if (input.Pressed(InputAction.ClashGroup)) { GroupClashes(ClashTargets(), null); } // C-C1: Ctrl+G
+            else if (input.Pressed(InputAction.ClashPickPoints)) { StartPickPointsFromKey(); } // P-B: K (TOOLS ▾ → PICK POINTS)
+            else if (input.Pressed(InputAction.ClashStatusCycle)) { CycleCurrentClashStatus(); } // P-B: the gamepad's LB+A
             else
             {
                 for (int k = 0; k < ClashStatus.All.Length; k++)
@@ -421,9 +491,30 @@ namespace BimGo.Game
 
         #region Status and Revit
 
+        /// <summary>
+        /// Polish round P-B: the next status for the picked group or the current clash (new → active → reviewed →
+        /// approved → resolved → new), through <see cref="SetCurrentClashStatus"/>.
+        /// </summary>
+        private void CycleCurrentClashStatus()
+        {
+            string status = _clashGroupCurrent?.Status ?? _clashCurrent?.Status;
+            if (status == null)
+            {
+                Sound.Play(SoundId.Error);
+                return;
+            }
+            int next = (ClashStatus.IndexOf(status) + 1) % ClashStatus.All.Length;
+            SetCurrentClashStatus(ClashStatus.All[next]);
+        }
+
         /// <summary>1–5: the current clash's status (stamped with who and when).</summary>
         private void SetCurrentClashStatus(string status)
         {
+            if (_clashGroupCurrent != null)
+            {
+                SetClashGroupStatus(_clashGroupCurrent, status); // C-C1: a group row picked: the group and every member
+                return;
+            }
             if (_clashCurrent == null)
             {
                 Sound.Play(SoundId.Error);
@@ -637,6 +728,7 @@ namespace BimGo.Game
             Gl.Disable(Gl.POLYGON_OFFSET_FILL);
 
             Gl.DepthMask(false);
+            _renderer.DrawProfileGhosts(p, _groupVisible, Dynamics); // colour round A: the profile's ghosted elements
             _renderer.DrawStatic(p, _groupVisible, transparent: true);
             _renderer.DrawDynamic(p, Dynamics, transparent: true);
             Gl.DepthMask(true);
@@ -648,7 +740,7 @@ namespace BimGo.Game
         /// </summary>
         private void DrawClashMarkers(Overlay3D overlay)
         {
-            if (!_clashModeOn) { return; }
+            if (!_clashModeOn || _clashTool != CLASH_TOOL_NONE) { return; } // C-C2: a tool draws its own dots
             Vector3 origin = Scene.OriginOffset;
             int count = Math.Min(_clashList.Count, 4000);
             for (int i = 0; i < count; i++)
@@ -656,6 +748,7 @@ namespace BimGo.Game
                 ClashRecord clash = _clashList[i];
                 if (clash == _clashCurrent) { continue; }
                 var point = new Vector3((float)(clash.X - origin.X), (float)(clash.Y - origin.Y), (float)(clash.Z - origin.Z));
+                if (clash == _clashToolHover) { overlay.Dot(point, S(9f), Rgba.Hex(0xFFFFFF)); } // C-C3: the dot under the mouse
                 if (_clashSelected.Count > 1 && _clashSelectedLookup.Contains(clash)) { overlay.Dot(point, S(7.5f), Rgba.Hex(0xFFFFFF)); } // C-B3: selected
                 overlay.Dot(point, S(4.5f), StatusColour(clash.Status));
             }

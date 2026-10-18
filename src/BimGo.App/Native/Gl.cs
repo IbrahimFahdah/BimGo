@@ -1,4 +1,4 @@
-using System.Runtime.InteropServices;
+﻿using System.Runtime.InteropServices;
 using GLEnum = Silk.NET.OpenGL.GLEnum;
 using SilkGL = Silk.NET.OpenGL.GL;
 
@@ -19,7 +19,7 @@ namespace BimGo.Native
         #region Constants
 
         public const uint DEPTH_BUFFER_BIT = 0x00000100, COLOR_BUFFER_BIT = 0x00004000;
-        public const uint TRIANGLES = 0x0004;
+        public const uint TRIANGLES = 0x0004, TRIANGLE_STRIP = 0x0005; // strip: grass blades (grass round)
         public const uint NEVER = 0x0200, LESS = 0x0201, LEQUAL = 0x0203, ALWAYS = 0x0207;
         public const uint SRC_COLOR = 0x0300, SRC_ALPHA = 0x0302, ONE_MINUS_SRC_ALPHA = 0x0303, ONE = 1, ZERO = 0;
         public const uint FRONT = 0x0404, BACK = 0x0405, CCW = 0x0901;
@@ -53,7 +53,7 @@ namespace BimGo.Native
         public const uint NONE = 0;
 
         // Ambient occlusion (float colour targets, read with texelFetch)
-        public const uint RGBA32F = 0x8814, RG16F = 0x822F, RG = 0x8227, HALF_FLOAT = 0x140B;
+        public const uint RGBA32F = 0x8814, RG16F = 0x822F, RG = 0x8227, HALF_FLOAT = 0x140B, RG32F = 0x8230;
 
         // Artificial lights (glow target as a second colour attachment)
         public const uint RGBA16F = 0x881A, COLOR_ATTACHMENT1 = 0x8CE1;
@@ -66,7 +66,7 @@ namespace BimGo.Native
 
         // Section box caps (stencil in the scene target)
         public const uint STENCIL_BUFFER_BIT = 0x00000400, STENCIL_TEST = 0x0B90;
-        public const uint KEEP = 0x1E00, INVERT = 0x150A, EQUAL = 0x0202;
+        public const uint KEEP = 0x1E00, INVERT = 0x150A, EQUAL = 0x0202, REPLACE = 0x1E01; // REPLACE: polish round P-C (profile caps)
         public const uint DEPTH24_STENCIL8 = 0x88F0, DEPTH_STENCIL_ATTACHMENT = 0x821A;
 
         // Photo mode (large off-screen targets, exposure blend)
@@ -96,7 +96,7 @@ namespace BimGo.Native
             // Buffers and vertex arrays
             "glGenBuffers", "glDeleteBuffers", "glBindBuffer", "glBufferData", "glBufferSubData",
             "glGenVertexArrays", "glDeleteVertexArrays", "glBindVertexArray", "glEnableVertexAttribArray",
-            "glVertexAttribPointer", "glVertexAttribDivisor", "glDrawElementsInstanced",
+            "glVertexAttribPointer", "glVertexAttribDivisor", "glDrawElementsInstanced", "glDrawArraysInstanced",
 
             // Shaders
             "glCreateShader", "glShaderSource", "glCompileShader", "glGetShaderiv", "glGetShaderInfoLog",
@@ -278,6 +278,10 @@ namespace BimGo.Native
 
         public static void MultiDrawElements(uint mode, int* counts, uint type, void** offsets, int drawCount)
             => _gl.MultiDrawElements((GLEnum)mode, (uint*)counts, (GLEnum)type, offsets, (uint)drawCount);
+
+        /// <summary>Grass round: instanced non-indexed draws (the grass blades).</summary>
+        public static void DrawArraysInstanced(uint mode, int first, int count, int instances)
+            => _gl.DrawArraysInstanced((GLEnum)mode, first, (uint)count, (uint)instances);
 
         public static void DrawElementsInstanced(uint mode, int count, uint type, nint byteOffset, int instances)
             => _gl.DrawElementsInstanced((GLEnum)mode, (uint)count, (GLEnum)type, (void*)byteOffset, (uint)instances);

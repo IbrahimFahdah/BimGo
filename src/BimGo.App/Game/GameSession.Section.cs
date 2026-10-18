@@ -204,6 +204,7 @@ namespace BimGo.Game
             if (_sectionOpen) { return; }
             if (_paused) { SetPaused(false); }
             CloseSunPanel();
+            CloseGridsPanel(); // grids round A: one panel at a time
             CloseSunHours();
             ClosePhotoMode();
             ShowUi();
@@ -393,7 +394,7 @@ namespace BimGo.Game
         /// </summary>
         private void DrawSectionGizmo()
         {
-            if (!_sectionOpen || !_section.IsActive) { return; }
+            if (!(_sectionOpen || _clashTool == CLASH_TOOL_BOX) || !_section.IsActive) { return; } // C-C2: GROUP BY BOX… too
             if (_sectionOverlay == null)
             {
                 _sectionOverlay = new Overlay3D();
@@ -424,7 +425,7 @@ namespace BimGo.Game
             }
             for (int h = 0; h < 7; h++)
             {
-                if (!HandlePosition(h, out Vector3 position, out _)) { continue; }
+                if (ClashBoxHidesHandle(h) || !HandlePosition(h, out Vector3 position, out _)) { continue; }
                 bool active = h == _sectionDrag || (h == _sectionHover && _sectionDrag < 0);
                 uint colour = active ? Rgba.Hex(0xFFFFFF, 1f) : h == 6 ? Rgba.Hex(0xFBBF24, 1f) : Rgba.Hex(0x22D3EE, 1f);
                 _sectionOverlay.Dot(position, active ? 11f : 8f, colour);
@@ -438,17 +439,17 @@ namespace BimGo.Game
         }
 
         /// <summary>
-        /// The editor's panel (top right): what's cut, fit buttons, box / plane switches, cap colour, clear, close.
+        /// The editor's dock (polish round P-A2: the right-hand dock column and the shared header, body and footer):
+        /// what's cut, fit buttons, box / plane switches, cap colour, clear; the notice above the footer.
         /// </summary>
         private void BuildSectionPanel(FontAtlas f, InputState input)
         {
             if (!_sectionOpen) { return; }
-            float w = S(300), x = _window.Width - S(20) - w, y = S(20), h = S(372);
-            _sectionPanelRect = new Vector4(x, y, w, h);
-            _ui.Panel(x, y, w, h, UiTheme.PANEL_STRONG, UiTheme.ACCENT);
-            float ix = x + S(16), iw = w - S(32), cy = y + S(14);
-            _ui.Text(f.Small, ix, cy, "SECTION BOX", UiTheme.ACCENT, S(1.4f));
-            cy += S(26);
+            DockFrame d = BeginDock("SECTION BOX", UiTheme.ACCENT, UiTheme.ACCENT, S(UiTheme.DOCK_WIDTH), _sectionDockScroll, notice: _sectionNotice != null);
+            _sectionPanelRect = d.Rect;
+            float ix = d.Ix, iw = d.Iw;
+            float cy = BeginDockBody(d, _sectionDockScroll, input);
+
             _ui.TextWrapped(f.Small, ix, cy, iw, HINT_SECTION_DRAG.Text, UiTheme.TEXT_MUTED, maxLines: 2);
             cy += S(38);
 
@@ -479,14 +480,20 @@ namespace BimGo.Game
             _ui.Rect(ix, cy, S(44), S(30), Rgba.FromFloat(_capColour.X, _capColour.Y, _capColour.Z, 1f));
             _ui.Outline(ix, cy, S(44), S(30), MathF.Max(1f, UiScale), UiTheme.CONTROL_BORDER);
             float buttonW = (iw - S(60) - S(8)) * 0.5f;
-            if (SmallButton(f, input, ix + S(52), cy, buttonW, S(30), "CHANGE…")) { PickCapColour(); }
+            bool pickColour = SmallButton(f, input, ix + S(52), cy, buttonW, S(30), "CHANGE…");
             if (SmallButton(f, input, ix + S(52) + buttonW + S(8), cy, buttonW, S(30), "RESET")) { SetCapColour(0x3D4045); }
             cy += S(42);
 
             if (SmallButton(f, input, ix, cy, iw, S(30), HINT_SECTION_CLEAR.Text, danger: true)) { ClearSection(); }
-            cy += S(40);
-            if (_sectionNotice != null) { _ui.TextWrapped(f.Small, ix, cy, iw, _sectionNotice, UiTheme.MEASURE_TEXT, maxLines: 2); }
-            if (SmallButton(f, input, ix, y + h - S(44), iw, S(30), HINT_SECTION_CLOSE.Text)) { CloseSectionEditor(); }
+            cy += S(30);
+            EndDockBody(_sectionDockScroll, input, cy);
+
+            if (EndDock(d, _sectionNotice, HINT_SECTION_FOOT.Text) == DOCK_CLOSE)
+            {
+                CloseSectionEditor();
+                return;
+            }
+            if (pickColour) { PickCapColour(); } // the Windows colour picker (modal): after the dock is drawn
         }
 
         #endregion

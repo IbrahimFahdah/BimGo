@@ -81,6 +81,12 @@ namespace BimGo.Physics
         /// <summary>Currently crouched.</summary>
         public bool Crouching;
 
+        /// <summary>
+        /// Polish round P-C: stay crouched without the crouch key (arriving at a crouched bookmark); the player clears it
+        /// with the crouch key, jump or flying.
+        /// </summary>
+        public bool HoldCrouch;
+
         /// <summary>Standing eye height for the current eye-height preset (m; <see cref="SetStandingEye"/>).</summary>
         public float StandEye { get; private set; } = STAND_EYE;
 
@@ -246,7 +252,7 @@ namespace BimGo.Physics
         /// </summary>
         private void UpdateCrouch(bool crouch)
         {
-            if (crouch)
+            if (crouch || HoldCrouch) // P-C: a crouched bookmark holds it
             {
                 Crouching = true;
                 Height = CrouchHeight;

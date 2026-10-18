@@ -30,7 +30,8 @@ namespace BimGo.Game
         private readonly HashSet<int> _changedMaterials = new();
 
         private bool _texturesOpen;
-        private int _textureScroll;
+        private readonly ScrollRegion _textureScroll = new();
+        private readonly ScrollRegion _proxyPickerScroll = new();
         private int _textureFilter;                 // 0 missing, 1 proxy, 2 all
         private string _texturesNotice;
         private int _proxyPickerFor = -1;           // material index whose proxy is being picked
@@ -58,7 +59,8 @@ namespace BimGo.Game
         private List<string> _scanRemaining = new();
         private List<ScanRow> _scanRows;
         private bool _scanRemember;
-        private int _scanScroll, _scanAccepted;
+        private readonly ScrollRegion _scanScroll = new();
+        private int _scanAccepted;
 
         /// <summary>One deep-scan hit.</summary>
         private sealed class ScanRow
@@ -163,7 +165,7 @@ namespace BimGo.Game
         private void OpenTextures()
         {
             _texturesOpen = true;
-            _textureScroll = 0;
+            _textureScroll.Reset();
             _proxyPickerFor = -1;
             _texturesNotice = null;
             _textureRowsFor = -1;
@@ -223,22 +225,12 @@ namespace BimGo.Game
         {
             FontAtlas f = _ui.Atlas;
             InputState input = _window.Input;
-            int width = _window.Width, height = _window.Height;
-            _ui.Rect(0, 0, width, height, UiTheme.MENU_BACKGROUND);
-
-            float w = MathF.Min(S(1080), width - S(80));
-            float h = height - S(96);
-            float x = (width - w) * 0.5f, y = S(48);
-            _ui.Panel(x, y, w, h, UiTheme.CARD, UiTheme.CARD_BORDER);
-
-            float ix = x + S(24), iw = w - S(48);
-            float cy = y + S(20);
-            _ui.Text(f.Small, ix, cy, "TEXTURES · REALISTIC MODE", UiTheme.ACCENT, S(2f));
             RefreshTextureCache();
             Text.Clear().AppendGrouped(CurrentMaterials.Materials.Length).Append(" materials · ").Append(_textureMissing).Append(" missing an image · proxy pack: ")
                 .Append(ProxyPack.Shared.Count).Append(" textures");
-            _ui.TextRight(f.Small, ix + iw, cy, Text.Span, UiTheme.TEXT_MUTED, S(0.6f));
-            cy += S(34);
+            PanelFrame frame = BeginPanel(PanelSize.Standard, "TEXTURES · REALISTIC MODE", UiTheme.ACCENT, Text.Span);
+            float ix = frame.Ix, iw = frame.Iw;
+            float cy = frame.BodyTop;
 
             // Display options for the Realistic mode
             float colW = MathF.Min(S(360), iw * 0.4f);
@@ -258,13 +250,27 @@ namespace BimGo.Game
                 _textureRowsFor = -1;
                 _texturesMenuLabelFor = -1;
             }
-            cy += S(70);
+            cy += S(64);
 
-            float buttonsY = y + h - S(24) - S(48);
+            // The folder search takes the body and the footer while it runs (BACK stops it)
             if (_scanRows != null)
             {
-                BuildScanRows(f, input, ix, cy, iw, buttonsY - S(16));
-                BuildScanButtons(f, input, ix, buttonsY, iw);
+                BuildScanRows(f, input, ix, cy, iw, frame.BodyBottom);
+                bool canNext = _scanStage < TextureMatchStage.Loose && _scanRemaining.Count > 0;
+                int next = FooterAction("ACCEPT TICKED, NEXT STAGE", canNext ? ShellStyle.Primary : ShellStyle.Normal, canNext);
+                int done = FooterAction("ACCEPT TICKED, DONE", canNext ? ShellStyle.Normal : ShellStyle.Primary);
+                int scanPressed = EndPanel(frame, _texturesNotice, "← BACK stops the search (nothing more is applied)");
+                if (scanPressed == next)
+                {
+                    AcceptScan();
+                    _scanStage++;
+                    RunScanStage();
+                }
+                else if (scanPressed == done)
+                {
+                    AcceptScan();
+                    EndScan(_scanRemember);
+                }
                 return;
             }
 
@@ -282,31 +288,31 @@ namespace BimGo.Game
             if (filter != _textureFilter)
             {
                 _textureFilter = filter;
-                _textureScroll = 0;
+                _textureScroll.Reset();
                 _proxyPickerFor = -1;
             }
-            cy += S(46);
+            cy += S(UiTheme.CONTROL_HEIGHT + UiTheme.GAP);
 
-            if (_proxyPickerFor >= 0) { BuildProxyPicker(f, input, ix, cy, iw, buttonsY - S(16)); }
-            else { BuildTextureRows(f, input, ix, cy, iw, buttonsY - S(16)); }
+            bool picking = _proxyPickerFor >= 0;
+            if (picking) { BuildProxyPicker(f, input, ix, cy, iw, frame.BodyBottom); }
+            else { BuildTextureRows(f, input, ix, cy, iw, frame.BodyBottom); }
 
-            if (_texturesNotice != null) { _ui.TextWrapped(f.Body, ix, buttonsY - S(30), iw, _texturesNotice, UiTheme.MEASURE_TEXT, maxLines: 1); }
-            if (MenuButton(f, ix, buttonsY, S(260), "FIND IN FOLDER…", false, false)) { StartScan(); }
-            if (MenuButton(f, ix + S(276), buttonsY, S(160), "CLOSE", false, false)) { _texturesOpen = false; }
-            _ui.TextRight(f.Small, ix + iw, buttonsY + S(18), IsFileMode
-                ? (IsDirty ? HINT_TEXTURES_SAVE.Text : "Picked images are embedded in the file when you save")
-                : "Choices are remembered for this model: the next Go in Revit uses them", UiTheme.TEXT_FAINT, S(0.4f));
+            int find = picking ? FOOTER_NONE : FooterAction("FIND IN FOLDER…");
+            string hint = picking ? "Pick a proxy keyword · ← BACK leaves the material as it is"
+                : IsFileMode ? (IsDirty ? HINT_TEXTURES_SAVE.Text : "Picked images are embedded in the file when you save")
+                : "Choices are remembered for this model: the next Go in Revit uses them";
+            int pressed = EndPanel(frame, _texturesNotice, hint);
+            if (pressed != FOOTER_NONE && pressed == find) { StartScan(); }
         }
 
         /// <summary>
-        /// The scrolling material rows: swatch, name, status, image path and IMAGE / PROXY / PLAIN / UNDO.
+        /// The material rows (a clipped scroll region): swatch, name, status, image path and IMAGE / PROXY / PLAIN / UNDO.
         /// </summary>
         private void BuildTextureRows(FontAtlas f, InputState input, float x, float y, float w, float bottom)
         {
             List<int> rows = TextureRows();
             SceneMaterial[] table = CurrentMaterials.Materials;
             float rowH = S(52);
-            int visible = Math.Max(1, (int)((bottom - y) / rowH));
             if (rows.Count == 0)
             {
                 _ui.TextWrapped(f.Body, x, y + S(8), w, _textureFilter == 0
@@ -315,20 +321,21 @@ namespace BimGo.Game
                 return;
             }
 
-            int maxScroll = Math.Max(0, rows.Count - visible);
-            if (input.Wheel != 0) { _textureScroll -= input.Wheel * 2; }
-            _textureScroll = Math.Clamp(_textureScroll, 0, maxScroll);
+            float top = BeginScroll(_textureScroll, input, x, y, w, bottom - y, out float cw);
+            VisibleRows(_textureScroll, rowH, rows.Count, out int first, out int last);
+            float listX = x;
+            x += S(8);
+            w = cw - S(16);
 
             int pick = -1, proxy = -1, plain = -1, undo = -1;
             float wide = S(84), gap = S(6);
             float buttonsW = wide * 4 + gap * 3;
-            int last = Math.Min(rows.Count, _textureScroll + visible);
-            for (int r = _textureScroll; r < last; r++)
+            for (int r = first; r < last; r++)
             {
                 int index = rows[r];
                 SceneMaterial m = table[index];
-                float ry = y + (r - _textureScroll) * rowH;
-                if (((r - _textureScroll) & 1) == 0) { _ui.Rect(x - S(8), ry - S(4), w + S(16), rowH - S(4), Rgba.Hex(0xFFFFFF, 0.03f)); }
+                float ry = top + r * rowH + S(4);
+                if ((r & 1) == 0) { _ui.Rect(listX, ry - S(4), cw, rowH - S(4), UiTheme.ROW_STRIPE); }
 
                 // Swatch in the colour drawn under (or instead of) the image
                 float sw = S(36);
@@ -350,11 +357,7 @@ namespace BimGo.Game
                 if (_changedMaterials.Contains(index) && SmallButton(f, input, bx, by, wide, bh, "UNDO")) { undo = index; }
             }
 
-            if (maxScroll > 0)
-            {
-                Text.Clear().Append(_textureScroll + 1).Append('–').Append(last).Append(" of ").Append(rows.Count).Append(" · wheel to scroll");
-                _ui.TextRight(f.Small, x + w, bottom + S(2), Text.Span, UiTheme.TEXT_FAINT);
-            }
+            EndScroll(_textureScroll, input, top + rows.Count * rowH);
 
             // Act after drawing (the rows must not change while they are being walked)
             if (pick >= 0) { PickImage(pick); }
@@ -414,18 +417,21 @@ namespace BimGo.Game
             SceneMaterial m = CurrentMaterials.Materials[_proxyPickerFor];
             _ui.TextWrapped(f.Bold, x, y, w, _proxyPickerTitle, UiTheme.TEXT, maxLines: 1);
 
+            // The keyword grid (a scroll region; ← BACK / Esc cancel)
             int columns = 4;
-            float gap = S(8), bw = (w - gap * (columns - 1)) / columns, bh = S(34);
-            float gy = y + S(34);
+            float gy0 = y + S(34);
+            float gy = BeginScroll(_proxyPickerScroll, input, x, gy0, w, bottom - gy0, out float cw);
+            float gap = S(8), bw = (cw - gap * (columns - 1)) / columns, bh = S(34);
             string chosen = null;
-            for (int i = 0; i < ProxyCatalog.ALL.Count; i++)
+            int count = ProxyCatalog.ALL.Count;
+            for (int i = 0; i < count; i++)
             {
                 ProxyKeyword keyword = ProxyCatalog.ALL[i];
                 float bx = x + (i % columns) * (bw + gap), by = gy + (i / columns) * (bh + gap);
-                if (by + bh > bottom) { break; }
+                if (!InView(_proxyPickerScroll, by, bh)) { continue; }
                 if (SmallButton(f, input, bx, by, bw, bh, _proxyPickerLabels[i])) { chosen = keyword.Keyword; }
             }
-            if (MenuButton(f, x, bottom - S(48), S(160), "CANCEL", false, false)) { _proxyPickerFor = -1; return; }
+            EndScroll(_proxyPickerScroll, input, gy + ((count + columns - 1) / columns) * (bh + gap));
             if (chosen != null)
             {
                 int index = _proxyPickerFor;
@@ -445,6 +451,7 @@ namespace BimGo.Game
             _proxyPickerLabels = ProxyCatalog.ALL.Select(k =>
                 ((k.Keyword == suggested ? "» " : string.Empty) + k.Label + (ProxyPack.Shared.Has(k.Keyword) ? string.Empty : " (no image)")).ToUpperInvariant()).ToArray();
             _proxyPickerFor = index;
+            _proxyPickerScroll.Reset();
         }
 
         #endregion
@@ -695,7 +702,7 @@ namespace BimGo.Game
                 }
             }).ToList();
             _scanRemaining = results.Where(r => r.Stage == TextureMatchStage.None).Select(r => r.Raw).ToList();
-            _scanScroll = 0;
+            _scanScroll.Reset();
         }
 
         private void BuildScanRows(FontAtlas f, InputState input, float x, float y, float w, float bottom)
@@ -712,24 +719,22 @@ namespace BimGo.Game
             _ui.TextWrapped(f.Body, x, y + S(44), w, _scanStage == TextureMatchStage.Loose
                 ? "Loose matches are proposals: tick the right ones. Bump, cutout and reflection maps are never offered."
                 : "Exact matches are ticked. Where several files share a name, click the file to cycle through them, then tick it.", UiTheme.TEXT_SOFT, maxLines: 1);
-            y += S(76);
+            _scanRemember = Checkbox(f, input, x, y + S(72), w, "Remember this folder for all models", _scanRemember);
+            y += S(104);
 
             float rowH = S(30);
-            int visible = Math.Max(1, (int)((bottom - y) / rowH));
             if (_scanRows.Count == 0)
             {
                 _ui.TextWrapped(f.Body, x, y, w, "Nothing found at this stage.", UiTheme.TEXT_MUTED, maxLines: 1);
                 return;
             }
-            int maxScroll = Math.Max(0, _scanRows.Count - visible);
-            if (input.Wheel != 0) { _scanScroll -= input.Wheel * 2; }
-            _scanScroll = Math.Clamp(_scanScroll, 0, maxScroll);
-
-            int last = Math.Min(_scanRows.Count, _scanScroll + visible);
-            for (int i = _scanScroll; i < last; i++)
+            float top = BeginScroll(_scanScroll, input, x, y, w, bottom - y, out float cw);
+            VisibleRows(_scanScroll, rowH, _scanRows.Count, out int first, out int last);
+            w = cw;
+            for (int i = first; i < last; i++)
             {
                 ScanRow row = _scanRows[i];
-                float ry = y + (i - _scanScroll) * rowH;
+                float ry = top + i * rowH;
                 float nameW = w * 0.28f, stageW = S(110), countW = S(90);
                 row.Accepted = Checkbox(f, input, x, ry + S(4), nameW, row.Name, row.Accepted);
                 _ui.Text(f.Small, x + nameW + S(8), ry + S(6), row.Stage, row.Result.Stage == TextureMatchStage.Loose ? UiTheme.MEASURE_TEXT : UiTheme.GOOD, S(0.6f));
@@ -747,31 +752,7 @@ namespace BimGo.Game
                 Text.Clear().Append(row.Materials).Append(row.Materials == 1 ? " material" : " materials");
                 _ui.TextRight(f.Small, x + w, ry + S(6), Text.Span, UiTheme.TEXT_FAINT);
             }
-            if (maxScroll > 0)
-            {
-                Text.Clear().Append(_scanScroll + 1).Append('–').Append(last).Append(" of ").Append(_scanRows.Count).Append(" · wheel to scroll");
-                _ui.TextRight(f.Small, x + w, bottom + S(2), Text.Span, UiTheme.TEXT_FAINT);
-            }
-        }
-
-        private void BuildScanButtons(FontAtlas f, InputState input, float x, float y, float w)
-        {
-            bool canNext = _scanStage < TextureMatchStage.Loose && _scanRemaining.Count > 0;
-            if (MenuButton(f, x, y, S(280), "ACCEPT TICKED, NEXT STAGE", primary: canNext, danger: false, enabled: canNext))
-            {
-                AcceptScan();
-                _scanStage++;
-                RunScanStage();
-                return;
-            }
-            if (MenuButton(f, x + S(296), y, S(240), "ACCEPT TICKED, DONE", primary: !canNext, danger: false))
-            {
-                AcceptScan();
-                EndScan(_scanRemember);
-                return;
-            }
-            if (MenuButton(f, x + S(552), y, S(130), "STOP", false, false)) { EndScan(remember: false); return; }
-            _scanRemember = Checkbox(f, input, x + S(700), y + S(16), w - S(700), "Remember this folder for all models", _scanRemember);
+            EndScroll(_scanScroll, input, top + _scanRows.Count * rowH);
         }
 
         /// <summary>

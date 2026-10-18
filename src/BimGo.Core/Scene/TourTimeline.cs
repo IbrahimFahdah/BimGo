@@ -75,6 +75,17 @@ namespace BimGo.Scene
         /// <summary>True once the tour has played to its end.</summary>
         public bool Finished;
 
+        /// <summary>
+        /// Polish round P-C: the state (sun) blends from stop <see cref="BlendFrom"/> to <see cref="BlendTo"/> by
+        /// <see cref="BlendT"/> (0–1, eased). Glide: the stop flown from → the one flown to, over the glide. Fades: half
+        /// over the fade-out (→ 0.5 at black) and half over the next fade-in, so the cut at black is seamless. Holding
+        /// a stop: from = to = <see cref="Stop"/>, 1.
+        /// </summary>
+        public int BlendFrom, BlendTo;
+
+        /// <summary>See <see cref="BlendFrom"/>.</summary>
+        public float BlendT;
+
         /// <summary>The eye position.</summary>
         public readonly Vector3 Eye => Feet + new Vector3(0f, 0f, EyeHeight);
     }
@@ -91,7 +102,7 @@ namespace BimGo.Scene
     /// over the hold.</item>
     /// </list>
     /// </summary>
-    public sealed class TourTimeline
+    public sealed class TourTimeline : ITourTimeline
     {
         /// <summary>Fastest glide between stops (m/s): far-apart stops glide for longer than the set time.</summary>
         public const float GLIDE_SPEED = 4f;
@@ -188,7 +199,7 @@ namespace BimGo.Scene
         /// finished and the frame is black when there are fades).</param>
         public TourPose Evaluate(float time)
         {
-            var pose = new TourPose { Stop = -1, Finished = true };
+            var pose = new TourPose { Stop = -1, Finished = true, BlendFrom = -1, BlendTo = -1, BlendT = 1f };
             int n = _stops.Length;
             if (n == 0) { return pose; }
 
@@ -198,6 +209,7 @@ namespace BimGo.Scene
                 // The last stop's final view
                 TourStop last = _stops[n - 1];
                 pose.Stop = n - 1;
+                pose.BlendFrom = pose.BlendTo = n - 1;
                 pose.Feet = last.Feet;
                 pose.EyeHeight = last.EyeHeight;
                 pose.Yaw = last.Yaw + last.Swivel;
@@ -210,6 +222,7 @@ namespace BimGo.Scene
             int i = StopAt(time);
             TourStop stop = _stops[i];
             pose.Stop = i;
+            pose.BlendFrom = pose.BlendTo = i;
             pose.Pitch = stop.Pitch;
 
             if (!_glideMode)
@@ -222,8 +235,16 @@ namespace BimGo.Scene
                 pose.Yaw = stop.Yaw + stop.Swivel * Smooth(window > 0f ? local / window : 1f);
                 if (_fade > 0f)
                 {
-                    if (local < _fade) { pose.Black = 1f - local / _fade; }
-                    else if (local > _fade + stop.HoldSeconds) { pose.Black = Math.Clamp((local - _fade - stop.HoldSeconds) / _fade, 0f, 1f); }
+                    if (local < _fade)
+                    {
+                        pose.Black = 1f - local / _fade;
+                        if (i > 0) { SetBlend(ref pose, i - 1, i, 0.5f + 0.5f * Smooth(local / _fade)); } // P-C
+                    }
+                    else if (local > _fade + stop.HoldSeconds)
+                    {
+                        pose.Black = Math.Clamp((local - _fade - stop.HoldSeconds) / _fade, 0f, 1f);
+                        if (i + 1 < n) { SetBlend(ref pose, i, i + 1, 0.5f * Smooth(pose.Black)); }
+                    }
                 }
                 return pose;
             }
@@ -238,6 +259,7 @@ namespace BimGo.Scene
                 pose.Yaw = LerpAngle(from.Yaw + from.Swivel, stop.Yaw, s);
                 pose.Pitch = from.Pitch + (stop.Pitch - from.Pitch) * s;
                 pose.Moving = true;
+                SetBlend(ref pose, i - 1, i, s); // P-C: the sun blends over the glide
                 return pose;
             }
 
@@ -260,6 +282,16 @@ namespace BimGo.Scene
                 pose.Black = _fade > 0f ? Math.Clamp((hold - stop.HoldSeconds) / _fade, 0f, 1f) : 0f;
             }
             return pose;
+        }
+
+        /// <summary>Round K: the tour player's pose (the same as <see cref="Evaluate"/>).</summary>
+        public TourPose Pose(float time) => Evaluate(time);
+
+        private static void SetBlend(ref TourPose pose, int from, int to, float t)
+        {
+            pose.BlendFrom = from;
+            pose.BlendTo = to;
+            pose.BlendT = Math.Clamp(t, 0f, 1f);
         }
 
         /// <summary>

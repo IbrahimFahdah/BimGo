@@ -155,6 +155,8 @@ namespace BimGo.Clashes
                 }
             }
 
+            ClashGroups.FollowRun(document, test.Id); // C-C1: all members resolved → the group too; one back → active
+
             test.LastRunUtc = utc;
             test.LastRunModel = modelState;
             test.LastRunTruncated = !complete;
@@ -217,7 +219,7 @@ namespace BimGo.Clashes
 
         /// <summary>
         /// RESET RESULTS (C-B1 fixes): keeps the test but drops its clashes (statuses, assignees, notes and comment
-        /// links with them) and its run history, and forgets its last run, so the next RUN starts fresh (all new).
+        /// links with them), its groups (C-C1) and its run history, and forgets its last run, so the next RUN starts fresh (all new).
         /// </summary>
         /// <returns>How many clashes were dropped.</returns>
         public static int ResetTest(ClashDocument document, ClashTest test)
@@ -225,6 +227,7 @@ namespace BimGo.Clashes
             if (document == null || test == null) { return 0; }
             int removed = document.Clashes.RemoveAll(c => c.TestId == test.Id);
             document.Runs.RemoveAll(r => r.TestId == test.Id);
+            ClashGroups.RemoveTest(document, test.Id); // C-C1: its groups go with its clashes
             test.LastRunUtc = null;
             test.LastRunModel = null;
             test.LastRunTruncated = false;
@@ -251,6 +254,7 @@ namespace BimGo.Clashes
             document.Tests.RemoveAll(t => t.Id == testId);
             document.Clashes.RemoveAll(c => c.TestId == testId);
             document.Runs.RemoveAll(r => r.TestId == testId);
+            ClashGroups.RemoveTest(document, testId); // C-C1
         }
     }
 }

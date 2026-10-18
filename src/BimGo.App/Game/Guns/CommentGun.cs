@@ -20,7 +20,6 @@ namespace BimGo.Game.Guns
         private const float MAX_HOVER_DISTANCE = 60f;
 
         private CommentRecord _hovered;
-        private float _clearConfirmUntil;
         private float _clock;
 
         public CommentGun(GameSession session) : base(session) { }
@@ -73,24 +72,14 @@ namespace BimGo.Game.Guns
             ReportSaveError();
         }
 
+        /// <summary>
+        /// Round W-A: comments are issues (status, replies, BCF), so the clear key no longer deletes them all: it says
+        /// where to manage them.
+        /// </summary>
         public override void ClearMarkers()
         {
             if (Session.Comments.Comments.Count == 0) { return; }
-
-            if (_clock < _clearConfirmUntil)
-            {
-                int count = Session.Comments.Comments.Count;
-                Session.Comments.Clear();
-                Session.Toast($"Deleted {count} comment{(count == 1 ? string.Empty : "s")}");
-                Session.Sound.Play(SoundId.Remove);
-                _clearConfirmUntil = 0f;
-                ReportSaveError();
-            }
-            else
-            {
-                _clearConfirmUntil = _clock + 2.5f;
-                Session.Toast($"Press {Hotkeys.Label(InputAction.ClearMarkers)} again to delete all {Session.Comments.Comments.Count} comments");
-            }
+            Session.Toast("Comments are kept: delete or close them one at a time in Esc → COMMENTS");
         }
 
         private void ReportSaveError()

@@ -73,6 +73,8 @@ namespace BimGo.Game
                 saved = VisibilityFiles.Read(_visibilitySidecarPath, out string error);
                 if (error != null) { Utilities.Log_Utils.Write(error); }
             }
+            RestoreGrids(saved?.Grids); // grids round A (before the early return: grids alone make a saved state)
+            RestoreAppearance(saved?.Appearance); // colour round A (likewise)
             if (saved == null || saved.IsEmpty) { return; }
 
             // The ground plane as it was left (relative to the default, so it survives a re-extraction)
@@ -161,6 +163,7 @@ namespace BimGo.Game
             VisibilitySettings settings = ToVisibilitySettings();
             settings.GroundOffset = null;
             settings.Section = null;
+            settings.Appearance = null; // colour round A: profiles belong to the model, not to a bookmark
             return settings;
         }
 
@@ -187,7 +190,9 @@ namespace BimGo.Game
             var settings = new VisibilitySettings
             {
                 GroundOffset = MathF.Abs(groundOffset) > 0.001f ? MathF.Round(groundOffset * 1000f) / 1000f : null,
-                Section = _section.IsActive ? _section.Clone() : null
+                Section = _section.IsActive ? _section.Clone() : null,
+                Grids = GridsForSave(), // grids round A
+                Appearance = AppearanceForSave() // colour round A
             };
             foreach (CategoryDef def in CategoryCatalog.All)
             {
@@ -257,9 +262,9 @@ namespace BimGo.Game
             _userHidden[element] = hidden;
             _userHiddenCount += hidden ? 1 : -1;
             _sceneRevision++;
-            _renderer.SetElementHidden(element, hidden || _hidden[element]);
+            _renderer.SetElementHidden(element, hidden || _hidden[element] || ProfileHides(element));
 
-            bool visible = !hidden && !_hidden[element] && _groupVisible[Rendering.SceneBatches.GroupOf(Scene.Elements[element])];
+            bool visible = !hidden && !_hidden[element] && !ProfileHides(element) && _groupVisible[Rendering.SceneBatches.GroupOf(Scene.Elements[element])];
             _pickMask[element] = visible;
             _collisionMask[element] = visible && Scene.Elements[element].CategoryIndex != _doorCategory;
         }

@@ -19,7 +19,11 @@ namespace BimGo.Game
         #region Fields
 
         private bool _controlsOpen;
-        private int _controlsScroll;
+        private readonly ScrollRegion _controlsScroll = new();
+
+        // The footer's clash count (text rebuilt only when the count changes)
+        private int _controlsClashCount = -1;
+        private string _controlsClashText;
         private string _controlsNotice;
         private bool _controlsNoticeError;
 
@@ -45,6 +49,10 @@ namespace BimGo.Game
 
         // Typing is ignored for a moment after a key capture (the captured key's character can arrive a frame later)
         private int _controlsTypingPause;
+
+        // Polish round P-B: RESET ALL asks first, listing what it will change
+        private bool _resetAllAsk;
+        private string _resetAllText;
 
         // Group headings in capitals (made once)
         private static readonly string[] CONTEXT_HEADINGS = BuildContextHeadings();
@@ -78,7 +86,15 @@ namespace BimGo.Game
             if (!_paused) { SetPaused(true); }
             _controlsOpen = true;
             _controlsNotice = null;
+            _resetAllAsk = false;
             _controlRowsVersion = int.MinValue;
+
+            // Polish round P-B: after an update that changed defaults, say what the tags mean
+            int fresh = Hotkeys.FreshChanges.Count;
+            if (fresh > 0)
+            {
+                SetControlsNotice($"NEW / CHANGED: {fresh} default{(fresh == 1 ? string.Empty : "s")} this version changed (search “new” or “changed”; a red key clashes with one of yours)", error: false);
+            }
         }
 
         /// <summary>
@@ -94,9 +110,10 @@ namespace BimGo.Game
                 EndPadMapping(save: false);
                 return true;
             }
-            if (_pendingAction != InputAction.None)
+            if (_pendingAction != InputAction.None || _resetAllAsk)
             {
                 _pendingAction = InputAction.None;
+                _resetAllAsk = false;
                 SetControlsNotice("Not changed", error: false);
                 return true;
             }
@@ -155,7 +172,7 @@ namespace BimGo.Game
 
             // LMB: on the waiting slot it is the binding; anywhere else it cancels (so a stray click doesn't bind it)
             if (input.IsPressed(KeyCodes.LEFT_MOUSE)
-                && !Hover(input, _captureRect.X, _captureRect.Y, _captureRect.Z, _captureRect.W))
+                && !Hover(input, _captureRect.X, _captureRect.Y, _captureRect.Z, _captureRect.W, focus: false))
             {
                 EndKeyCapture();
                 SetControlsNotice("Not changed", error: false);
@@ -316,30 +333,30 @@ namespace BimGo.Game
         #region Panel
 
         /// <summary>
-        /// Draws CONTROLS full screen: search and file buttons, the clash question or the last notice, the grouped list
-        /// (wheel scrolls), CLOSE.
+        /// Draws CONTROLS in the panel shell (polish round P-A1): IMPORT / EXPORT / RESET ALL in the header, the search,
+        /// the gamepad tuning, the clash question or the last notice, the grouped list (a scroll region).
         /// </summary>
         private void BuildControlsPanel()
         {
             FontAtlas f = _ui.Atlas;
             InputState input = _window.Input;
-            int width = _window.Width, height = _window.Height;
-            _ui.Rect(0, 0, width, height, UiTheme.MENU_BACKGROUND);
             if (!input.LeftDown) { _activeSlider = -1; }
             bool capturing = IsCapturingKey;
-            bool asking = _pendingAction != InputAction.None;
+            bool asking = _pendingAction != InputAction.None || _resetAllAsk;
             bool mapping = IsMappingPad;
             bool interactive = !capturing && !asking && !mapping;
 
-            float x = S(56), w = width - S(112);
-            float y = S(48);
-            _ui.Text(f.Small, x, y, "BIMGO", UiTheme.TEXT_MUTED, S(2.6f));
-            y += S(20);
-            _ui.Text(f.Title, x, y, "CONTROLS", UiTheme.TEXT, S(2.4f));
-            _ui.TextRight(f.Small, x + w, y + S(16), "Click a key to change it · right-click clears it · saved at once · Esc back", UiTheme.TEXT_MUTED, S(0.6f));
-            y += S(60);
+            // Header: IMPORT… · EXPORT… · RESET ALL on the right
+            bool allDefault = Hotkeys.Map.AllDefault();
+            float controlsW = S(130) * 2f + S(UiTheme.GAP_SMALL) * 2f + (allDefault ? 0f : S(140));
+            PanelFrame frame = BeginPanel(PanelSize.Wide, "CONTROLS", UiTheme.ACCENT, "Click a key to change it · right-click clears it · saved at once", headerControls: controlsW);
+            if (HeaderButton(ref frame, "IMPORT…", enabled: interactive, width: S(130))) { ImportKeymap(); }
+            if (HeaderButton(ref frame, "EXPORT…", enabled: interactive, width: S(130))) { ExportKeymap(); }
+            if (!allDefault && HeaderButton(ref frame, "RESET ALL", ShellStyle.Danger, interactive, S(140))) { AskResetAll(); } // P-B: asks first
+            float x = frame.Ix, w = frame.Iw;
+            float y = frame.BodyTop;
 
-            // Search box and the file buttons
+            // Search box
             if (_controlsTypingPause > 0) { _controlsTypingPause--; }
             else if (interactive) { TypeIntoControlsSearch(input); }
             float boxW = MathF.Min(S(340), w * 0.4f), boxH = S(34);
@@ -351,30 +368,37 @@ namespace BimGo.Game
                 float used = _ui.Text(f.Body, x + S(10), textY, _controlsSearch.AsSpan(0, _controlsSearchLength), UiTheme.TEXT);
                 if (((int)(_clock * 2f) & 1) == 0) { _ui.Rect(x + S(11) + used, y + S(8), S(2), boxH - S(16), UiTheme.TEXT_SOFT); }
             }
-            float bx = x + w;
-            bx -= S(150);
-            if (SmallButton(f, input, bx, y + S(2), S(150), S(30), "IMPORT…") && interactive) { ImportKeymap(); }
-            bx -= S(160);
-            if (SmallButton(f, input, bx, y + S(2), S(150), S(30), "EXPORT…") && interactive) { ExportKeymap(); }
-            bx -= S(190);
-            bool allDefault = Hotkeys.Map.AllDefault();
-            if (!allDefault && SmallButton(f, input, bx, y + S(2), S(180), S(30), "RESET ALL", danger: true) && interactive)
-            {
-                Hotkeys.Map.ResetAll();
-                Hotkeys.Save();
-                Sound.Play(SoundId.UiClick);
-                SetControlsNotice("Every key is back to its default.", error: false);
-            }
             y += boxH + S(12);
 
             // Gamepad tuning (build B): look speed, invert Y, dead zone, trigger threshold, swap sticks
             y += BuildPadTuning(f, input, x, y, w, interactive);
 
             // The clash question, or the notice
-            float noticeH = S(34);
+            float noticeH = _resetAllAsk ? S(54) : S(34);
             if (mapping)
             {
                 BuildPadMappingStrip(f, input, x, y, w, noticeH);
+            }
+            else if (_resetAllAsk)
+            {
+                // P-B: RESET ALL lists what it changes; CONFIRM resets, CANCEL (or Esc) keeps everything
+                _ui.Panel(x, y, w, noticeH, UiTheme.PANEL_STRONG, UiTheme.DANGER);
+                float buttonsW = S(240);
+                _ui.TextWrapped(f.Body, x + S(12), y + S(6), w - buttonsW - S(36), _resetAllText, UiTheme.TEXT, maxLines: 2);
+                float by = y + noticeH * 0.5f - S(14);
+                if (SmallButton(f, input, x + w - buttonsW - S(6), by, S(120), S(28), "CONFIRM"))
+                {
+                    _resetAllAsk = false;
+                    Hotkeys.Map.ResetAll();
+                    Hotkeys.Save();
+                    Sound.Play(SoundId.UiClick);
+                    SetControlsNotice("Every key is back to its default.", error: false);
+                }
+                else if (SmallButton(f, input, x + w - S(116), by, S(110), S(28), "CANCEL"))
+                {
+                    _resetAllAsk = false;
+                    SetControlsNotice("Not changed", error: false);
+                }
             }
             else if (asking)
             {
@@ -414,17 +438,16 @@ namespace BimGo.Game
             }
             y += noticeH + S(10);
 
-            // The list
-            float bottom = height - S(48) - S(44) - S(16);
-            BuildControlRows(f, input, x, y, w, bottom, interactive);
+            // The list (a scroll region; the wheel is left alone while a key is being captured)
+            BuildControlRows(f, input, x, y, w, frame.BodyBottom, interactive);
 
-            if (MenuButton(f, x, height - S(48) - S(44), S(160), "CLOSE", false, false, height: S(44))) { CloseControls(); }
             int clashes = CountSlotClashes();
-            if (clashes > 0)
+            if (clashes != _controlsClashCount)
             {
-                Text.Clear().Append(clashes).Append(clashes == 1 ? " key clashes" : " keys clash").Append(" (red): change one of each pair");
-                _ui.Text(f.Body, x + S(180), height - S(48) - S(30), Text.Span, UiTheme.DANGER);
+                _controlsClashCount = clashes;
+                _controlsClashText = clashes == 0 ? null : $"{clashes} {(clashes == 1 ? "key clashes" : "keys clash")} (red): change one of each pair";
             }
+            EndPanel(frame, _controlsClashText, "Esc goes back · F1 shows the keys for what you are doing");
         }
 
         /// <summary>
@@ -436,6 +459,8 @@ namespace BimGo.Game
             KeyMap map = Hotkeys.Map;
 
             float rowH = S(30);
+            float regionW = w;
+            w -= S(UiTheme.SCROLL_GUTTER); // the columns stop short of the scroll bar
             float labelW = w * 0.38f;
             float slotW = MathF.Floor((w - labelW - S(110)) / KeyMap.ALL_SLOTS);
             float resetX = x + labelW + slotW * KeyMap.ALL_SLOTS + S(10);
@@ -456,16 +481,12 @@ namespace BimGo.Game
                 return;
             }
 
-            int visible = Math.Max(1, (int)((bottom - y) / rowH));
-            int maxScroll = Math.Max(0, _controlRows.Count - visible);
-            if (interactive && input.Wheel != 0) { _controlsScroll -= input.Wheel * 3; }
-            _controlsScroll = Math.Clamp(_controlsScroll, 0, maxScroll);
-            int last = Math.Min(_controlRows.Count, _controlsScroll + visible);
-
-            for (int i = _controlsScroll; i < last; i++)
+            float top = BeginScroll(_controlsScroll, input, x, y, regionW, bottom - y, out _, wheel: interactive);
+            VisibleRows(_controlsScroll, rowH, _controlRows.Count, out int first, out int last);
+            for (int i = first; i < last; i++)
             {
                 (InputContext context, InputAction action) = _controlRows[i];
-                float ry = y + (i - _controlsScroll) * rowH;
+                float ry = top + i * rowH;
 
                 if (action == InputAction.None)
                 {
@@ -479,7 +500,22 @@ namespace BimGo.Game
                 ActionDef def = InputCatalog.Get(action);
                 bool rowHover = Hover(input, x, ry, w, rowH - S(2));
                 _ui.Rect(x, ry, w, rowH - S(2), rowHover ? Rgba.Hex(0xFFFFFF, 0.05f) : ((i & 1) == 0 ? Rgba.Hex(0xFFFFFF, 0.025f) : 0u));
-                _ui.TextWrapped(f.Body, x + S(10), ry + S(6), labelW - S(16), def.Label, def.IsFixed ? UiTheme.TEXT_MUTED : UiTheme.TEXT, maxLines: 1);
+
+                // P-B: NEW / CHANGED (a default this version changed) at the label's right
+                string tag = Hotkeys.FreshTag(action);
+                float tagW = 0f;
+                if (tag != null)
+                {
+                    bool tagClash = false; // red: a new default meets one of the user's own keys
+                    for (int k = 0; k < KeyMap.ALL_SLOTS && !tagClash; k++) { tagClash = SlotClashes(action, k); }
+                    uint tagColour = tagClash ? UiTheme.DANGER : UiTheme.ACCENT;
+                    tagW = UiBatch.Measure(f.Small, tag, S(1f)) + S(12);
+                    float tx = x + labelW - tagW - S(8);
+                    _ui.Rect(tx, ry + S(6), tagW, rowH - S(14), Rgba.WithAlpha(tagColour, 0.22f));
+                    _ui.Text(f.Small, tx + S(6), ry + S(9), tag, tagColour, S(1f));
+                    tagW += S(8);
+                }
+                _ui.TextWrapped(f.Body, x + S(10), ry + S(6), labelW - S(16) - tagW, def.Label, def.IsFixed ? UiTheme.TEXT_MUTED : UiTheme.TEXT, maxLines: 1);
 
                 for (int s = 0; s < KeyMap.ALL_SLOTS; s++)
                 {
@@ -535,11 +571,7 @@ namespace BimGo.Game
                 }
             }
 
-            if (maxScroll > 0)
-            {
-                Text.Clear().Append(_controlsScroll + 1).Append('–').Append(last).Append(" of ").Append(_controlRows.Count).Append(" rows · wheel to scroll");
-                _ui.TextRight(f.Small, x + w, bottom + S(2), Text.Span, UiTheme.TEXT_FAINT);
-            }
+            EndScroll(_controlsScroll, input, top + _controlRows.Count * rowH);
         }
 
         /// <summary>
@@ -550,7 +582,7 @@ namespace BimGo.Game
         {
             string search = new string(_controlsSearch, 0, _controlsSearchLength).Trim();
             if (_controlRowsVersion == Hotkeys.Version && _controlRowsSearch == search) { return; }
-            if (_controlRowsSearch != search) { _controlsScroll = 0; }
+            if (_controlRowsSearch != search) { _controlsScroll.Reset(); }
             _controlRowsSearch = search;
             _controlRowsVersion = Hotkeys.Version;
             _controlRows.Clear();
@@ -564,7 +596,7 @@ namespace BimGo.Game
                 foreach (ActionDef def in InputCatalog.All)
                 {
                     if (def.Context != context) { continue; }
-                    string keys = map.AllLabels(def.Action) + " " + map.PadLabel(def.Action);
+                    string keys = map.AllLabels(def.Action) + " " + map.PadLabel(def.Action) + " " + Hotkeys.FreshTag(def.Action); // P-B: "new", "changed"
                     bool match = true;
                     foreach (string word in words)
                     {
@@ -628,6 +660,38 @@ namespace BimGo.Game
                 }
             }
         }
+
+        #endregion
+
+        #region Reset all (polish round P-B)
+
+        /// <summary>
+        /// RESET ALL: lists the actions it would put back (current → default, keys and gamepad) and waits for CONFIRM.
+        /// </summary>
+        private void AskResetAll()
+        {
+            KeyMap map = Hotkeys.Map;
+            var defaults = new KeyMap { KeyName = map.KeyName };
+            var parts = new List<string>();
+            int count = 0;
+            foreach (ActionDef def in InputCatalog.All)
+            {
+                if (def.IsFixed || map.IsDefault(def.Action)) { continue; }
+                count++;
+                if (parts.Count >= 6) { continue; }
+                string now = map.IsKeyDefault(def.Action) ? null : $"{map.AllLabels(def.Action)} → {defaults.AllLabels(def.Action)}";
+                string pad = map.PadChord(def.Action) == def.PadDefault ? null
+                    : $"gamepad {Blank(map.PadLabel(def.Action))} → {Blank(defaults.PadLabel(def.Action))}";
+                parts.Add($"{def.Label}: {string.Join(", ", new[] { now, pad }.Where(p => p != null))}");
+            }
+            if (count == 0) { return; }
+            string more = count > parts.Count ? $" · and {count - parts.Count} more" : string.Empty;
+            _resetAllText = $"RESET ALL puts {count} action{(count == 1 ? string.Empty : "s")} back to the defaults: {string.Join(" · ", parts)}{more}";
+            _resetAllAsk = true;
+            Sound.Play(SoundId.UiClick);
+        }
+
+        private static string Blank(string label) => string.IsNullOrEmpty(label) ? "none" : label;
 
         #endregion
 

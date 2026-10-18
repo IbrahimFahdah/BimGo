@@ -87,6 +87,9 @@ namespace BimGo.Platform
 
         // Cursor driving
         private static bool _clickHeld;
+
+        // Polish round P-B: A went down with a shoulder held (a chord): no click until it is released
+        private static bool _clickChord;
         private static float _cursorCarryX, _cursorCarryY;
         private static float _scrollWait;
 
@@ -401,6 +404,7 @@ namespace BimGo.Platform
         /// </summary>
         public static void DriveCursor(GameWindow window, InputState input)
         {
+            StickMovedCursor = false;
             if (!Connected || window.PadCursor == PadCursorMode.Off || !window.IsActive || window.IsCaptured)
             {
                 ReleaseClick(input);
@@ -419,6 +423,7 @@ namespace BimGo.Platform
                 _cursorCarryY -= dy;
                 if ((dx != 0 || dy != 0) && Win32.GetCursorPos(out Win32.POINT point))
                 {
+                    StickMovedCursor = true;
                     var client = new Win32.POINT { X = point.X + dx, Y = point.Y + dy };
                     Win32.ScreenToClient(window.Handle, ref client);
                     client.X = Math.Clamp(client.X, 0, Math.Max(window.Width - 1, 0));
@@ -429,14 +434,23 @@ namespace BimGo.Platform
                 }
             }
 
-            // A clicks (held: drags), B goes back
+            // A clicks (held: drags), B goes back. Polish round P-B: A pressed with LB / RB held is a chord (clash mode's
+            // RB+A group, LB+A next status), not a click: it waits for A to come up
             bool click = Hotkeys.Map.Down(InputAction.PadClick, input);
-            if (click && !_clickHeld)
+            if (click && !_clickHeld && !_clickChord)
             {
-                _clickHeld = true;
-                input.InjectLeft(true);
+                if (input.PadDown(KeyCodes.PAD_LB) || input.PadDown(KeyCodes.PAD_RB)) { _clickChord = true; }
+                else
+                {
+                    _clickHeld = true;
+                    input.InjectLeft(true);
+                }
             }
-            else if (!click) { ReleaseClick(input); }
+            else if (!click)
+            {
+                _clickChord = false;
+                ReleaseClick(input);
+            }
             if (Hotkeys.Map.Pressed(InputAction.PadMenuBack, input)) { input.InjectEscape(); }
 
             // Menus: the move stick scrolls (a notch at a rate that grows with the tilt)
@@ -451,6 +465,30 @@ namespace BimGo.Platform
                 }
             }
             else { _scrollWait = 0f; }
+        }
+
+        /// <summary>
+        /// Polish round P-A2: the look stick moved the cursor this frame (the D-pad's focus ring hides then, and the
+        /// cursor is the stick's again).
+        /// </summary>
+        public static bool StickMovedCursor { get; private set; }
+
+        /// <summary>
+        /// Polish round P-A2: puts the cursor on a point of the client area (the D-pad's focus moved there), so A's
+        /// click lands on the focused control.
+        /// </summary>
+        public static void WarpCursor(GameWindow window, InputState input, float x, float y)
+        {
+            var client = new Win32.POINT
+            {
+                X = Math.Clamp((int)MathF.Round(x), 0, Math.Max(window.Width - 1, 0)),
+                Y = Math.Clamp((int)MathF.Round(y), 0, Math.Max(window.Height - 1, 0))
+            };
+            input.OnMouseMove(client.X, client.Y);
+            _cursorCarryX = _cursorCarryY = 0f;
+            if (!window.IsActive || window.IsCaptured) { return; }
+            Win32.ClientToScreen(window.Handle, ref client);
+            Win32.SetCursorPos(client.X, client.Y);
         }
 
         private static void ReleaseClick(InputState input)

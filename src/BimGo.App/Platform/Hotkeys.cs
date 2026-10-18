@@ -35,7 +35,85 @@ namespace BimGo.Platform
             foreach (string problem in problems) { Utilities.Log_Utils.Write($"Key bindings: skipped {problem}."); }
             int clashes = Map.AllClashes().Count;
             if (clashes > 0) { Utilities.Log_Utils.Write($"Key bindings: {clashes} clash{(clashes == 1 ? string.Empty : "es")} (shown in red in CONTROLS)."); }
+
+            // Polish round P-B: which controls defaults the user has seen (the machine's settings.json, not a copy)
+            _seenVersion = Math.Max(0, LaunchSettings.LoadOrDefault().ControlsDefaultsVersion);
+            if (_tagsSince == int.MaxValue) { _tagsSince = _seenVersion; } // the tags last for this run of BimGo
+            RefreshFresh();
         }
+
+        #region Changed defaults (polish round P-B)
+
+        // The version settings.json holds (-1: not read yet, leave the file's value alone) and the one the tags compare
+        private static int _seenVersion = -1;
+        private static int _tagsSince = int.MaxValue;
+
+        // Per action: changed in a version newer than the one seen when this run started (NEW / CHANGED tags)
+        private static readonly bool[] FRESH = new bool[InputCatalog.ActionCount];
+        private static readonly bool[] FRESH_ADDED = new bool[InputCatalog.ActionCount];
+
+        /// <summary>The defaults this run's tags mark (changed after the version seen when BimGo started).</summary>
+        public static List<DefaultsChange> FreshChanges { get; private set; } = new();
+
+        private static void RefreshFresh()
+        {
+            Array.Clear(FRESH);
+            Array.Clear(FRESH_ADDED);
+            FreshChanges = InputCatalog.ChangesSince(_tagsSince);
+            foreach (DefaultsChange change in FreshChanges)
+            {
+                FRESH[(int)change.Action] = true;
+                FRESH_ADDED[(int)change.Action] |= change.Added;
+            }
+        }
+
+        /// <summary>The tag for a row in CONTROLS: "NEW", "CHANGED" or null.</summary>
+        public static string FreshTag(InputAction action)
+        {
+            int index = (int)action;
+            if (index <= 0 || index >= FRESH.Length || !FRESH[index]) { return null; }
+            return FRESH_ADDED[index] ? "NEW" : "CHANGED";
+        }
+
+        /// <summary>
+        /// The one-time notice after an update that changed defaults ("Controls: N defaults changed · …"), or null when
+        /// the user has seen the current defaults. Clashes between a new default and a rebind of theirs are counted.
+        /// </summary>
+        public static string PendingDefaultsNotice()
+        {
+            if (_seenVersion < 0 || _seenVersion >= InputCatalog.DEFAULTS_VERSION) { return null; }
+            List<DefaultsChange> changes = InputCatalog.ChangesSince(_seenVersion);
+            if (changes.Count == 0) { return null; }
+            int clashes = NewDefaultClashes(changes).Count;
+            string clash = clashes == 0 ? string.Empty : $" · {clashes} clash{(clashes == 1 ? string.Empty : "es")} with your own keys (red)";
+            return $"Controls: {changes.Count} default{(changes.Count == 1 ? string.Empty : "s")} changed{clash} · Esc → CONTROLS";
+        }
+
+        /// <summary>
+        /// The clashes left in the map that involve a changed default (a rebind of the user's now meets a new default),
+        /// each once; logged by the caller.
+        /// </summary>
+        public static List<(BindingClash First, BindingClash Second)> NewDefaultClashes(List<DefaultsChange> changes)
+        {
+            var found = new List<(BindingClash, BindingClash)>();
+            var changed = new HashSet<InputAction>();
+            foreach (DefaultsChange change in changes) { changed.Add(change.Action); }
+            foreach ((BindingClash first, BindingClash second) in Map.AllClashes())
+            {
+                if (changed.Contains(first.Action) || changed.Contains(second.Action)) { found.Add((first, second)); }
+            }
+            return found;
+        }
+
+        /// <summary>The notice was shown: settings.json records the current defaults version (the tags stay for this run).</summary>
+        public static void MarkDefaultsSeen()
+        {
+            if (_seenVersion >= InputCatalog.DEFAULTS_VERSION) { return; }
+            _seenVersion = InputCatalog.DEFAULTS_VERSION;
+            Save();
+        }
+
+        #endregion
 
         /// <summary>Puts the changed bindings into settings (saved by the caller).</summary>
         public static void Write(LaunchSettings settings)
@@ -43,6 +121,7 @@ namespace BimGo.Platform
             if (settings == null) { return; }
             settings.KeyBindings = Map.ToOverrides();
             settings.PadBindings = Map.ToPadOverrides();
+            if (_seenVersion >= 0) { settings.ControlsDefaultsVersion = _seenVersion; } // P-B
             Gamepad.Write(settings);
         }
 

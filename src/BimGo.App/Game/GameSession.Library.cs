@@ -28,7 +28,7 @@ namespace BimGo.Game
 
         private PlaceGun _placeGun;
         private bool _libraryOpen;
-        private int _libraryScroll, _libraryFamilyScroll;
+        private readonly ScrollRegion _libraryScroll = new(), _libraryFamilyScroll = new();
         private readonly char[] _librarySearch = new char[LIBRARY_SEARCH_MAX];
         private int _librarySearchLength;
         private int _libraryCategory = -1;      // catalog index, -1 = all
@@ -167,22 +167,12 @@ namespace BimGo.Game
         {
             FontAtlas f = _ui.Atlas;
             InputState input = _window.Input;
-            int width = _window.Width, height = _window.Height;
             _previewDecodes = 0;
-            _ui.Rect(0, 0, width, height, UiTheme.MENU_BACKGROUND);
-
-            float w = MathF.Min(S(1180), width - S(80));
-            float h = height - S(96);
-            float x = (width - w) * 0.5f, y = S(48);
-            _ui.Panel(x, y, w, h, UiTheme.CARD, UiTheme.CARD_BORDER);
-
             LibraryData library = Scene.Library;
-            float ix = x + S(24), iw = w - S(48);
-            float cy = y + S(20);
-            _ui.Text(f.Small, ix, cy, "FAMILY LIBRARY", UiTheme.PLACE_LABEL, S(2f));
             Text.Clear().AppendGrouped(library.Entries.Length).Append(" types · ").AppendGrouped(library.PlaceableCount).Append(" placeable · from Revit");
-            _ui.TextRight(f.Small, ix + iw, cy, Text.Span, UiTheme.TEXT_MUTED, S(0.6f));
-            cy += S(32);
+            PanelFrame frame = BeginPanel(PanelSize.Wide, "FAMILY LIBRARY", UiTheme.PLACE_LABEL, Text.Span);
+            float ix = frame.Ix, iw = frame.Iw;
+            float cy = frame.BodyTop;
 
             // Search box (typing anywhere in the panel goes here)
             TypeIntoSearch(input);
@@ -199,7 +189,7 @@ namespace BimGo.Game
             }
             float after = ix + searchW + S(16);
             bool placeable = Checkbox(f, input, after, cy + S(9), S(200), "Placeable only", _libraryPlaceableOnly);
-            if (placeable != _libraryPlaceableOnly) { _libraryPlaceableOnly = placeable; _libraryScroll = 0; _libraryRowsDirty = true; }
+            if (placeable != _libraryPlaceableOnly) { _libraryPlaceableOnly = placeable; _libraryScroll.Reset(); _libraryRowsDirty = true; }
             cy += boxH + S(14);
 
             RefreshLibraryRows();
@@ -211,19 +201,15 @@ namespace BimGo.Game
             {
                 cy = CategoryChip(f, input, ref chipX, cy, ix, iw, chipH, _libraryCategories[i], _libraryCategoryLabels[i]);
             }
-            cy += chipH + S(16);
+            cy += chipH + S(UiTheme.GAP);
 
-            // Footer: notice and CLOSE
-            float buttonsY = y + h - S(24) - S(44);
-            if (_libraryNotice != null) { _ui.TextWrapped(f.Body, ix, buttonsY - S(28), iw, _libraryNotice, UiTheme.MEASURE_TEXT, maxLines: 1); }
-            _ui.Text(f.Small, ix + S(176), buttonsY + S(14), HINT_LIBRARY_PICK.Text, UiTheme.TEXT_MUTED);
-            if (MenuButton(f, ix, buttonsY, S(160), "CLOSE", false, false, height: S(44))) { CloseLibrary(); return; }
-
-            // Families on the left, cards on the right
+            // Families on the left, cards on the right (each its own scroll region)
             float listW = MathF.Min(S(240), iw * 0.24f);
-            float bottom = buttonsY - S(40);
+            float bottom = frame.BodyBottom;
             BuildFamilyList(f, input, ix, cy, listW, bottom);
             LibraryEntry picked = BuildLibraryCards(f, input, ix + listW + S(20), cy, iw - listW - S(20), bottom);
+
+            if (EndPanel(frame, _libraryNotice, HINT_LIBRARY_PICK.Text) == FOOTER_LEFT) { return; }
             if (picked != null) { PickFromLibrary(picked); }
         }
 
@@ -250,7 +236,8 @@ namespace BimGo.Game
                 Sound.Play(SoundId.UiClick);
                 _libraryCategory = on && category >= 0 ? -1 : category;
                 _libraryFamily = null;
-                _libraryScroll = _libraryFamilyScroll = 0;
+                _libraryScroll.Reset();
+                _libraryFamilyScroll.Reset();
                 _libraryRowsDirty = true;
             }
             x += w + S(8);
@@ -264,17 +251,14 @@ namespace BimGo.Game
         {
             _ui.Panel(x, y, w, bottom - y, Rgba.Hex(0xFFFFFF, 0.02f), UiTheme.CARD_BORDER);
             float rowH = S(28);
-            int visible = Math.Max(1, (int)((bottom - y - S(8)) / rowH));
             int total = _libraryFamilies.Count + 1;
-            int maxScroll = Math.Max(0, total - visible);
-            if (input.Wheel != 0 && Hover(input, x, y, w, bottom - y)) { _libraryFamilyScroll -= input.Wheel * 3; }
-            _libraryFamilyScroll = Math.Clamp(_libraryFamilyScroll, 0, maxScroll);
-
-            int last = Math.Min(total, _libraryFamilyScroll + visible);
-            for (int i = _libraryFamilyScroll; i < last; i++)
+            float top = BeginScroll(_libraryFamilyScroll, input, x, y + S(4), w, bottom - y - S(8), out float cw);
+            VisibleRows(_libraryFamilyScroll, rowH, total, out int first, out int last);
+            w = cw + S(4);
+            for (int i = first; i < last; i++)
             {
                 string family = i == 0 ? null : _libraryFamilies[i - 1];
-                float ry = y + S(4) + (i - _libraryFamilyScroll) * rowH;
+                float ry = top + i * rowH;
                 bool on = string.Equals(_libraryFamily, family, StringComparison.Ordinal);
                 bool hover = Hover(input, x + S(4), ry, w - S(8), rowH - S(2));
                 if (on || hover) { _ui.Rect(x + S(4), ry, w - S(8), rowH - S(2), on ? Rgba.WithAlpha(UiTheme.PLACE, 0.25f) : Rgba.Hex(0xFFFFFF, 0.06f)); }
@@ -284,10 +268,11 @@ namespace BimGo.Game
                     input.ConsumeClicks();
                     Sound.Play(SoundId.UiClick);
                     _libraryFamily = family;
-                    _libraryScroll = 0;
+                    _libraryScroll.Reset();
                     _libraryRowsDirty = true;
                 }
             }
+            EndScroll(_libraryFamilyScroll, input, top + total * rowH);
         }
 
         /// <summary>
@@ -305,20 +290,17 @@ namespace BimGo.Game
             }
 
             float cardW = S(168), cardH = S(214), gap = S(12);
-            int columns = Math.Max(1, (int)((w + gap) / (cardW + gap)));
-            int rowsVisible = Math.Max(1, (int)((bottom - y + gap) / (cardH + gap)));
+            float top = BeginScroll(_libraryScroll, input, x, y, w, bottom - y, out float cw);
+            int columns = Math.Max(1, (int)((cw + gap) / (cardW + gap)));
             int rowCount = (_libraryRows.Count + columns - 1) / columns;
-            int maxScroll = Math.Max(0, rowCount - rowsVisible);
-            if (input.Wheel != 0 && Hover(input, x, y, w, bottom - y)) { _libraryScroll -= input.Wheel; }
-            _libraryScroll = Math.Clamp(_libraryScroll, 0, maxScroll);
+            VisibleRows(_libraryScroll, cardH + gap, rowCount, out int firstRow, out int lastRow);
 
             LibraryEntry picked = null;
-            int first = _libraryScroll * columns, last = Math.Min(_libraryRows.Count, first + rowsVisible * columns);
+            int first = firstRow * columns, last = Math.Min(_libraryRows.Count, lastRow * columns);
             for (int i = first; i < last; i++)
             {
                 LibraryEntry entry = entries[_libraryRows[i]];
-                int slot = i - first;
-                float cx = x + (slot % columns) * (cardW + gap), cyy = y + (slot / columns) * (cardH + gap);
+                float cx = x + (i % columns) * (cardW + gap), cyy = top + (i / columns) * (cardH + gap);
                 bool usable = entry.Placeable && entry.Element >= 0;
                 bool hover = usable && Hover(input, cx, cyy, cardW, cardH);
                 _ui.Panel(cx, cyy, cardW, cardH, hover ? Rgba.Hex(0xFFFFFF, 0.07f) : UiTheme.CONTROL, hover ? UiTheme.PLACE : UiTheme.CONTROL_BORDER);
@@ -358,11 +340,7 @@ namespace BimGo.Game
                 }
             }
 
-            if (maxScroll > 0)
-            {
-                Text.Clear().Append(first + 1).Append('–').Append(last).Append(" of ").Append(_libraryRows.Count).Append(" · wheel to scroll");
-                _ui.TextRight(f.Small, x + w, bottom + S(6), Text.Span, UiTheme.TEXT_FAINT);
-            }
+            EndScroll(_libraryScroll, input, top + rowCount * (cardH + gap));
             return picked;
         }
 
@@ -377,13 +355,13 @@ namespace BimGo.Game
                 {
                     if (input.IsDown(Win32.VK_CONTROL)) { _librarySearchLength = 0; }
                     else if (_librarySearchLength > 0) { _librarySearchLength--; }
-                    _libraryScroll = 0;
+                    _libraryScroll.Reset();
                     _libraryRowsDirty = true;
                 }
                 else if (c >= ' ' && c != 127 && _librarySearchLength < LIBRARY_SEARCH_MAX)
                 {
                     _librarySearch[_librarySearchLength++] = c;
-                    _libraryScroll = 0;
+                    _libraryScroll.Reset();
                     _libraryRowsDirty = true;
                 }
             }

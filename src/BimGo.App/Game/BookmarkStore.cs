@@ -40,6 +40,15 @@ namespace BimGo.Game
         /// <summary>Where bookmarks are kept (for the HUD).</summary>
         public string FileName => IsEmbedded ? "this file" : Path.GetFileName(_path);
 
+        /// <summary>
+        /// Polish round P-C: fills what the session keeps beyond the store's parameters (crouching, the colour profile)
+        /// into a new or re-pointed bookmark, before it is saved.
+        /// </summary>
+        public Action<BookmarkRecord> Stamp { get; set; }
+
+        /// <summary>P-C: a colour profile's name by id for the list's detail line (null when unknown).</summary>
+        public Func<string, string> ProfileName { get; set; }
+
         /// <summary>Incremented on every change (dirty tracking for embedded bookmarks).</summary>
         public int Revision { get; private set; }
 
@@ -205,6 +214,7 @@ namespace BimGo.Game
                 Visibility = visibility
             };
             SetPosition(record, localFeet);
+            Stamp?.Invoke(record);
             Prepare(record);
             return record;
         }
@@ -251,6 +261,7 @@ namespace BimGo.Game
             record.Pitch = pitch;
             record.Flying = flying;
             record.Level = level ?? string.Empty;
+            Stamp?.Invoke(record);
             Prepare(record);
             Save();
             return true;
@@ -323,7 +334,11 @@ namespace BimGo.Game
             string eye = record.EyeHeight is float e && MathF.Abs(e - Scene.LaunchSettings.DEFAULT_EYE_STANDING) > 0.005f
                 ? $" · EYE {UnitFormat.Length(e, 2)}" : string.Empty;
             string skip = record.TourSkip ? " · NOT IN TOUR" : string.Empty;
-            record.Detail = $"{level} · {record.Author} · {record.Created.ToLocalTime():dd MMM HH:mm}{fly}{sun}{eye}{skip}";
+            string crouch = record.Crouched && !record.Flying ? " · CROUCHED" : string.Empty; // P-C
+            string profile = record.ColourProfile == null ? string.Empty
+                : record.ColourProfile.Length == 0 ? " · PROFILE OFF"
+                : " · PROFILE " + (ProfileName?.Invoke(record.ColourProfile) ?? "(gone)").ToUpperInvariant();
+            record.Detail = $"{level} · {record.Author} · {record.Created.ToLocalTime():dd MMM HH:mm}{fly}{crouch}{sun}{eye}{profile}{skip}";
         }
     }
 }

@@ -1,4 +1,4 @@
-using System.Numerics;
+﻿using System.Numerics;
 using BimGo.Native;
 using BimGo.Scene;
 using SD = System.Drawing;
@@ -63,6 +63,15 @@ namespace BimGo.Rendering
         /// so the pattern keeps its contrast and takes the material's hue and lightness. Set before Initialise.
         /// </summary>
         public bool ProxyMaterialColour { get; set; } = true;
+
+        /// <summary>QOL round: the water override (pause menu → Appearance). Change, then <see cref="RefreshTable"/>.</summary>
+        public bool WaterFromAsset { get; set; } = true;
+
+        /// <summary>QOL round: water keywords (see <see cref="MaterialOverrides"/>).</summary>
+        public IReadOnlyList<string> WaterKeywords { get; set; } = LaunchSettings.DefaultWaterKeywords();
+
+        /// <summary>QOL round: water keywords also match opaque materials.</summary>
+        public bool WaterKeywordsOpaque { get; set; }
 
         #endregion
 
@@ -188,6 +197,7 @@ namespace BimGo.Rendering
                 }
 
                 UploadTable(materials.Materials, keys, proxyOf, proxies, placements, averages);
+                _lastTable = (materials.Materials, keys, proxyOf, proxies, placements, averages);
                 Gl.ActiveTexture(Gl.TEXTURE0);
 
                 uint error = Gl.GetError();
@@ -279,13 +289,15 @@ namespace BimGo.Rendering
                 data[o + 15] = layer;
                 Put(o + 16, m.AssetTint ?? Vector3.One, proxy ? FLAG_PROXY : m.Invert ? FLAG_INVERT : 0f);
 
-                // Reflections (reflection probes round): raw strength and blur; tiers and threshold in the shader
-                data[o + 20] = m.Shine;
-                data[o + 21] = m.Roughness ?? 1f;
-                data[o + 22] = (m.Metallic ? FLAG_METALLIC : 0f) + (m.Water ? FLAG_WATER : 0f);
-                data[o + 23] = m.Water ? (m.WaterBump > 0f ? m.WaterBump : 0.1f) : 0f;
-                if (m.Shine > 0f) { ShinyCount++; }
-                if (m.Water) { WaterCount++; }
+                // Reflections (reflection probes round): raw strength and blur; tiers and threshold in the shader.
+                // QOL round: water as the override says (the Water asset toggle, keywords)
+                (bool water, float shine, float? roughness, float bump) = MaterialOverrides.Look(m, WaterFromAsset, WaterKeywords, WaterKeywordsOpaque);
+                data[o + 20] = shine;
+                data[o + 21] = roughness ?? 1f;
+                data[o + 22] = (m.Metallic ? FLAG_METALLIC : 0f) + (water ? FLAG_WATER : 0f);
+                data[o + 23] = water ? (bump > 0f ? bump : MaterialOverrides.KEYWORD_WATER_BUMP) : 0f;
+                if (shine > 0f) { ShinyCount++; }
+                if (water) { WaterCount++; }
             }
 
             _table = Gl.GenTexture();
@@ -409,11 +421,28 @@ namespace BimGo.Rendering
 
         #endregion
 
+        /// <summary>The last table's inputs, so a water override change rebuilds only the table (no image decoding).</summary>
+        private (SceneMaterial[] Materials, string[] Keys, string[] ProxyOf, ProxyPack Proxies,
+            Dictionary<string, (int Bucket, int Layer)> Placements, Dictionary<string, Vector3> Averages)? _lastTable;
+
+        /// <summary>
+        /// QOL round: re-uploads the material table (after a water override change). Cheap: the images stay.
+        /// </summary>
+        public void RefreshTable()
+        {
+            if (_table == 0 || _lastTable is not { } last) { return; }
+            Gl.DeleteTexture(_table);
+            _table = 0;
+            UploadTable(last.Materials, last.Keys, last.ProxyOf, last.Proxies, last.Placements, last.Averages);
+            Gl.ActiveTexture(Gl.TEXTURE0);
+        }
+
         /// <summary>
         /// Frees the GPU objects (the mode becomes unavailable).
         /// </summary>
         public void Release()
         {
+            _lastTable = null;
             Gl.DeleteTexture(_table);
             _table = 0;
             for (int b = 0; b < _arrays.Length; b++)

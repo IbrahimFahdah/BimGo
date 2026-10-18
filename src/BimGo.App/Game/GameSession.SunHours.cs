@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using System.Numerics;
 using BimGo.Audio;
 using BimGo.Format;
@@ -66,7 +66,7 @@ namespace BimGo.Game
         private List<string> _sunStudyDates = new();
         private string _sunStudyDeleteArmed;
         private float _sunStudyDeleteArmedUntil;
-        private int _sunStudyScroll;
+        private bool _sunExportAfterDraw; // P-A2: EXPORT CSV (a file dialog) runs after the dock is drawn
 
         /// <summary>True while the text box asks for a study name.</summary>
         private bool _editSunStudy;
@@ -86,6 +86,7 @@ namespace BimGo.Game
             if (_sunHoursOpen) { return; }
             if (_paused) { SetPaused(false); }
             CloseSunPanel();
+            CloseGridsPanel(); // grids round A: one panel at a time
             CloseSectionEditor();
             ClosePhotoMode();
             ShowUi();
@@ -684,7 +685,7 @@ namespace BimGo.Game
         {
             RefreshSunStudyList();
             _sunStudiesView = true;
-            _sunStudyScroll = 0;
+            _studyDockScroll.Reset();
             _sunStudyDeleteArmed = null;
         }
 
@@ -696,60 +697,54 @@ namespace BimGo.Game
         }
 
         /// <summary>
-        /// The saved studies list (in place of the study controls): name and date, LOAD and DELETE (twice), BACK.
+        /// The saved studies list (in place of the study controls; the dock scrolls it, P-A2): name and date, LOAD and
+        /// DELETE (twice). The dock's footer has ← BACK and the notice.
         /// </summary>
-        private void BuildSunStudiesList(FontAtlas f, InputState input, float x, float y, float w, float bottom)
+        /// <returns>The list's bottom.</returns>
+        private float BuildSunStudiesList(FontAtlas f, InputState input, float x, float y, float w)
         {
-            _ui.TextWrapped(f.Small, x, y, w, "Saved in BimGo's folder for this model. LOAD shows the results again (the grid is laid again from the same surfaces).", UiTheme.TEXT_MUTED, maxLines: 3);
-            y += S(48);
+            y += S(2) + _ui.TextWrapped(f.Small, x, y, w, "Saved in BimGo's folder for this model. LOAD shows the results again (the grid is laid again from the same surfaces).", UiTheme.TEXT_MUTED, maxLines: 3);
+            y += S(10);
 
-            float listBottom = bottom - S(100);
-            float rowH = S(54);
-            int visible = Math.Max(1, (int)((listBottom - y) / rowH));
             if (_sunStudyList.Count == 0)
             {
                 _ui.TextWrapped(f.Body, x, y, w, "No saved studies yet: RUN a study, then SAVE STUDY…", UiTheme.TEXT_MUTED, maxLines: 2);
+                return y + S(44);
             }
-            else
+
+            float rowH = S(54);
+            if (_sunStudyDeleteArmed != null && _clock > _sunStudyDeleteArmedUntil) { _sunStudyDeleteArmed = null; }
+            SunStudyInfo? load = null, delete = null;
+            for (int i = 0; i < _sunStudyList.Count; i++)
             {
-                int maxScroll = Math.Max(0, _sunStudyList.Count - visible);
-                if (input.Wheel != 0 && Hover(input, x, y, w, listBottom - y)) { _sunStudyScroll -= input.Wheel; }
-                _sunStudyScroll = Math.Clamp(_sunStudyScroll, 0, maxScroll);
-                if (_sunStudyDeleteArmed != null && _clock > _sunStudyDeleteArmedUntil) { _sunStudyDeleteArmed = null; }
+                float ry = y + i * rowH;
+                if (!InView(_studyDockScroll, ry, rowH)) { continue; }
+                SunStudyInfo info = _sunStudyList[i];
+                _ui.TextWrapped(f.Body, x, ry, w - S(150), info.Name, UiTheme.TEXT, maxLines: 1);
+                _ui.TextWrapped(f.Small, x, ry + S(22), w - S(150), _sunStudyDates[i], UiTheme.TEXT_FAINT, maxLines: 1);
+                if (SmallButton(f, input, x + w - S(142), ry + S(4), S(66), S(30), "LOAD")) { load = info; }
+                bool armed = string.Equals(_sunStudyDeleteArmed, info.Path, StringComparison.OrdinalIgnoreCase);
+                if (SmallButton(f, input, x + w - S(70), ry + S(4), S(70), S(30), armed ? "SURE?" : "DELETE", danger: true)) { delete = info; }
+            }
+            float bottom = y + _sunStudyList.Count * rowH;
 
-                SunStudyInfo? load = null, delete = null;
-                int last = Math.Min(_sunStudyList.Count, _sunStudyScroll + visible);
-                for (int i = _sunStudyScroll; i < last; i++)
+            if (load.HasValue) { LoadSunStudy(load.Value); }
+            else if (delete.HasValue)
+            {
+                if (string.Equals(_sunStudyDeleteArmed, delete.Value.Path, StringComparison.OrdinalIgnoreCase))
                 {
-                    SunStudyInfo info = _sunStudyList[i];
-                    float ry = y + (i - _sunStudyScroll) * rowH;
-                    _ui.TextWrapped(f.Body, x, ry, w - S(150), info.Name, UiTheme.TEXT, maxLines: 1);
-                    _ui.TextWrapped(f.Small, x, ry + S(22), w - S(150), _sunStudyDates[i], UiTheme.TEXT_FAINT, maxLines: 1);
-                    if (SmallButton(f, input, x + w - S(142), ry + S(4), S(66), S(30), "LOAD")) { load = info; }
-                    bool armed = string.Equals(_sunStudyDeleteArmed, info.Path, StringComparison.OrdinalIgnoreCase);
-                    if (SmallButton(f, input, x + w - S(70), ry + S(4), S(70), S(30), armed ? "SURE?" : "DELETE", danger: true)) { delete = info; }
+                    _sunNotice = SunStudyFiles.Delete(delete.Value.Path) ? $"Deleted “{delete.Value.Name}”" : "The study could not be deleted (see the log)";
+                    _sunStudyDeleteArmed = null;
+                    RefreshSunStudyList();
+                    Sound.Play(SoundId.Remove);
                 }
-
-                if (load.HasValue) { LoadSunStudy(load.Value); }
-                else if (delete.HasValue)
+                else
                 {
-                    if (string.Equals(_sunStudyDeleteArmed, delete.Value.Path, StringComparison.OrdinalIgnoreCase))
-                    {
-                        _sunNotice = SunStudyFiles.Delete(delete.Value.Path) ? $"Deleted “{delete.Value.Name}”" : "The study could not be deleted (see the log)";
-                        _sunStudyDeleteArmed = null;
-                        RefreshSunStudyList();
-                        Sound.Play(SoundId.Remove);
-                    }
-                    else
-                    {
-                        _sunStudyDeleteArmed = delete.Value.Path;
-                        _sunStudyDeleteArmedUntil = _clock + 3f;
-                    }
+                    _sunStudyDeleteArmed = delete.Value.Path;
+                    _sunStudyDeleteArmedUntil = _clock + 3f;
                 }
             }
-
-            if (_sunNotice != null) { _ui.TextWrapped(f.Small, x, bottom - S(92), w, _sunNotice, UiTheme.MEASURE_TEXT, maxLines: 2); }
-            if (SmallButton(f, input, x, bottom - S(44), w, S(30), "BACK")) { _sunStudiesView = false; }
+            return bottom;
         }
 
         /// <summary>
@@ -954,12 +949,14 @@ namespace BimGo.Game
         /// The legend (bottom left, also in the study screenshot): Ladybug's colours over the mode's range (0–7 h,
         /// 0–5 %, 0–2000 lux) with ticks, or the pass / fail swatches, and the study's title.
         /// </summary>
-        private void BuildSunLegend(FontAtlas f, float x, float y)
+        /// <param name="collapsed">P-A2: the title row only (the F1 sheet is open, or the left column is short).</param>
+        private void BuildSunLegend(FontAtlas f, float x, float y, bool collapsed = false)
         {
             if (_sunStudy.Hours == null || _sunLegendTitle == null) { return; }
-            float w = S(380), h = S(78);
+            float w = S(380), h = collapsed ? S(UiTheme.LEGEND_COLLAPSED_HEIGHT) : S(78);
             _ui.Panel(x, y, w, h, UiTheme.PANEL_STRONG, UiTheme.PANEL_BORDER);
-            _ui.Text(f.Small, x + S(12), y + S(8), _sunLegendTitle, UiTheme.SUN, S(0.5f));
+            _ui.Text(f.Small, x + S(12), collapsed ? y + MathF.Round((h - f.Small.LineHeight) * 0.5f) : y + S(8), _sunLegendTitle, UiTheme.SUN, S(0.5f));
+            if (collapsed) { return; }
 
             float barX = x + S(12), barY = y + S(30), barW = w - S(24), barH = S(14);
             if (_sunHours.PassFail && _sunPassLabel != null)
@@ -994,25 +991,51 @@ namespace BimGo.Game
         }
 
         /// <summary>
-        /// The study panel (right side): mode, then the mode's settings (date, times and step for sun hours and
-        /// illuminance; sky options, rays and reflectances for daylight), the pass / fail test, grid and offsets, the
-        /// surfaces, RUN / progress, results, exports and saved studies.
+        /// The study dock (polish round P-A2: the right-hand dock column, wider; the shared header, scrolling body and
+        /// footer): mode, then the mode's settings (date, times and step for sun hours and illuminance; sky options, rays
+        /// and reflectances for daylight), the pass / fail test, grid and offsets, the surfaces, RUN / progress, results,
+        /// exports and saved studies; the notice above the footer. SAVED STUDIES… shows the list in the body instead.
         /// </summary>
         private void BuildSunHoursPanel(FontAtlas f, InputState input)
         {
-            float w = S(380), x = _window.Width - S(20) - w, y = S(20);
-            float h = MathF.Min(_window.Height - S(40), S(820));
-            _sunPanelRect = new Vector4(x, y, w, h);
-            _ui.Panel(x, y, w, h, UiTheme.PANEL_STRONG, UiTheme.SUN);
-            float ix = x + S(16), iw = w - S(32), cy = y + S(14);
-            _ui.Text(f.Small, ix, cy, "SUN AND DAYLIGHT STUDY", UiTheme.SUN, S(1.4f));
-            cy += S(28);
-            if (_sunStudiesView)
+            bool list = _sunStudiesView;
+            DockFrame d = BeginDock(list ? "SAVED STUDIES" : "SUN AND DAYLIGHT STUDY", UiTheme.SUN, UiTheme.SUN, S(UiTheme.DOCK_WIDTH_WIDE), _studyDockScroll,
+                notice: _sunNotice != null);
+            _sunPanelRect = d.Rect;
+            // QOL round: hop to the sun settings (time, intensities, lights; it closes this panel)
+            if (DockHeaderButton(ref d, "SUN SETTINGS…", S(118)))
             {
-                BuildSunStudiesList(f, input, ix, cy, iw, y + h);
+                OpenSunPanel();
                 return;
             }
 
+            float cy = BeginDockBody(d, _studyDockScroll, input);
+            cy = list ? BuildSunStudiesList(f, input, d.Ix, cy, d.Iw) : BuildSunHoursBody(f, input, d.Ix, cy, d.Iw);
+            EndDockBody(_studyDockScroll, input, cy);
+
+            int pressed = EndDock(d, _sunNotice, list ? null : HINT_STUDY_FOOT.Text, list ? "← BACK" : null);
+            if (pressed == DOCK_BACK)
+            {
+                _sunStudiesView = false;
+                _studyDockScroll.Reset();
+            }
+            else if (pressed == DOCK_CLOSE)
+            {
+                _sunExportAfterDraw = false;
+                CloseSunHours();
+                return;
+            }
+            if (_sunExportAfterDraw)
+            {
+                _sunExportAfterDraw = false;
+                ExportSunHours();
+            }
+        }
+
+        /// <summary>The study dock's settings and actions (from the body's first line).</summary>
+        /// <returns>The body's bottom.</returns>
+        private float BuildSunHoursBody(FontAtlas f, InputState input, float ix, float cy, float iw)
+        {
             bool shift = input.Down(InputAction.FineAdjust);
             bool locked = _sunStudy.Running;
             SunHoursSettings s = _sunHours;
@@ -1177,7 +1200,7 @@ namespace BimGo.Game
             if (_sunSummary != null) { cy += S(2) + _ui.TextWrapped(f.Small, ix, cy, iw, _sunSummary, UiTheme.TEXT, maxLines: 3) + S(6); }
             bool results = _sunStudy.Finished && _sunStudy.Hours != null;
             float third = (iw - S(16)) / 3f;
-            if (SmallButton(f, input, ix, cy, third, S(30), "EXPORT CSV") && results) { ExportSunHours(); }
+            if (SmallButton(f, input, ix, cy, third, S(30), "EXPORT CSV") && results) { _sunExportAfterDraw = true; }
             if (SmallButton(f, input, ix + third + S(8), cy, third, S(30), "SCREENSHOT") && results) { _sunShotRequested = true; }
             if (SmallButton(f, input, ix + (third + S(8)) * 2, cy, third, S(30), "CLEAR") && _sunStudy.Hours != null) { ClearSunResults(); }
             cy += S(38);
@@ -1190,8 +1213,7 @@ namespace BimGo.Game
             if (SmallButton(f, input, ix + halfWidth + S(8), cy, halfWidth, S(30), "SAVED STUDIES…") && !locked) { OpenSunStudies(); }
             cy += S(40);
 
-            if (_sunNotice != null) { _ui.TextWrapped(f.Small, ix, cy, iw, _sunNotice, UiTheme.MEASURE_TEXT, maxLines: 2); }
-            if (SmallButton(f, input, ix, y + h - S(44), iw, S(30), HINT_STUDY_CLOSE.Text)) { CloseSunHours(); }
+            return cy;
         }
 
         /// <summary>

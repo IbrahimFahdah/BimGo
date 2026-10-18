@@ -308,12 +308,12 @@ namespace BimGo.Tests
         public void Gamepad_StoredApartFromKeys()
         {
             var map = new KeyMap();
-            map.Assign(InputAction.Fly, KeyMap.PAD_SLOT, KeyChord.Parse("PadLB+PadY"), swap: false);
+            map.Assign(InputAction.Fly, KeyMap.PAD_SLOT, KeyChord.Parse("PadRB+PadA"), swap: false); // P-B: LB+Y is grids now
             map.Clear(InputAction.Minimap, KeyMap.PAD_SLOT);
             Assert.AreEqual(0, map.ToOverrides().Count); // keys unchanged
             Dictionary<string, string> pad = map.ToPadOverrides();
             Assert.AreEqual(2, pad.Count);
-            Assert.AreEqual("PadLB+PadY", pad["Fly"]);
+            Assert.AreEqual("PadRB+PadA", pad["Fly"]);
             Assert.AreEqual(string.Empty, pad["Minimap"]);
 
             // Through settings.json
@@ -321,14 +321,14 @@ namespace BimGo.Tests
             LaunchSettings copy = settings.Clone();
             var restored = new KeyMap();
             Assert.AreEqual(2, restored.ApplyOverrides(copy.KeyBindings, null, copy.PadBindings));
-            Assert.AreEqual(KeyChord.Parse("PadLB+PadY"), restored.PadChord(InputAction.Fly));
+            Assert.AreEqual(KeyChord.Parse("PadRB+PadA"), restored.PadChord(InputAction.Fly));
             Assert.IsTrue(restored.PadChord(InputAction.Minimap).IsEmpty);
             Assert.AreEqual(KeyChord.Parse("V"), restored.Primary(InputAction.Fly));
 
             // Through a keymap file; a build-A file (no "pad") leaves the gamepad at its defaults
             var other = new KeyMap();
             Assert.IsTrue(other.Import(map.Export("test")).Valid);
-            Assert.AreEqual(KeyChord.Parse("PadLB+PadY"), other.PadChord(InputAction.Fly));
+            Assert.AreEqual(KeyChord.Parse("PadRB+PadA"), other.PadChord(InputAction.Fly));
             KeymapImport older = other.Import("{ \"format\": \"bimgo-keymap\", \"version\": 1, \"bindings\": { \"Help\": [\"F2\"] } }");
             Assert.IsTrue(older.Valid);
             Assert.AreEqual(KeyChord.Parse("PadY"), other.PadChord(InputAction.Fly));
@@ -592,6 +592,330 @@ namespace BimGo.Tests
             Assert.IsTrue(clash.Valid);
             Assert.AreEqual(1, clash.Clashes);
             Assert.IsTrue(map.HasClash(InputAction.Fly));
+        }
+
+        #endregion
+
+        #region Hotkey review (polish round P-B)
+
+        /// <summary>
+        /// Every rebindable default as it was before P-B (controls defaults version 0): action id = keys (joined by
+        /// " &amp; ") | gamepad. Frozen: the changed-defaults table is checked against it. A later version that changes
+        /// defaults adds its own snapshot, or checks only its own table rows.
+        /// </summary>
+        private static readonly string[] DEFAULTS_V0 =
+        {
+            "Help=F1|PadLB+PadBack",
+            "Fullscreen=F11|",
+            "Screenshot=F12|",
+            "HideUi=U|",
+            "Minimap=Tab|PadBack",
+            "Refresh=F5|",
+            "Save=Ctrl+S|",
+            "SaveAs=Ctrl+Shift+S|",
+            "Undo=Ctrl+Z|",
+            "Redo=Ctrl+Y & Ctrl+Shift+Z|",
+            "MoveForward=W & Up|PadLSUp",
+            "MoveBack=S & Down|PadLSDown",
+            "MoveLeft=A & Left|PadLSLeft",
+            "MoveRight=D & Right|PadLSRight",
+            "Jump=Space|PadA",
+            "Run=Shift|PadLS",
+            "Crouch=Ctrl|PadB",
+            "Fly=V|PadY",
+            "LevelUp=PageUp|PadUp",
+            "LevelDown=PageDown|PadDown",
+            "GoHome=H|PadLB+PadLeft",
+            "SetHome=Shift+H|",
+            "FindRoom=Ctrl+F|",
+            "LookUp=|PadRSUp",
+            "LookDown=|PadRSDown",
+            "LookLeft=|PadRSLeft",
+            "LookRight=|PadRSRight",
+            "Gun1=1|",
+            "Gun2=2|",
+            "Gun3=3|",
+            "Gun4=4|",
+            "Gun5=5|",
+            "Gun6=6|",
+            "Gun7=7|",
+            "Gun8=8|",
+            "Gun9=9|",
+            "PreviousGun=Shift+WheelUp|",
+            "NextGun=Shift+WheelDown|",
+            "GunPrimary=LMB|PadRT",
+            "GunSecondary=RMB|PadLT",
+            "ClearMarkers=X|PadRB+PadX",
+            "GunWheel=MMB|PadRS",
+            "GunModePrevious=WheelUp|",
+            "GunModeNext=WheelDown|",
+            "Unarmed=0|PadRB+PadB",
+            "AddBookmark=B|",
+            "Bookmark1=Shift+1|",
+            "Bookmark2=Shift+2|",
+            "Bookmark3=Shift+3|",
+            "Bookmark4=Shift+4|",
+            "Bookmark5=Shift+5|",
+            "Bookmark6=Shift+6|",
+            "Bookmark7=Shift+7|",
+            "Bookmark8=Shift+8|",
+            "Bookmark9=Shift+9|",
+            "Coordinates=L|PadLB+PadRight",
+            "Lights=K|PadLB+PadDown",
+            "Shadows=O|PadLB+PadUp",
+            "SunPanel=Shift+O|PadRB+PadRight",
+            "SunEarlier=[|PadLeft",
+            "SunEarlierFine=Shift+[|",
+            "SunLater=]|PadRight",
+            "SunLaterFine=Shift+]|",
+            "SunStudy=J|PadRB+PadLeft",
+            "PhotoMode=M|PadRB+PadUp",
+            "SectionBox=P|PadRB+PadDown",
+            "SectionPlane=Shift+P|",
+            "SectionClear=Ctrl+P|",
+            "ClashMode=Y|",
+            "GridsPanel=Shift+G|",
+            "GridsCycle=C|",
+            "ColourProfile=Shift+C|",
+            "ScanSelectInRevit=R|",
+            "ScanHide=I|PadX",
+            "ScanIsolate=Shift+I|PadLB+PadX",
+            "MeasureNormal=N|PadX",
+            "CommentEdit=E|",
+            "DemolishMode=T|PadX",
+            "GizmoSnap=G|PadLB+PadX",
+            "GizmoDrop=F|PadX",
+            "HoldUp=E|PadUp",
+            "HoldDown=Q|PadDown",
+            "HoldRotate=R|PadY",
+            "HoldStepDown=Z|PadLeft",
+            "HoldStepUp=X|PadRight",
+            "HoldFine=Shift|PadRS",
+            "HoldSnapInvert=Ctrl|",
+            "MarkupArrow=A|",
+            "MarkupBox=R|",
+            "MarkupEllipse=E|",
+            "MarkupPen=P|",
+            "MarkupText=T|",
+            "MarkupColour1=1|",
+            "MarkupColour2=2|",
+            "MarkupColour3=3|",
+            "MarkupColour4=4|",
+            "MarkupColour5=5|",
+            "MarkupUndo=Ctrl+Z|",
+            "MarkupRedo=Ctrl+Y & Ctrl+Shift+Z|",
+            "MarkupSave=Enter|",
+            "SectionFreeDrag=Shift|",
+            "PhotoTake=Enter|PadRT",
+            "SunPlay=Space|",
+            "TourPause=Space|PadA",
+            "TourNext=Right & PageDown & LMB|PadRight",
+            "TourPrevious=Left & PageUp & RMB|PadLeft",
+            "ClashNext=.|PadRight",
+            "ClashPrevious=,|PadLeft",
+            "ClashFrame=Enter|PadY",
+            "ClashStatusNew=1|",
+            "ClashStatusActive=2|",
+            "ClashStatusReviewed=3|",
+            "ClashStatusApproved=4|",
+            "ClashStatusResolved=5|",
+            "ClashSelectInRevit=R|PadX",
+            "ClashFlyUp=Space & E|PadRT",
+            "ClashFlyDown=Ctrl & Q|PadLT",
+            "ClashView=G|PadUp",
+            "ClashSectionToggle=B|PadDown",
+            "ClashSelectAll=Ctrl+A|PadRB+PadX",
+            "ClashPictures=P|PadBack",
+            "ClashGroup=Ctrl+G|",
+            "ClashUngroup=Ctrl+Shift+G|",
+            "MenuPreview=Tab|PadY"
+
+        };
+
+        private static Dictionary<string, (KeyChord[] Keys, KeyChord Pad)> ParseSnapshot(string[] lines)
+        {
+            var snapshot = new Dictionary<string, (KeyChord[], KeyChord)>(StringComparer.Ordinal);
+            foreach (string line in lines)
+            {
+                int eq = line.IndexOf('=');
+                int bar = line.LastIndexOf('|');
+                string id = line.Substring(0, eq);
+                string[] keys = line.Substring(eq + 1, bar - eq - 1).Split(" & ", StringSplitOptions.RemoveEmptyEntries);
+                string pad = line.Substring(bar + 1);
+                snapshot[id] = (keys.Select(KeyChord.Parse).ToArray(), pad.Length == 0 ? KeyChord.None : KeyChord.Parse(pad));
+            }
+            return snapshot;
+        }
+
+        [TestMethod]
+        public void DefaultsChanges_MatchTheDefaults()
+        {
+            Dictionary<string, (KeyChord[] Keys, KeyChord Pad)> v0 = ParseSnapshot(DEFAULTS_V0);
+
+            // No id from version 0 was renamed or dropped (settings and keymap files store them)
+            foreach (string id in v0.Keys) { Assert.AreNotEqual(InputAction.None, InputCatalog.FromId(id), $"{id} is gone"); }
+
+            foreach (ActionDef def in InputCatalog.All)
+            {
+                if (def.IsFixed) { continue; }
+                DefaultsChange[] changes = InputCatalog.DefaultsChanges.Where(c => c.Action == def.Action).ToArray();
+                if (!v0.TryGetValue(def.Id, out (KeyChord[] Keys, KeyChord Pad) old))
+                {
+                    Assert.IsTrue(changes.Any(c => c.Added), $"{def.Action} is new since version 0 but not in the table as added");
+                    continue;
+                }
+                bool differs = !old.Keys.SequenceEqual(def.Defaults) || old.Pad != def.PadDefault;
+                Assert.AreEqual(differs, changes.Any(c => !c.Added), $"{def.Action}: the table and the defaults disagree");
+                Assert.IsFalse(changes.Any(c => c.Added), $"{def.Action} existed in version 0, so it isn't new");
+            }
+            foreach (DefaultsChange change in InputCatalog.DefaultsChanges)
+            {
+                Assert.IsNotNull(InputCatalog.Get(change.Action), $"{change.Action} isn't in the catalogue");
+                Assert.IsTrue(change.Version >= 1 && change.Version <= InputCatalog.DEFAULTS_VERSION, $"{change.Action}: version {change.Version}");
+                Assert.IsTrue(change.Added || !string.IsNullOrEmpty(change.Was), $"{change.Action}: say what it was");
+            }
+            Assert.AreEqual(InputCatalog.DefaultsChanges.Length, InputCatalog.ChangesSince(0).Count);
+            Assert.AreEqual(0, InputCatalog.ChangesSince(InputCatalog.DEFAULTS_VERSION).Count);
+        }
+
+        [TestMethod]
+        public void Help_EverySituationHasLiveRows()
+        {
+            var map = new KeyMap();
+            foreach (InputSituation situation in InputCatalog.Situations)
+            {
+                Assert.IsTrue(situation.Help.Count > 0, $"{situation.Name} has no F1 rows");
+                Assert.IsTrue(situation.Help.Count <= 16, $"{situation.Name}: {situation.Help.Count} F1 rows (keep it short)");
+                Assert.AreSame(situation, InputCatalog.Situation(situation.Name));
+                foreach (HelpEntry entry in situation.Help)
+                {
+                    Assert.IsFalse(string.IsNullOrWhiteSpace(entry.Label), $"{situation.Name}: a row without a label");
+                    Assert.IsTrue(entry.Actions.Count > 0, $"{situation.Name}: “{entry.Label}” shows no action");
+                    foreach (InputAction action in entry.Actions)
+                    {
+                        Assert.IsTrue(situation.Contains(action), $"{situation.Name}: “{entry.Label}” shows {action}, which isn't live there");
+                    }
+                    Assert.IsTrue(map.HelpKeys(entry).Length > 0 || map.HelpPad(entry).Length > 0, $"{situation.Name}: “{entry.Label}” has no default key");
+                }
+            }
+            foreach (string name in new[]
+            {
+                InputCatalog.SIT_WALKING, InputCatalog.SIT_SCAN, InputCatalog.SIT_MEASURE, InputCatalog.SIT_COMMENT, InputCatalog.SIT_DEMOLISH,
+                InputCatalog.SIT_GIZMO, InputCatalog.SIT_HOLDING, InputCatalog.SIT_MARKUP, InputCatalog.SIT_SECTION, InputCatalog.SIT_PHOTO,
+                InputCatalog.SIT_SUN_PANEL, InputCatalog.SIT_STUDY, InputCatalog.SIT_TOUR, InputCatalog.SIT_CLASHES, InputCatalog.SIT_GRIDS,
+                InputCatalog.SIT_VIDEO, InputCatalog.SIT_START, InputCatalog.SIT_PAUSE, InputCatalog.SIT_PATH
+            })
+            {
+                Assert.IsNotNull(InputCatalog.Situation(name), $"no situation called {name}");
+            }
+        }
+
+        [TestMethod]
+        public void Help_KeyAndGamepadText()
+        {
+            var map = new KeyMap();
+            InputSituation walking = InputCatalog.Situation(InputCatalog.SIT_WALKING);
+            HelpEntry move = walking.Help.First(e => e.Label == "Move");
+            Assert.AreEqual("WASD", map.HelpKeys(move));
+            Assert.AreEqual("LS", map.HelpPad(move));
+            HelpEntry guns = walking.Help.First(e => e.Actions.Contains(InputAction.Gun1));
+            Assert.AreEqual("1–9 · MMB", map.HelpKeys(guns));
+            Assert.AreEqual("RS click", map.HelpPad(guns));
+            Assert.AreEqual("MOUSE", map.HelpKeys(walking.Help.First(e => e.Label == "Look")));
+
+            InputSituation clashes = InputCatalog.Situation(InputCatalog.SIT_CLASHES);
+            HelpEntry status = clashes.Help.First(e => e.Actions.Contains(InputAction.ClashStatusNew));
+            Assert.AreEqual("1–5", map.HelpKeys(status));
+            Assert.AreEqual("LB+A", map.HelpPad(status));
+            HelpEntry step = clashes.Help.First(e => e.Actions.Contains(InputAction.ClashNext));
+            Assert.AreEqual("D-pad ← · →", map.HelpPad(step));
+            HelpEntry group = clashes.Help.First(e => e.Actions.Contains(InputAction.ClashGroup));
+            Assert.AreEqual("CTRL+G · CTRL+SHIFT+G", map.HelpKeys(group));
+            Assert.AreEqual("RB+A · RB+B", map.HelpPad(group));
+
+            // It follows rebinds
+            map.Assign(InputAction.ClashPickPoints, 0, KeyChord.Parse("F7"), swap: false);
+            Assert.AreEqual("F7", map.HelpKeys(clashes.Help.First(e => e.Actions.Contains(InputAction.ClashPickPoints))));
+        }
+
+        [TestMethod]
+        public void PathEditor_ReservedAndClashFree()
+        {
+            InputSituation path = InputCatalog.Situation(InputCatalog.SIT_PATH);
+            Assert.IsNotNull(path);
+            foreach (InputAction action in new[] { InputAction.PathAddKey, InputAction.PathDeleteKey, InputAction.PathPreview, InputAction.PathPreviousKey, InputAction.PathNextKey })
+            {
+                Assert.IsTrue(path.Contains(action), $"{action}");
+                Assert.AreEqual(InputContext.PathEditor, InputCatalog.Get(action).Context);
+                foreach (InputSituation other in InputCatalog.Situations)
+                {
+                    if (!ReferenceEquals(other, path)) { Assert.IsFalse(other.Contains(action), $"{action} is live in {other.Name}"); }
+                }
+            }
+            var map = new KeyMap();
+            Assert.AreEqual(KeyChord.Parse("K"), map.Primary(InputAction.PathAddKey));
+            Assert.AreEqual(KeyChord.Parse("Delete"), map.Primary(InputAction.PathDeleteKey));
+            Assert.AreEqual(KeyChord.Parse("Space"), map.Primary(InputAction.PathPreview));
+            Assert.AreEqual(KeyChord.Parse("Left"), map.Primary(InputAction.PathPreviousKey));
+            Assert.AreEqual(KeyChord.Parse("Right"), map.Primary(InputAction.PathNextKey));
+            foreach (InputAction action in new[] { InputAction.PathAddKey, InputAction.PathPreview, InputAction.PathPreviousKey })
+            {
+                Assert.AreEqual(0, map.FindClashes(action, map.Primary(action)).Count, $"{action} clashes");
+            }
+            Assert.AreEqual("Path editor (Round K)", InputCatalog.ContextName(InputContext.PathEditor));
+        }
+
+        [TestMethod]
+        public void Review_PickPointsAndChords()
+        {
+            var map = new KeyMap();
+            ushort k = KeyCodes.Letter('K');
+
+            // K: pick points in clash mode, artificial lights walking (never live together)
+            Assert.AreEqual(KeyChord.Parse("K"), map.Primary(InputAction.ClashPickPoints));
+            Assert.IsFalse(InputCatalog.LiveTogether(InputAction.ClashPickPoints, InputAction.Lights));
+            Assert.IsTrue(map.Pressed(InputAction.ClashPickPoints, new FakeKeys().Press(k)));
+
+            // Clash mode: RB+A groups, RB+B ungroups (B alone stays back), LB+A the next status
+            FakeKeys rbA = new FakeKeys().Hold(KeyCodes.PAD_RB).Press(KeyCodes.PAD_A);
+            Assert.IsTrue(map.Pressed(InputAction.ClashGroup, rbA));
+            FakeKeys rbB = new FakeKeys().Hold(KeyCodes.PAD_RB).Press(KeyCodes.PAD_B);
+            Assert.IsTrue(map.Pressed(InputAction.ClashUngroup, rbB));
+            Assert.IsFalse(map.Pressed(InputAction.PadMenuBack, rbB), "RB+B is a chord in clash mode, not back");
+            Assert.IsTrue(map.Pressed(InputAction.PadMenuBack, new FakeKeys().Press(KeyCodes.PAD_B)));
+            Assert.IsTrue(map.Pressed(InputAction.ClashStatusCycle, new FakeKeys().Hold(KeyCodes.PAD_LB).Press(KeyCodes.PAD_A)));
+
+            // Walking: LB+A bookmarks (not a jump press), LB+Y / RB+Y grids / colour profile (not fly), RB+Back clash mode
+            FakeKeys lbA = new FakeKeys().Hold(KeyCodes.PAD_LB).Press(KeyCodes.PAD_A);
+            Assert.IsTrue(map.Pressed(InputAction.AddBookmark, lbA));
+            Assert.IsFalse(map.Pressed(InputAction.Jump, lbA));
+            Assert.IsTrue(map.Pressed(InputAction.GridsCycle, new FakeKeys().Hold(KeyCodes.PAD_LB).Press(KeyCodes.PAD_Y)));
+            Assert.IsTrue(map.Pressed(InputAction.ColourProfile, new FakeKeys().Hold(KeyCodes.PAD_RB).Press(KeyCodes.PAD_Y)));
+            Assert.IsFalse(map.Pressed(InputAction.Fly, new FakeKeys().Hold(KeyCodes.PAD_RB).Press(KeyCodes.PAD_Y)));
+            FakeKeys rbBack = new FakeKeys().Hold(KeyCodes.PAD_RB).Press(KeyCodes.PAD_BACK);
+            Assert.IsTrue(map.Pressed(InputAction.ClashMode, rbBack));
+            Assert.IsFalse(map.Pressed(InputAction.Minimap, rbBack));
+            Assert.IsFalse(map.Pressed(InputAction.ClashPictures, rbBack));
+
+            // Every action named in the review now has a gamepad binding
+            foreach (InputAction action in new[]
+            {
+                InputAction.AddBookmark, InputAction.ClashMode, InputAction.GridsPanel, InputAction.GridsCycle, InputAction.ColourProfile,
+                InputAction.ClashGroup, InputAction.ClashUngroup, InputAction.ClashStatusCycle
+            })
+            {
+                Assert.IsFalse(map.PadChord(action).IsEmpty, $"{action} has no gamepad binding");
+            }
+        }
+
+        [TestMethod]
+        public void Settings_ControlsDefaultsVersion()
+        {
+            Assert.AreEqual(InputCatalog.DEFAULTS_VERSION, new LaunchSettings().ControlsDefaultsVersion, "a new install has seen the current defaults");
+            var settings = new LaunchSettings { ControlsDefaultsVersion = -3 };
+            settings.Sanitise();
+            Assert.AreEqual(0, settings.ControlsDefaultsVersion);
+            Assert.AreEqual(0, new LaunchSettings { ControlsDefaultsVersion = 0 }.Clone().ControlsDefaultsVersion);
         }
 
         #endregion

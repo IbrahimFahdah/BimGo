@@ -180,7 +180,14 @@ namespace BimGo.Physics
         /// <summary>
         /// True if the instance should be drawn / picked / collided.
         /// </summary>
-        public bool IsActive(DynamicInstance instance) => !instance.Hidden && _groupVisible[Rendering.SceneBatches.GroupOf(_elements[instance.Element])];
+        public bool IsActive(DynamicInstance instance) => !instance.Hidden && _groupVisible[Rendering.SceneBatches.GroupOf(_elements[instance.Element])]
+            && (SourceHidden == null || (uint)instance.Element >= (uint)SourceHidden.Length || !SourceHidden[instance.Element]);
+
+        /// <summary>
+        /// Polish round P-C: per source element, true when its copies are hidden too (a colour profile's hidden rows):
+        /// no drawing, shadows, picking or collision. Shared with the session (null: none).
+        /// </summary>
+        public bool[] SourceHidden { get; set; }
 
         #endregion
 

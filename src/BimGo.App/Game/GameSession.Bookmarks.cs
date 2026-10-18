@@ -18,7 +18,7 @@ namespace BimGo.Game
         #region Fields
 
         private bool _bookmarksOpen;
-        private int _bookmarkScroll;
+        private readonly ScrollRegion _bookmarkScroll = new();
         private BookmarkRecord _bookmarkDeleteArmed;
         private float _bookmarkDeleteArmedUntil;
         private string _bookmarksNotice;
@@ -49,6 +49,35 @@ namespace BimGo.Game
                 Bookmarks.Load();
             }
             Bookmarks.Changed += UpdateTitle;
+            Bookmarks.Stamp = StampBookmark; // P-C: crouching and the colour profile
+            Bookmarks.ProfileName = id => _appearance.Find(id)?.Name;
+        }
+
+        /// <summary>
+        /// Polish round P-C: what a new or re-pointed bookmark keeps beyond the store's fields: crouching (walking) and the
+        /// colour profile showing (its id, or "" when none shows).
+        /// </summary>
+        private void StampBookmark(BookmarkRecord record)
+        {
+            record.Crouched = _player != null && !_player.Flying && _player.Controller.Crouching;
+            record.ColourProfile = ProfileShowing ? _appearance.Active : string.Empty;
+        }
+
+        /// <summary>
+        /// Polish round P-C: a bookmark's colour profile (null: leave it; "": off; an id: that profile on). Recorded (saved
+        /// with the model) unless <paramref name="quiet"/> (the tour, which puts it back at the end).
+        /// </summary>
+        private void ApplyBookmarkProfile(string id, bool quiet)
+        {
+            if (id == null) { return; }
+            bool on = id.Length > 0 && _appearance.Find(id) != null;
+            string active = on ? id : _appearance.Active;
+            if (_appearance.On == on && _appearance.Active == active) { return; }
+            _appearance.Active = active;
+            _appearance.On = on;
+            _profileFailure = null;
+            if (quiet) { _profileDirty = true; }
+            else { ProfilesChanged(); }
         }
 
         #endregion
@@ -118,7 +147,9 @@ namespace BimGo.Game
             if (record.Visibility != null) { ApplyVisibility(record.Visibility, record: true); }
             if (record.EyeHeight is float eye) { ApplyEyeHeight(eye); }
             if (record.Flying != _player.Flying) { _player.ToggleFly(); }
+            ApplyBookmarkProfile(record.ColourProfile, quiet: false); // P-C
             _player.TeleportTo(record.Local, record.Yaw, Math.Clamp(record.Pitch, -1.5f, 1.5f));
+            _player.Controller.HoldCrouch = record.Crouched && !record.Flying; // P-C: arrive crouched (crouch or jump stands)
             Sound.Play(SoundId.Teleport);
             Flash(UiTheme.BOOKMARK, 0.25f);
             Toast(record.Name);
@@ -134,24 +165,28 @@ namespace BimGo.Game
         private void OpenBookmarks()
         {
             _bookmarksOpen = true;
-            _bookmarkScroll = 0;
+            _bookmarkScroll.Reset();
             _bookmarkDeleteArmed = null;
             _bookmarksNotice = null;
         }
 
         /// <summary>
-        /// Closes the list.
+        /// One level back: the list closes (Round K-A: the tour settings moved to MEDIA → TOUR).
         /// </summary>
         /// <returns>True if it was open.</returns>
         private bool CloseBookmarks()
         {
             if (!_bookmarksOpen) { return false; }
-            FlushTourDraft();
+            CloseBookmarksPanel();
+            return true;
+        }
+
+        /// <summary>Closes the list (a tour starting, CLOSE).</summary>
+        private void CloseBookmarksPanel()
+        {
+            if (!_bookmarksOpen) { return; }
             _bookmarksOpen = false;
             _bookmarkDeleteArmed = null;
-            _tourSettingsOpen = false;
-            _tourDraft = null;
-            return true;
         }
 
         /// <summary>"BOOKMARKS (n)" (rebuilt only when the count changes).</summary>
@@ -177,84 +212,63 @@ namespace BimGo.Game
         {
             FontAtlas f = _ui.Atlas;
             InputState input = _window.Input;
-            int width = _window.Width, height = _window.Height;
-            _ui.Rect(0, 0, width, height, UiTheme.MENU_BACKGROUND);
-
-            float w = MathF.Min(S(920), width - S(80));
-            float h = height - S(96);
-            float x = (width - w) * 0.5f, y = S(48);
-            _ui.Panel(x, y, w, h, UiTheme.CARD, UiTheme.CARD_BORDER);
-
-            float ix = x + S(24), iw = w - S(48);
-            float cy = y + S(20);
-            _ui.Text(f.Small, ix, cy, _tourSettingsOpen ? "BOOKMARKS · TOUR" : "BOOKMARKS", UiTheme.BOOKMARK_LABEL, S(2f));
             Text.Clear().AppendGrouped(Bookmarks.Bookmarks.Count).Append(Bookmarks.Bookmarks.Count == 1 ? " viewpoint · saved to " : " viewpoints · saved to ").Append(Bookmarks.FileName);
-            _ui.TextRight(f.Small, ix + iw, cy, Text.Span, UiTheme.TEXT_MUTED, S(0.6f));
-            cy += S(30);
-            _ui.Text(f.Body, ix, cy, _tourSettingsOpen
-                ? HINT_BOOKMARKS_TOUR.Text
-                : HINT_BOOKMARKS_KEYS.Text, UiTheme.TEXT_MUTED);
-            cy += S(34);
+            const string ADD = "ADD THIS VIEW";
+            PanelFrame frame = BeginPanel(PanelSize.Standard, "BOOKMARKS", UiTheme.BOOKMARK_LABEL, Text.Span, headerControls: ShellButtonWidth(f, ADD));
 
-            float buttonsY = y + h - S(24) - S(48);
-            if (_tourSettingsOpen) { BuildTourSettings(f, input, ix, cy, iw, buttonsY - S(16)); }
-            else { BuildBookmarkRows(f, input, ix, cy, iw, buttonsY - S(16)); }
+            if (HeaderButton(ref frame, ADD))
+            {
+                BookmarkRecord added = Bookmarks.Add(null, _player.Feet, _player.Yaw, _player.Pitch, _player.Flying, CurrentLevelName, BookmarkSunTime(), _section,
+                    CurrentStandingEye, BookmarkVisibility());
+                _thumbnailFor = added;
+                _bookmarksNotice = Bookmarks.LastError ?? $"Added “{added.Name}” (RENAME to change it)";
+                _bookmarkScroll.ScrollToEnd();
+            }
 
-            if (_bookmarksNotice != null) { _ui.TextWrapped(f.Body, ix, buttonsY - S(30), iw, _bookmarksNotice, UiTheme.MEASURE_TEXT, maxLines: 1); }
-            float bx = ix;
-            if (!_tourSettingsOpen)
+            BuildBookmarkRows(f, input, frame.Ix, frame.BodyTop, frame.Iw, frame.BodyBottom);
+            if (!_bookmarksOpen) { return; } // GO / RENAME left the panel
+
+            int settings = FooterAction("TOUR SETTINGS"); // Round K-A: MEDIA → TOUR
+            int play = FooterAction("PLAY TOUR", ShellStyle.Primary);
+            int pressed = EndPanel(frame, _bookmarksNotice, HINT_BOOKMARKS_KEYS.Text);
+            if (pressed == settings)
             {
-                if (MenuButton(f, bx, buttonsY, S(220), "ADD THIS VIEW", false, false))
-                {
-                    BookmarkRecord added = Bookmarks.Add(null, _player.Feet, _player.Yaw, _player.Pitch, _player.Flying, CurrentLevelName, BookmarkSunTime(), _section,
-                        CurrentStandingEye, BookmarkVisibility());
-                    _thumbnailFor = added;
-                    _bookmarksNotice = Bookmarks.LastError ?? $"Added “{added.Name}” (RENAME to change it)";
-                    _bookmarkScroll = Bookmarks.Bookmarks.Count; // show the end of the list (clamped while drawing)
-                }
-                bx += S(236);
+                CloseBookmarksPanel();
+                OpenMedia(MEDIA_TOUR);
             }
-            if (MenuButton(f, bx, buttonsY, S(200), _tourSettingsOpen ? "BACK TO LIST" : "TOUR SETTINGS", false, false)) { ToggleTourSettings(); }
-            bx += S(216);
-            if (MenuButton(f, bx, buttonsY, S(140), "CLOSE", false, false))
-            {
-                CloseBookmarks();
-                return;
-            }
-            float playW = S(200);
-            if (MenuButton(f, ix + iw - playW, buttonsY, playW, "PLAY TOUR", primary: true, danger: false)) { StartTour(); return; }
-            if (_tourSettingsOpen && MenuButton(f, ix + iw - playW * 2f - S(16), buttonsY, playW, "RECORD VIDEO", false, false)) { StartVideo(); }
+            else if (pressed == play) { StartTour(); }
         }
 
         /// <summary>
-        /// The scrolling rows: number, name, details and Go / Rename / Set here / ↑ / ↓ / Delete.
+        /// The rows (a clipped scroll region): number, name, details and Go / Rename / Set here / ↑ / ↓ / Delete.
         /// </summary>
         private void BuildBookmarkRows(FontAtlas f, InputState input, float x, float y, float w, float bottom)
         {
             List<BookmarkRecord> list = Bookmarks.Bookmarks;
-            float rowH = S(70);
-            int visible = Math.Max(1, (int)((bottom - y) / rowH));
+            float rowH = S(74);
 
             if (list.Count == 0)
             {
                 _ui.TextWrapped(f.Body, x, y + S(8), w, HINT_BOOKMARKS_EMPTY.Text, UiTheme.TEXT_MUTED, maxLines: 2);
                 return;
             }
-
-            int maxScroll = Math.Max(0, list.Count - visible);
-            if (input.Wheel != 0) { _bookmarkScroll -= input.Wheel * 2; }
-            _bookmarkScroll = Math.Clamp(_bookmarkScroll, 0, maxScroll);
             if (_bookmarkDeleteArmed != null && _clock > _bookmarkDeleteArmedUntil) { _bookmarkDeleteArmed = null; }
+
+            // Polish round P-A1: a clipped, pixel-scrolled list (rows drawn from 4 px inside, so the stripe fits)
+            float top = BeginScroll(_bookmarkScroll, input, x, y, w, bottom - y, out float cw);
+            VisibleRows(_bookmarkScroll, rowH, list.Count, out int first, out int last);
+            float listX = x;
+            x += S(8);
+            w = cw - S(16);
 
             BookmarkRecord go = null, rename = null, here = null, up = null, down = null, delete = null;
             float small = S(34), wide = S(84), gap = S(6);
             float buttonsW = wide * 4 + small * 2 + gap * 5;
-            int last = Math.Min(list.Count, _bookmarkScroll + visible);
-            for (int i = _bookmarkScroll; i < last; i++)
+            for (int i = first; i < last; i++)
             {
                 BookmarkRecord record = list[i];
-                float ry = y + (i - _bookmarkScroll) * rowH;
-                if (((i - _bookmarkScroll) & 1) == 0) { _ui.Rect(x - S(8), ry - S(4), w + S(16), rowH - S(4), Rgba.Hex(0xFFFFFF, 0.03f)); }
+                float ry = top + i * rowH + S(4);
+                if ((i & 1) == 0) { _ui.Rect(listX, ry - S(4), cw, rowH - S(4), UiTheme.ROW_STRIPE); }
 
                 // Number (Ctrl+n for the first nine), thumbnail, name, then "Level · author · date"
                 Text.Clear().Append(i + 1);
@@ -291,11 +305,7 @@ namespace BimGo.Game
                 if (SmallButton(f, input, bx, by, wide, bh, armed ? "SURE?" : "DELETE", danger: true)) { delete = record; }
             }
 
-            if (maxScroll > 0)
-            {
-                Text.Clear().Append(_bookmarkScroll + 1).Append('–').Append(last).Append(" of ").Append(list.Count).Append(" · wheel to scroll");
-                _ui.TextRight(f.Small, x + w, bottom + S(2), Text.Span, UiTheme.TEXT_FAINT);
-            }
+            EndScroll(_bookmarkScroll, input, top + list.Count * rowH);
 
             // Act after drawing (the list must not change while it is being walked)
             if (go != null)

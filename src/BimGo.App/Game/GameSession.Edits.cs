@@ -75,9 +75,9 @@ namespace BimGo.Game
             if (_hidden[element] == hidden || Scene.Elements[element].IsLibraryTemplate) { return; }
             _hidden[element] = hidden;
             _sceneRevision++;
-            _renderer.SetElementHidden(element, hidden || _userHidden[element]);
+            _renderer.SetElementHidden(element, hidden || _userHidden[element] || ProfileHides(element));
 
-            bool visible = _groupVisible[Rendering.SceneBatches.GroupOf(Scene.Elements[element])] && !hidden && !_userHidden[element];
+            bool visible = _groupVisible[Rendering.SceneBatches.GroupOf(Scene.Elements[element])] && !hidden && !_userHidden[element] && !ProfileHides(element);
             _pickMask[element] = visible;
             _collisionMask[element] = visible && Scene.Elements[element].CategoryIndex != _doorCategory;
         }

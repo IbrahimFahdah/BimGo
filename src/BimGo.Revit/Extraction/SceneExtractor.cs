@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Numerics;
 using BimGo.Format;
 using BimGo.Scene;
@@ -31,6 +31,9 @@ namespace BimGo.Extraction
 
         private readonly Document _doc;
         private readonly LaunchSettings _settings;
+
+        /// <summary>Alpha of an opaque material made glass by a keyword (QOL round): ≈ 55 % transparent.</summary>
+        private const int GLASS_KEYWORD_ALPHA = 115;
         private readonly Options _geometryOptions;
         private readonly OperationProgress _progress;
         private Vector3 _origin;
@@ -95,6 +98,7 @@ namespace BimGo.Extraction
             _extractMaterials = settings.ExtractTextures || resolveOnly;
             _resolveOnly = resolveOnly;
             _textureCap = MaterialData.NearestTextureSize(settings.TextureMaxSize);
+            ReflectivityReader.Configure(settings); // QOL round: water / glass overrides
             _emissiveKeywords = (settings.EmissiveKeywords ?? LaunchSettings.DefaultEmissiveKeywords())
                 .Select(k => k.Trim().ToLowerInvariant())
                 .Where(k => k.Length > 0)
@@ -189,6 +193,9 @@ namespace BimGo.Extraction
                 rooms.AddRange(linkRooms);
             }
 
+            // Grids round A: the host's and the extracted links' grids (for the grid overlay)
+            GridLine[] grids = CollectGrids(sources);
+
             // Extract geometry (host first: the app looks host elements up by id, so they keep the lower indices)
             int[] counts = new int[catalog.Count];
             bool[] loaded = new bool[catalog.Count];
@@ -260,6 +267,7 @@ namespace BimGo.Extraction
                 Indices = _indices.ToArray(),
                 Elements = _elements.ToArray(),
                 Levels = levels,
+                Grids = grids,
                 Rooms = rooms.ToArray(),
                 Links = _links.ToArray(),
                 PhaseId = phase?.Id.Value ?? -1,
@@ -422,11 +430,18 @@ namespace BimGo.Extraction
             foreach (Level level in new FilteredElementCollector(_doc).OfClass(typeof(Level)).Cast<Level>())
             {
                 float elevation = (float)(level.ProjectElevation * FT) - _origin.Z;
-                levels.Add(new LevelInfo(level.Name, elevation));
+                levels.Add(new LevelInfo(level.Name, elevation, IsBuildingStorey(level)));
                 _src.LevelNames[level.Id.Value] = level.Name;
             }
             levels.Sort((a, b) => a.Elevation.CompareTo(b.Elevation));
             return levels.ToArray();
+        }
+
+        /// <summary>Grids round A: Revit's "Building Story" (true when it can't be read).</summary>
+        private static bool IsBuildingStorey(Level level)
+        {
+            try { return level.get_Parameter(BuiltInParameter.LEVEL_IS_BUILDING_STORY)?.AsInteger() != 0; }
+            catch { return true; }
         }
 
         #endregion
@@ -1006,6 +1021,8 @@ namespace BimGo.Extraction
                 {
                     // A material named "mirror" is a mirror even when modelled with a glass appearance: drawn opaque
                     int alpha = ReflectivityReader.IsMirrorByName(material) ? 255 : Math.Clamp(255 - (int)(material.Transparency * 2.55), 64, 255);
+                    // QOL round: a glass keyword makes an opaque material see-through (Revit's default glass is ≈ 55 % transparent)
+                    if (alpha >= 250 && ReflectivityReader.IsGlassByName(material)) { alpha = GLASS_KEYWORD_ALPHA; }
                     colour = Pack(c.Red, c.Green, c.Blue, (byte)alpha);
                 }
                 selfIllumination = ReadSelfIllumination(material);

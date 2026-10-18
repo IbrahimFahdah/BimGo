@@ -156,7 +156,17 @@ namespace BimGo.Scene
             Names = names ?? Array.Empty<string>();
             Values = values ?? Array.Empty<string>();
             Rows = rows ?? Array.Empty<int[]>();
+
+            // Colour round A: names → pool index (case ignored; the first spelling wins), built once so rule matching
+            // (clash runs on a worker thread included) only reads it
+            _nameIndex = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            for (int i = 0; i < Names.Length; i++)
+            {
+                if (!string.IsNullOrEmpty(Names[i])) { _nameIndex.TryAdd(Names[i], i); }
+            }
         }
+
+        private readonly Dictionary<string, int> _nameIndex;
 
         /// <summary>Pooled parameter names.</summary>
         public string[] Names { get; }
@@ -169,6 +179,39 @@ namespace BimGo.Scene
 
         /// <summary>True if no parameters were extracted.</summary>
         public bool IsEmpty => Names.Length == 0;
+
+        /// <summary>
+        /// Colour round A: a parameter name's index in <see cref="Names"/> (case ignored), or −1 when it wasn't extracted.
+        /// </summary>
+        public int IndexOfName(string name) => !string.IsNullOrEmpty(name) && _nameIndex.TryGetValue(name.Trim(), out int index) ? index : -1;
+
+        /// <summary>
+        /// Colour round A: an element's value of one parameter (by <see cref="IndexOfName"/>), or null when the element
+        /// doesn't have it. No allocation.
+        /// </summary>
+        /// <param name="element">Index into SceneData.Elements.</param>
+        /// <param name="nameIndex">The parameter's index in <see cref="Names"/>.</param>
+        public string ValueOf(int element, int nameIndex)
+        {
+            if (nameIndex < 0 || (uint)element >= (uint)Rows.Length) { return null; }
+            int[] row = Rows[element];
+            if (row == null) { return null; }
+            for (int i = 0; i + 1 < row.Length; i += 2)
+            {
+                if (row[i] != nameIndex) { continue; }
+                int v = row[i + 1];
+                return (uint)v < (uint)Values.Length ? Values[v] : null;
+            }
+            return null;
+        }
+
+        /// <summary>Colour round A: the extracted parameter names, sorted (case ignored), blanks left out.</summary>
+        public List<string> SortedNames()
+        {
+            var names = Names.Where(n => !string.IsNullOrWhiteSpace(n)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            names.Sort(StringComparer.CurrentCultureIgnoreCase);
+            return names;
+        }
 
         /// <summary>
         /// Number of parameters stored for an element.

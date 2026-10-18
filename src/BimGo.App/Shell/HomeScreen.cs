@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using BimGo.Format;
 using BimGo.Game;
 using BimGo.Live;
@@ -17,6 +17,9 @@ namespace BimGo.Shell
     internal sealed class HomeScreen
     {
         #region Fields
+
+        /// <summary>Sky round: the trademark line (bottom left; the version is bottom right).</summary>
+        private const string TRADEMARK_LINE = "Revit® is a trademark of Autodesk, Inc. BimGo is not affiliated with Autodesk.";
 
         private readonly GameWindow _window;
         private readonly UiBatch _ui;
@@ -230,6 +233,7 @@ namespace BimGo.Shell
 
             // Footer
             _ui.TextRight(f.Small, width - pad, height - S(30), "BimGo " + Program.Version + " · Ctrl+O open · drop a .bimgo here · Go in Revit to walk live", UiTheme.TEXT_FAINT, S(0.5f));
+            _ui.Text(f.Small, pad, height - S(30), TRADEMARK_LINE, UiTheme.TEXT_FAINT, S(0.3f)); // sky round: bottom left
             _ui.Flush(width, height);
             return chosen;
         }

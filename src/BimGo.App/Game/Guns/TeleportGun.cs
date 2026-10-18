@@ -57,6 +57,16 @@ namespace BimGo.Game.Guns
             _valid = false;
             _reason = null;
 
+            // Grids round B: an aimed grid node: stand at (or just beside) it on its level
+            if (Session.GridNodeTeleportTarget(out Vector3 nodeFeet, out float nodeDistance))
+            {
+                _hasTarget = true;
+                _distance = nodeDistance;
+                _feet = nodeFeet;
+                _valid = true;
+                return;
+            }
+
             if (!aim.HasHit || aim.Hit.Distance > MAX_RANGE)
             {
                 _reason = aim.HasHit ? "Too far (80 m max)" : "Aim at a surface";

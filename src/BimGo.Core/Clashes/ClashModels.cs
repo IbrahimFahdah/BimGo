@@ -111,8 +111,26 @@ namespace BimGo.Clashes
         /// <summary>The model: empty = the host model, else the link instance's UniqueId (or its name).</summary>
         public const string LINK = "link";
 
-        /// <summary>Every field in display order.</summary>
-        public static readonly string[] All = { CATALOG, CATEGORY, FAMILY, TYPE, LEVEL, LINK };
+        /// <summary>
+        /// Colour round A: the element's phase role (<see cref="PhaseValues"/>: "existing", "new", "between", "unphased").
+        /// </summary>
+        public const string PHASE = "phase";
+
+        /// <summary>
+        /// Colour round A: one of the extra parameters picked in Revit Options → Parameters (the rule's
+        /// <see cref="SetRule.Parameter"/> names it; instance value, else the type's, as display text). Older builds
+        /// read the field as "Revit category" (the rule then matches nothing they know of).
+        /// </summary>
+        public const string PARAMETER = "parameter";
+
+        /// <summary>The built-in fields in display order (parameters follow them, one per extracted name).</summary>
+        public static readonly string[] All = { CATALOG, CATEGORY, FAMILY, TYPE, LEVEL, LINK, PHASE };
+
+        /// <summary>The stored phase values, in <see cref="BimGo.Scene.PhaseRole"/> order.</summary>
+        public static readonly string[] PhaseValues = { "existing", "new", "between", "unphased" };
+
+        /// <summary>Labels of <see cref="PhaseValues"/>.</summary>
+        public static readonly string[] PhaseLabels = { "Existing", "New", "Between phases", "Not phased" };
 
         /// <summary>A known field for any text (unknown reads as category).</summary>
         public static string Normalise(string field)
@@ -121,7 +139,21 @@ namespace BimGo.Clashes
             {
                 if (string.Equals(known, field?.Trim(), StringComparison.OrdinalIgnoreCase)) { return known; }
             }
+            if (string.Equals(PARAMETER, field?.Trim(), StringComparison.OrdinalIgnoreCase)) { return PARAMETER; }
             return CATEGORY;
+        }
+
+        /// <summary>The stored value of a phase role.</summary>
+        public static string PhaseValue(BimGo.Scene.PhaseRole role) => PhaseValues[Math.Clamp((int)role, 0, PhaseValues.Length - 1)];
+
+        /// <summary>The label of a stored phase value (the value itself when unknown).</summary>
+        public static string PhaseLabel(string value)
+        {
+            for (int i = 0; i < PhaseValues.Length; i++)
+            {
+                if (string.Equals(PhaseValues[i], value, StringComparison.OrdinalIgnoreCase)) { return PhaseLabels[i]; }
+            }
+            return value ?? string.Empty;
         }
     }
 
@@ -150,11 +182,23 @@ namespace BimGo.Clashes
         /// <summary>Takes out elements whose field contains the text.</summary>
         public const string NOT_CONTAINS = "notContains";
 
+        /// <summary>
+        /// Colour round B: the field's number (the first number in its text, units ignored: "600 mm" → 600) is at
+        /// least the value. Elements without a number don't match.
+        /// </summary>
+        public const string AT_LEAST = "atLeast";
+
+        /// <summary>Colour round B: the field's number is at most the value.</summary>
+        public const string AT_MOST = "atMost";
+
+        /// <summary>Colour round B: the field's number is between the two values (inclusive, either order).</summary>
+        public const string BETWEEN = "between";
+
         /// <summary>Every operator in display order.</summary>
-        public static readonly string[] All = { IS, IS_ONE_OF, IS_NOT, IS_NOT_ANY_OF, CONTAINS, NOT_CONTAINS };
+        public static readonly string[] All = { IS, IS_ONE_OF, IS_NOT, IS_NOT_ANY_OF, CONTAINS, NOT_CONTAINS, AT_LEAST, AT_MOST, BETWEEN };
 
         /// <summary>Labels for buttons and lists (<see cref="All"/> order).</summary>
-        public static readonly string[] Labels = { "IS", "IS ONE OF", "IS NOT", "IS NOT ANY OF", "CONTAINS", "DOES NOT CONTAIN" };
+        public static readonly string[] Labels = { "IS", "IS ONE OF", "IS NOT", "IS NOT ANY OF", "CONTAINS", "DOES NOT CONTAIN", "AT LEAST (≥)", "AT MOST (≤)", "BETWEEN" };
 
         /// <summary>True for a known operator word (case ignored).</summary>
         public static bool IsKnown(string op) => IndexOf(op) >= 0;
@@ -188,8 +232,19 @@ namespace BimGo.Clashes
         /// <summary>True when the value is typed text (part of a name), not a value picked from the model.</summary>
         public static bool IsText(string op) => op is CONTAINS or NOT_CONTAINS;
 
-        /// <summary>A lower-case label for descriptions ("is not any of").</summary>
-        public static string Words(string op) => Labels[Math.Max(0, IndexOf(op))].ToLowerInvariant();
+        /// <summary>Colour round B: true for the number operators (at least, at most, between: typed numbers).</summary>
+        public static bool IsNumeric(string op) => op is AT_LEAST or AT_MOST or BETWEEN;
+
+        /// <summary>How many values the operator keeps (between: 2; the list operators: any).</summary>
+        public static int MaxValues(string op) => IsList(op) ? int.MaxValue : op == BETWEEN ? 2 : 1;
+
+        /// <summary>A lower-case label for descriptions ("is not any of", "at least").</summary>
+        public static string Words(string op) => op switch
+        {
+            AT_LEAST => "at least",
+            AT_MOST => "at most",
+            _ => Labels[Math.Max(0, IndexOf(op))].ToLowerInvariant()
+        };
     }
 
     /// <summary>
@@ -202,6 +257,12 @@ namespace BimGo.Clashes
     {
         /// <summary>The field (<see cref="RuleField"/>).</summary>
         public string Field { get; set; } = RuleField.CATALOG;
+
+        /// <summary>
+        /// Colour round A: the parameter's name when <see cref="Field"/> is <see cref="RuleField.PARAMETER"/>, else null
+        /// (not written). Older builds ignore it.
+        /// </summary>
+        public string Parameter { get; set; }
 
         /// <summary>
         /// The operator (<see cref="RuleOp"/>); null in files from C-A / C-B1 builds, which used <see cref="Contains"/>
@@ -245,6 +306,17 @@ namespace BimGo.Clashes
             {
                 int count = ValueCount;
                 if (count == 0) { return false; }
+                if (RuleOp.IsNumeric(Operator))
+                {
+                    // Colour round B: numbers only (between needs both)
+                    int needed = Operator == RuleOp.BETWEEN ? 2 : 1;
+                    if (count < needed) { return false; }
+                    for (int i = 0; i < needed; i++)
+                    {
+                        if (!RuleNumbers.TryParse(ValueAt(i), out _)) { return false; }
+                    }
+                    return true;
+                }
                 if (!RuleOp.IsText(Operator)) { return true; }
                 for (int i = 0; i < count; i++)
                 {
@@ -261,6 +333,7 @@ namespace BimGo.Clashes
         public SetRule Normalise()
         {
             Field = RuleField.Normalise(Field);
+            Parameter = Field == RuleField.PARAMETER ? (Parameter ?? string.Empty).Trim() : null;
             if (!RuleOp.IsKnown(Op))
             {
                 Op = RuleOp.FromLegacy(Contains, Exclude);
@@ -268,7 +341,8 @@ namespace BimGo.Clashes
             }
             Op = RuleOp.Normalise(Op);
             Values = (Values ?? new List<string>()).Select(v => v ?? string.Empty).ToList();
-            if (!RuleOp.IsList(Op) && Values.Count > 1) { Values.RemoveRange(1, Values.Count - 1); }
+            int keep = RuleOp.MaxValues(Op);
+            if (Values.Count > keep) { Values.RemoveRange(keep, Values.Count - keep); }
             Contains = RuleOp.IsText(Op);
             Exclude = RuleOp.IsNegative(Op);
             Value = Values.Count > 0 ? Values[0] : string.Empty;
@@ -281,7 +355,9 @@ namespace BimGo.Clashes
         public void SetOperator(string op)
         {
             Normalise();
+            bool wasNumeric = RuleOp.IsNumeric(Op);
             Op = RuleOp.Normalise(op);
+            if (wasNumeric != RuleOp.IsNumeric(Op)) { Values = new List<string>(); } // colour round B: numbers and names don't mix
             Normalise();
         }
 
@@ -294,12 +370,23 @@ namespace BimGo.Clashes
         }
 
         /// <summary>Changes the field (the values belong to the old field, so they go).</summary>
-        public void SetField(string field)
+        /// <param name="field">The field (<see cref="RuleField"/>).</param>
+        /// <param name="parameter">The parameter's name, for <see cref="RuleField.PARAMETER"/>.</param>
+        public void SetField(string field, string parameter = null)
         {
             Normalise();
             Field = RuleField.Normalise(field);
+            Parameter = parameter;
             Values = new List<string>();
             Normalise();
+        }
+
+        /// <summary>True when the rule looks at the same field (and parameter) as another field choice.</summary>
+        public bool IsField(string field, string parameter)
+        {
+            string normal = RuleField.Normalise(field);
+            if (RuleField.Normalise(Field) != normal) { return false; }
+            return normal != RuleField.PARAMETER || string.Equals(Parameter ?? string.Empty, parameter ?? string.Empty, StringComparison.OrdinalIgnoreCase);
         }
 
         /// <summary>True when the rule holds a value (case ignored).</summary>
@@ -327,6 +414,7 @@ namespace BimGo.Clashes
         public SetRule Copy() => new()
         {
             Field = Field,
+            Parameter = Parameter,
             Op = Op,
             Values = Values == null ? new List<string>() : new List<string>(Values),
             Contains = Contains,
@@ -362,13 +450,14 @@ namespace BimGo.Clashes
         /// <summary>C-B4: rule groups (null or empty: none, the file stays as before).</summary>
         public List<RuleGroup> Groups { get; set; }
 
-        /// <summary>Every rule: the set's own, then each group's.</summary>
+        /// <summary>Every rule: the set's own, then each group's (polish round P-C: nested groups' too, depth first).</summary>
         public IEnumerable<SetRule> AllRules()
         {
             foreach (SetRule rule in Rules ?? Enumerable.Empty<SetRule>()) { yield return rule; }
             foreach (RuleGroup group in Groups ?? Enumerable.Empty<RuleGroup>())
             {
-                foreach (SetRule rule in group?.Rules ?? Enumerable.Empty<SetRule>()) { yield return rule; }
+                if (group == null) { continue; }
+                foreach (SetRule rule in group.AllRules()) { yield return rule; }
             }
         }
 
@@ -396,6 +485,100 @@ namespace BimGo.Clashes
     }
 
     /// <summary>
+    /// Colour round B: numbers in rule values and element texts. The first number in a text counts ("600 mm" → 600,
+    /// "-/120/120" → 120, "5' 7\"" → 5); spaces, apostrophes and thin spaces between digit groups are dropped; a comma
+    /// is a thousands separator when three digits follow it and there is no other decimal mark ("1,200"), otherwise
+    /// a decimal mark ("2,5"). Values are compared as shown (the project's display units).
+    /// </summary>
+    public static class RuleNumbers
+    {
+        /// <summary>The first number in a text, or false when there is none.</summary>
+        public static bool TryParse(string text, out double value)
+        {
+            value = 0;
+            if (string.IsNullOrEmpty(text)) { return false; }
+            int i = 0;
+            while (i < text.Length && !char.IsDigit(text[i])) { i++; }
+            if (i >= text.Length) { return false; }
+            bool negative = i > 0 && (text[i - 1] == '-' || text[i - 1] == '−') && (i < 2 || !char.IsDigit(text[i - 2]));
+            if (i > 0 && text[i - 1] == '.') { i--; } // ".5"
+
+            var digits = new System.Text.StringBuilder();
+            bool decimalSeen = false;
+            for (; i < text.Length; i++)
+            {
+                char c = text[i];
+                if (char.IsDigit(c)) { digits.Append(c); continue; }
+                bool nextDigit = i + 1 < text.Length && char.IsDigit(text[i + 1]);
+                if (!nextDigit) { break; }
+                if ((c == ' ' || c == '\u00A0' || c == '\u202F' || c == '\'') && digits.Length > 0 && !decimalSeen && GroupFollows(text, i + 1)) { continue; }
+                if (c == '.' && !decimalSeen)
+                {
+                    decimalSeen = true;
+                    digits.Append('.');
+                    continue;
+                }
+                if (c == ',' && !decimalSeen)
+                {
+                    if (GroupFollows(text, i + 1)) { continue; } // thousands
+                    decimalSeen = true;
+                    digits.Append('.');
+                    continue;
+                }
+                break;
+            }
+            if (digits.Length == 0 || digits[0] == '.' && digits.Length == 1) { return false; }
+            if (!double.TryParse(digits.ToString(), System.Globalization.NumberStyles.AllowDecimalPoint, System.Globalization.CultureInfo.InvariantCulture, out value)) { return false; }
+            if (negative) { value = -value; }
+            return double.IsFinite(value);
+        }
+
+        /// <summary>True when exactly three digits follow (then not a digit): a thousands group.</summary>
+        private static bool GroupFollows(string text, int start)
+        {
+            if (start + 3 > text.Length) { return false; }
+            for (int k = start; k < start + 3; k++)
+            {
+                if (!char.IsDigit(text[k])) { return false; }
+            }
+            return start + 3 == text.Length || !char.IsDigit(text[start + 3]);
+        }
+
+        /// <summary>The numbers in a typed text ("300 to 600" → 300, 600), at most <paramref name="max"/>.</summary>
+        public static List<double> All(string text, int max = 2)
+        {
+            var result = new List<double>();
+            string rest = text ?? string.Empty;
+            while (result.Count < max && TryParseAt(rest, out double value, out int end))
+            {
+                result.Add(value);
+                rest = rest[end..];
+                // "300-600" / "300–600": a dash straight after a number is a range, not a minus
+                if (rest.Length > 0 && (rest[0] == '-' || rest[0] == '–')) { rest = rest[1..]; }
+            }
+            return result;
+        }
+
+        private static bool TryParseAt(string text, out double value, out int end)
+        {
+            end = 0;
+            value = 0;
+            int i = 0;
+            while (i < text.Length && !char.IsDigit(text[i])) { i++; }
+            if (i >= text.Length) { return false; }
+            int j = i;
+            while (j < text.Length && (char.IsDigit(text[j]) || ((text[j] == '.' || text[j] == ',') && j + 1 < text.Length && char.IsDigit(text[j + 1])))) { j++; }
+            // A minus straight before (not "300-600", which is a range)
+            int from = i > 0 && (text[i - 1] == '-' || text[i - 1] == '−') && (i < 2 || text[i - 2] == ' ') ? i - 1 : i;
+            end = j;
+            return TryParse(text[from..j], out value);
+        }
+
+        /// <summary>A number as rules store it (invariant, up to 6 decimals, no trailing zeros).</summary>
+        public static string Format(double value) => value.ToString("0.######", System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    /// <summary>
     /// C-B4: a group of rules inside a search set: ANY or ALL of its rules (each an ordinary condition, "not" ones
     /// included). Rules with no value yet are left out; a group with none is left out of its set.
     /// </summary>
@@ -407,28 +590,62 @@ namespace BimGo.Clashes
         /// <summary>The rules.</summary>
         public List<SetRule> Rules { get; set; } = new();
 
-        /// <summary>Reserved for nesting deeper (not read or written by this build).</summary>
-        [System.Text.Json.Serialization.JsonIgnore]
+        /// <summary>
+        /// Polish round P-C: groups inside this group, to any depth (each is one more condition of this group, like a
+        /// rule). Null or empty: none, and nothing is written (files from before read as they were).
+        /// </summary>
+        [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
         public List<RuleGroup> Groups { get; set; }
 
-        /// <summary>True when at least one rule has a value.</summary>
-        public bool HasConditions => Rules != null && Rules.Any(r => r != null && r.IsComplete);
+        /// <summary>Deepest nesting kept when reading (a guard against damaged files; the editor never gets near it).</summary>
+        public const int MAX_DEPTH = 16;
 
-        /// <summary>Drops null rules and normalises the rest.</summary>
-        public RuleGroup Normalise()
+        /// <summary>True when at least one rule here, or in a group inside, has a value.</summary>
+        public bool HasConditions => (Rules != null && Rules.Any(r => r != null && r.IsComplete))
+            || (Groups != null && Groups.Any(g => g != null && g.HasConditions));
+
+        /// <summary>Every rule: this group's, then its groups' (depth first).</summary>
+        public IEnumerable<SetRule> AllRules()
+        {
+            foreach (SetRule rule in Rules ?? Enumerable.Empty<SetRule>()) { yield return rule; }
+            foreach (RuleGroup group in Groups ?? Enumerable.Empty<RuleGroup>())
+            {
+                if (group == null) { continue; }
+                foreach (SetRule rule in group.AllRules()) { yield return rule; }
+            }
+        }
+
+        /// <summary>
+        /// Drops null rules and groups, normalises the rest (P-C: and the groups inside, to <see cref="MAX_DEPTH"/>;
+        /// deeper ones are dropped), and leaves <see cref="Groups"/> null when empty.
+        /// </summary>
+        public RuleGroup Normalise() => Normalise(1);
+
+        private RuleGroup Normalise(int depth)
         {
             Rules ??= new List<SetRule>();
             Rules.RemoveAll(r => r == null);
             foreach (SetRule rule in Rules) { rule.Normalise(); }
+            if (Groups != null)
+            {
+                Groups.RemoveAll(g => g == null);
+                if (depth >= MAX_DEPTH) { Groups.Clear(); }
+                foreach (RuleGroup group in Groups) { group.Normalise(depth + 1); }
+                if (Groups.Count == 0) { Groups = null; }
+            }
             return this;
         }
 
-        /// <summary>A copy.</summary>
+        /// <summary>A copy (P-C: with the groups inside).</summary>
         public RuleGroup Copy() => new()
         {
             MatchAll = MatchAll,
-            Rules = Rules?.Where(r => r != null).Select(r => r.Copy()).ToList() ?? new List<SetRule>()
+            Rules = Rules?.Where(r => r != null).Select(r => r.Copy()).ToList() ?? new List<SetRule>(),
+            Groups = Groups?.Where(g => g != null).Select(g => g.Copy()).ToList() is { Count: > 0 } groups ? groups : null
         };
+
+        /// <summary>Number of rules here and inside.</summary>
+        public int RuleCount => AllRules().Count();
     }
 
     /// <summary>
@@ -672,6 +889,12 @@ namespace BimGo.Clashes
         /// <summary>Run history, oldest first (at most <see cref="ClashDefaults.MAX_RUNS"/>).</summary>
         public List<ClashRunRecord> Runs { get; set; } = new();
 
+        /// <summary>
+        /// C-C1: clash groups (<see cref="ClashGroup"/>; null when there are none, so files without groups stay as they
+        /// were). Additive: version 1 readers ignore it.
+        /// </summary>
+        public List<ClashGroup> Groups { get; set; }
+
         /// <summary>The set with an id, or null (no allocation: the panels call it every frame).</summary>
         public SearchSet FindSet(string id)
         {
@@ -743,6 +966,7 @@ namespace BimGo.Clashes
                 }
             }
             if (Runs.Count > ClashDefaults.MAX_RUNS) { Runs.RemoveRange(0, Runs.Count - ClashDefaults.MAX_RUNS); }
+            ClashGroups.Clean(this); // C-C1: after the clash ids are fixed
             return this;
         }
     }

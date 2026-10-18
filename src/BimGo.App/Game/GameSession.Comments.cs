@@ -35,14 +35,14 @@ namespace BimGo.Game
         private bool _commentsOpen;
         private int _commentLevelFilter = -1;
         private int _commentStatusFilter;   // 0 all, 1 open, 2 in progress, 3 closed
-        private int _commentScroll;
+        private readonly ScrollRegion _commentScroll = new();
         private CommentRecord _commentDeleteArmed;
         private float _commentDeleteArmedUntil;
         private string _commentsNotice;
 
         // Detail view (null = the list)
         private CommentRecord _commentDetail;
-        private int _replyScroll;
+        private readonly ScrollRegion _commentDetailScroll = new(); // polish round P-A1: the detail view scrolls as one
         private CommentReply _replyDeleteArmed;
         private float _replyDeleteArmedUntil;
 
@@ -63,7 +63,7 @@ namespace BimGo.Game
         private void OpenComments()
         {
             _commentsOpen = true;
-            _commentScroll = 0;
+            _commentScroll.Reset();
             _commentDeleteArmed = null;
             _commentSelected.Clear();
             _commentAnchor = null;
@@ -106,6 +106,7 @@ namespace BimGo.Game
             if (Comments.TryGetView(record, out Vector3 viewFeet))
             {
                 if (record.View.Section != null) { ApplySection(record.View.Section, announce: false); }
+                if (record.View.EyeHeight is float eye) { ApplyEyeHeight(eye); } // P-C: seen as it was made (seated, child…)
                 if (record.View.Flying != _player.Flying) { _player.ToggleFly(); }
                 _player.TeleportTo(viewFeet, record.View.Yaw, Math.Clamp(record.View.Pitch, -1.5f, 1.5f));
                 return;
@@ -136,7 +137,7 @@ namespace BimGo.Game
                 feet = FloorAt(new Vector2(marker.X, marker.Y), floorZ);
             }
 
-            Vector3 eye = feet + new Vector3(0f, 0f, CharacterController.STAND_EYE);
+            Vector3 eye = feet + new Vector3(0f, 0f, CurrentStandingEye); // P-C: the eye-height preset
             Vector3 look = marker - eye;
             yaw = MathF.Atan2(look.Y, look.X);
             pitch = Math.Clamp(MathF.Atan2(look.Z, MathF.Max(0.01f, new Vector2(look.X, look.Y).Length())), -1.2f, 1.2f);
@@ -179,28 +180,18 @@ namespace BimGo.Game
         {
             FontAtlas f = _ui.Atlas;
             InputState input = _window.Input;
-            int width = _window.Width, height = _window.Height;
-            _ui.Rect(0, 0, width, height, UiTheme.MENU_BACKGROUND);
-
-            float w = MathF.Min(S(1000), width - S(80));
-            float h = height - S(96);
-            float x = (width - w) * 0.5f, y = S(48);
-            _ui.Panel(x, y, w, h, UiTheme.CARD, UiTheme.CARD_BORDER);
-
             if (_commentDetail != null && !Comments.Comments.Contains(_commentDetail)) { _commentDetail = null; }
             if (_commentDetail != null)
             {
-                BuildCommentDetail(f, input, x, y, w, h, _commentDetail);
+                BuildCommentDetail(f, input, _commentDetail);
                 return;
             }
 
-            BeginOverlays(input); // C-B3: the bulk delete confirm takes the click while it is open
-            float ix = x + S(24), iw = w - S(48);
-            float cy = y + S(20);
-            _ui.Text(f.Small, ix, cy, "COMMENTS", UiTheme.COMMENT_LABEL, S(2f));
+            // C-B3: the bulk delete confirm takes the click while it is open (the shell begins and draws the overlays)
             Text.Clear().AppendGrouped(Comments.Comments.Count).Append(Comments.Comments.Count == 1 ? " comment · saved to " : " comments · saved to ").Append(Comments.FileName);
-            _ui.TextRight(f.Small, ix + iw, cy, Text.Span, UiTheme.TEXT_MUTED, S(0.6f));
-            cy += S(30);
+            PanelFrame frame = BeginPanel(PanelSize.Standard, "COMMENTS", UiTheme.COMMENT_LABEL, Text.Span, overlays: true);
+            float ix = frame.Ix, iw = frame.Iw;
+            float cy = frame.BodyTop;
 
             // Filters: ‹ level › and status
             float filterX = ix;
@@ -217,7 +208,7 @@ namespace BimGo.Game
             if (status != _commentStatusFilter)
             {
                 _commentStatusFilter = status;
-                _commentScroll = 0;
+                _commentScroll.Reset();
                 _commentSelected.Clear();
             }
             // C-B3: the type (comments made from clashes are their own type)
@@ -225,15 +216,14 @@ namespace BimGo.Game
             if (type != _commentTypeFilter)
             {
                 _commentTypeFilter = type;
-                _commentScroll = 0;
+                _commentScroll.Reset();
                 _commentSelected.Clear();
             }
-            cy += S(46);
+            cy += S(UiTheme.CONTROL_HEIGHT + UiTheme.GAP);
 
-            float buttonsY = y + h - S(24) - S(48);
-            float selectY = buttonsY - S(44);
-            BuildCommentRows(f, input, ix, cy, iw, selectY - S(14));
-            if (_commentDetail != null) { return; }
+            float selectY = frame.BodyBottom - S(UiTheme.SMALL_BUTTON_HEIGHT);
+            BuildCommentRows(f, input, ix, cy, iw, selectY - S(UiTheme.GAP_SMALL));
+            if (_commentDetail != null || !_commentsOpen) { return; }
 
             // C-B3: the ticked comments: select all shown, clear, delete (a confirm)
             float sw = S(170), sx = ix;
@@ -246,31 +236,25 @@ namespace BimGo.Game
                 if (SmallButton(f, input, sx, selectY, S(220), S(30), CommentSelectedLabel(), danger: true)) { ConfirmDeleteSelectedComments(); }
                 sx += S(228);
             }
-            if (_commentsNotice != null) { _ui.TextWrapped(f.Body, sx + S(6), selectY + S(5), ix + iw - sx - S(6), _commentsNotice, UiTheme.MEASURE_TEXT, maxLines: 1); }
-            // EXPORT BCF (the comments shown) · IMPORT BCF · BCF coordinates · CLOSE
-            float gap = S(10);
-            float bw = MathF.Min(S(230), (iw - gap * 3) / 4f);
-            float bx = ix;
-            if (MenuButton(f, bx, buttonsY, bw, "EXPORT BCF…", false, false, enabled: Comments.Comments.Count > 0)) { ExportBcf(); }
-            bx += bw + gap;
-            if (MenuButton(f, bx, buttonsY, bw, "IMPORT BCF…", false, false)) { ImportBcf(); }
-            bx += bw + gap;
-            if (MenuButton(f, bx, buttonsY, bw, BcfCoordinateLabel, false, false)) { CycleBcfCoordinates(); }
-            bx += bw + gap;
-            if (MenuButton(f, bx, buttonsY, bw, "CLOSE", false, false)) { CloseComments(); }
 
-            // The open confirm, on top
-            DrawOverlays(f, input, x, y, w, h);
+            // EXPORT BCF (the comments shown) · IMPORT BCF · BCF coordinates; the open confirm is drawn on top
+            int export = FooterAction("EXPORT BCF…", enabled: Comments.Comments.Count > 0);
+            int import = FooterAction("IMPORT BCF…");
+            int coordinates = FooterAction(BcfCoordinateLabel);
+            int pressed = EndPanel(frame, _commentsNotice, "GO stands where the comment was made · OPEN shows it in full · Ctrl / Shift+click ticks rows");
+            if (pressed == FOOTER_LEFT || pressed == FOOTER_NONE) { return; }
+            if (pressed == export) { ExportBcf(); }
+            else if (pressed == import) { ImportBcf(); }
+            else if (pressed == coordinates) { CycleBcfCoordinates(); }
         }
 
         /// <summary>
-        /// The scrolling rows: thumbnail, header, text, issue line (status · priority · assignee · replies) and
+        /// The rows (a clipped scroll region): thumbnail, header, text, issue line (status · priority · assignee · replies) and
         /// GO / OPEN / DELETE.
         /// </summary>
         private void BuildCommentRows(FontAtlas f, InputState input, float x, float y, float w, float bottom)
         {
             float rowH = S(84);
-            int visible = Math.Max(1, (int)((bottom - y) / rowH));
 
             // Count the filtered rows (no list is built: the filter is applied while drawing)
             int total = 0;
@@ -287,14 +271,17 @@ namespace BimGo.Game
                 return;
             }
 
-            int maxScroll = Math.Max(0, total - visible);
-            if (input.Wheel != 0) { _commentScroll -= input.Wheel * 2; }
-            _commentScroll = Math.Clamp(_commentScroll, 0, maxScroll);
             if (_commentDeleteArmed != null && _clock > _commentDeleteArmedUntil) { _commentDeleteArmed = null; }
+
+            // Polish round P-A1: a clipped, pixel-scrolled list (only the rows in view are drawn)
+            float top = BeginScroll(_commentScroll, input, x, y, w, bottom - y, out float cw);
+            VisibleRows(_commentScroll, rowH, total, out int first, out int last);
+            x += S(8);
+            w = cw - S(16);
 
             CommentRecord go = null, open = null, delete = null, tick = null;
             bool tickRun = false;
-            int index = -1, drawn = 0;
+            int index = -1;
             float buttonW = S(70), gap = S(6);
             float buttonsW = buttonW * 3 + gap * 2;
             float thumbW = S(120), thumbH = S(68);
@@ -304,12 +291,11 @@ namespace BimGo.Game
             {
                 if (!MatchesCommentFilter(record)) { continue; }
                 index++;
-                if (index < _commentScroll) { continue; }
-                if (drawn >= visible) { break; }
+                if (index < first) { continue; }
+                if (index >= last) { break; }
 
-                float ry = y + drawn * rowH;
-                drawn++;
-                if ((drawn & 1) == 1) { _ui.Rect(x - S(8), ry - S(4), w + S(16), rowH - S(4), Rgba.Hex(0xFFFFFF, 0.03f)); }
+                float ry = top + index * rowH + S(4);
+                if ((index & 1) == 0) { _ui.Rect(x - S(8), ry - S(4), w + S(16), rowH - S(4), UiTheme.ROW_STRIPE); }
 
                 // Status bar on the left edge, the tick (C-B3), then the thumbnail
                 uint statusColour = UiTheme.StatusColour(record.Status);
@@ -359,11 +345,7 @@ namespace BimGo.Game
                 }
             }
 
-            if (maxScroll > 0)
-            {
-                Text.Clear().Append(_commentScroll + 1).Append('–').Append(Math.Min(total, _commentScroll + visible)).Append(" of ").Append(total).Append(" · wheel to scroll");
-                _ui.TextRight(f.Small, x + w, bottom + S(2), Text.Span, UiTheme.TEXT_FAINT);
-            }
+            EndScroll(_commentScroll, input, top + total * rowH);
 
             // Act after drawing (the list must not change while it is being walked)
             if (tick != null) { TickComment(tick, tickRun); }
@@ -371,7 +353,7 @@ namespace BimGo.Game
             else if (open != null)
             {
                 _commentDetail = open;
-                _replyScroll = 0;
+                _commentDetailScroll.Reset();
                 _replyDeleteArmed = null;
                 _commentsNotice = null;
             }
@@ -463,6 +445,14 @@ namespace BimGo.Game
                     changed = true;
                 }
             }
+            foreach (BimGo.Clashes.ClashGroup group in _clashDocument.Groups ?? Enumerable.Empty<BimGo.Clashes.ClashGroup>())
+            {
+                if (group.CommentId != null && ids.Contains(group.CommentId))
+                {
+                    group.CommentId = null; // C-C1: a deleted group comment
+                    changed = true;
+                }
+            }
             if (changed)
             {
                 ClashesChanged();
@@ -509,15 +499,17 @@ namespace BimGo.Game
         /// <summary>
         /// One comment in full: picture, text, status / priority / assignee, the reply thread and its actions.
         /// </summary>
-        private void BuildCommentDetail(FontAtlas f, InputState input, float x, float y, float w, float h, CommentRecord record)
+        private void BuildCommentDetail(FontAtlas f, InputState input, CommentRecord record)
         {
-            float ix = x + S(24), iw = w - S(48);
-            float cy = y + S(20);
-            _ui.Text(f.Small, ix, cy, "COMMENT", UiTheme.COMMENT_LABEL, S(2f));
             Text.Clear().Append(record.Header);
             if (!string.IsNullOrEmpty(record.Level)) { Text.Append(" · ").Append(record.Level); }
-            _ui.TextRight(f.Small, ix + iw, cy, Text.Span, UiTheme.TEXT_MUTED, S(0.6f));
-            cy += S(32);
+            const string REPLY = "REPLY…";
+            PanelFrame frame = BeginPanel(PanelSize.Standard, "COMMENT", UiTheme.COMMENT_LABEL, Text.Span, headerControls: ShellButtonWidth(f, REPLY));
+            if (HeaderButton(ref frame, REPLY, ShellStyle.Primary)) { BeginCommentReply(record); }
+            float ix = frame.Ix;
+
+            // Polish round P-A1: the picture, the issue fields and the whole thread scroll as one
+            float cy = BeginScroll(_commentDetailScroll, input, frame.Ix, frame.BodyTop, frame.Iw, frame.BodyHeight, out float iw);
 
             // Picture (left) and the issue fields (right)
             float picW = MathF.Min(S(384), iw * 0.42f), picH = picW * 9f / 16f;
@@ -527,7 +519,12 @@ namespace BimGo.Game
             if (record.SnapshotData != null)
             {
                 float mw = S(96), mh = S(26);
-                if (SmallButton(f, input, ix + picW - mw - S(6), cy + picH - mh - S(6), mw, mh, "MARKUP…")) { OpenMarkup(record, returnToGame: false); return; }
+                if (SmallButton(f, input, ix + picW - mw - S(6), cy + picH - mh - S(6), mw, mh, "MARKUP…"))
+                {
+                    _ui.PopClip(); // the scroll region ends here: the markup editor takes over
+                    OpenMarkup(record, returnToGame: false);
+                    return;
+                }
                 if (record.HasMarkup)
                 {
                     _ui.Rect(ix + S(6), cy + picH - mh - S(6), S(92), mh, Rgba.Hex(0x0C0E12, 0.75f));
@@ -574,20 +571,19 @@ namespace BimGo.Game
             Text.Clear().Append("REPLIES (").Append(record.ReplyCount).Append(')');
             _ui.Text(f.Small, ix, cy, Text.Span, UiTheme.COMMENT_LABEL, S(1f));
             cy += S(24);
+            cy = BuildReplies(f, input, record, ix, cy, iw);
+            EndScroll(_commentDetailScroll, input, cy);
 
-            float buttonsY = y + h - S(24) - S(44);
-            BuildReplies(f, input, record, ix, cy, iw, buttonsY - S(40));
-
-            if (_commentsNotice != null) { _ui.TextWrapped(f.Body, ix, buttonsY - S(28), iw, _commentsNotice, UiTheme.MEASURE_TEXT, maxLines: 1); }
-
-            float bw = S(150), bg = S(10), bx = ix;
-            if (MenuButton(f, bx, buttonsY, S(110), "BACK", false, false, height: S(44))) { _commentDetail = null; return; }
-            bx += S(110) + bg;
-            if (MenuButton(f, bx, buttonsY, S(130), "REPLY…", true, false, height: S(44))) { BeginCommentReply(record); }
-            bx += S(130) + bg;
-            if (MenuButton(f, bx, buttonsY, bw, "GO TO VIEW", false, false, height: S(44))) { GoToComment(record); return; }
-            bx += bw + bg;
-            if (MenuButton(f, bx, buttonsY, bw, "SET VIEW HERE", false, false, height: S(44)))
+            // GO TO VIEW · SET VIEW HERE · EDIT TEXT · DELETE (← LIST returns to the list, as Esc)
+            int goTo = FooterAction("GO TO VIEW");
+            int setView = FooterAction("SET VIEW HERE");
+            int edit = FooterAction("EDIT TEXT");
+            bool armed = ReferenceEquals(_commentDeleteArmed, record) && _clock <= _commentDeleteArmedUntil;
+            int delete = FooterAction(armed ? "SURE?" : "DELETE", ShellStyle.Danger);
+            int pressed = EndPanel(frame, _commentsNotice, "REPLY… adds to the thread · ← LIST (or Esc) returns to the list", backLabel: "← LIST");
+            if (pressed == FOOTER_LEFT || pressed == FOOTER_NONE) { return; }
+            if (pressed == goTo) { GoToComment(record); }
+            else if (pressed == setView)
             {
                 // Where the player stands now (the picture is taken from the 3D view behind the menu, next frame)
                 Comments.SetView(record, _player.Feet, _player.Yaw, _player.Pitch, _player.Flying, section: _section);
@@ -596,11 +592,8 @@ namespace BimGo.Game
                 _commentsNotice = Comments.LastError ?? "View and picture set to where you stand";
                 Sound.Play(SoundId.Commit);
             }
-            bx += bw + bg;
-            if (MenuButton(f, bx, buttonsY, S(130), "EDIT TEXT", false, false, height: S(44))) { BeginCommentEdit(record); }
-            bx += S(130) + bg;
-            bool armed = ReferenceEquals(_commentDeleteArmed, record) && _clock <= _commentDeleteArmedUntil;
-            if (MenuButton(f, bx, buttonsY, S(120), armed ? "SURE?" : "DELETE", false, true, height: S(44)))
+            else if (pressed == edit) { BeginCommentEdit(record); }
+            else if (pressed == delete)
             {
                 DeleteComment(record);
                 if (!Comments.Comments.Contains(record)) { _commentDetail = null; }
@@ -608,30 +601,27 @@ namespace BimGo.Game
         }
 
         /// <summary>
-        /// The reply thread (oldest first, wheel scrolls), each with its author, date and DELETE.
+        /// The reply thread (oldest first, inside the detail view's scroll region), each with its author, date and DELETE.
         /// </summary>
-        private void BuildReplies(FontAtlas f, InputState input, CommentRecord record, float x, float y, float w, float bottom)
+        /// <returns>The thread's bottom.</returns>
+        private float BuildReplies(FontAtlas f, InputState input, CommentRecord record, float x, float y, float w)
         {
             if (record.ReplyCount == 0)
             {
                 _ui.Text(f.Body, x, y + S(4), "No replies yet: REPLY… adds one.", UiTheme.TEXT_MUTED);
-                return;
+                return y + S(32);
             }
 
             float rowH = S(58);
-            int visible = Math.Max(1, (int)((bottom - y) / rowH));
             List<CommentReply> replies = record.Replies;
-            int maxScroll = Math.Max(0, replies.Count - visible);
-            if (input.Wheel != 0 && Hover(input, x, y, w, bottom - y)) { _replyScroll -= input.Wheel; }
-            _replyScroll = Math.Clamp(_replyScroll, 0, maxScroll);
             if (_replyDeleteArmed != null && _clock > _replyDeleteArmedUntil) { _replyDeleteArmed = null; }
 
             CommentReply delete = null;
-            int last = Math.Min(replies.Count, _replyScroll + visible);
-            for (int i = _replyScroll; i < last; i++)
+            for (int i = 0; i < replies.Count; i++)
             {
+                float ry = y + i * rowH;
+                if (!InView(_commentDetailScroll, ry, rowH)) { continue; }
                 CommentReply reply = replies[i];
-                float ry = y + (i - _replyScroll) * rowH;
                 _ui.Rect(x, ry, S(2), rowH - S(10), UiTheme.COMMENT);
                 reply.Header ??= $"{reply.Author?.ToUpperInvariant() ?? "?"} · {reply.Created.ToLocalTime():dd MMM HH:mm}";
                 _ui.Text(f.Small, x + S(12), ry, reply.Header, UiTheme.COMMENT_LABEL, S(0.6f));
@@ -639,13 +629,9 @@ namespace BimGo.Game
                 bool armed = ReferenceEquals(_replyDeleteArmed, reply);
                 if (SmallButton(f, input, x + w - S(84), ry + S(4), S(84), S(28), armed ? "SURE?" : "DELETE", danger: true)) { delete = reply; }
             }
-            if (maxScroll > 0)
-            {
-                Text.Clear().Append(_replyScroll + 1).Append('–').Append(last).Append(" of ").Append(replies.Count).Append(" · wheel to scroll");
-                _ui.TextRight(f.Small, x + w, bottom + S(2), Text.Span, UiTheme.TEXT_FAINT);
-            }
+            float bottom = y + replies.Count * rowH;
 
-            if (delete == null) { return; }
+            if (delete == null) { return bottom; }
             if (ReferenceEquals(_replyDeleteArmed, delete))
             {
                 Comments.RemoveReply(record, delete);
@@ -658,6 +644,7 @@ namespace BimGo.Game
                 _replyDeleteArmed = delete;
                 _replyDeleteArmedUntil = _clock + 3f;
             }
+            return bottom;
         }
 
         /// <summary>
@@ -712,7 +699,7 @@ namespace BimGo.Game
             int count = Scene.Levels.Length + 1; // + "all"
             int current = _commentLevelFilter + 1;
             _commentLevelFilter = ((current + direction) % count + count) % count - 1;
-            _commentScroll = 0;
+            _commentScroll.Reset();
             _commentSelected.Clear();
             _commentDeleteArmed = null;
         }

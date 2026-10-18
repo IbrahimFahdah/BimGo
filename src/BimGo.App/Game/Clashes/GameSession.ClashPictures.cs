@@ -100,6 +100,14 @@ namespace BimGo.Game
             {
                 _clashThumbWanted.Clear();
                 _clashCommentPending = 0;
+                _clashGroupCommentPending = null;
+                return;
+            }
+
+            if (_clashGroupCommentPending != null)
+            {
+                _clashThumbWanted.Clear();
+                MakePendingClashGroupComment(); // C-C1: one comment for a group, framed on every member
                 return;
             }
 
@@ -116,6 +124,13 @@ namespace BimGo.Game
             {
                 _clashThumbWanted.Clear();
                 StepClashBatch();
+                return;
+            }
+
+            if (_clashReportJob != null)
+            {
+                _clashThumbWanted.Clear();
+                StepClashReport(); // C-C3: the report's pictures
                 return;
             }
 
@@ -442,9 +457,16 @@ namespace BimGo.Game
         /// The pencil on a clash row whose comment has a picture (C-B3): a dark disc with a drawn pencil.
         /// </summary>
         /// <returns>True when it was clicked (the click is consumed: the row isn't picked).</returns>
-        private bool ClashCommentPencil(FontAtlas f, InputState input, float cx, float cy, ClashRecord clash)
+        private bool ClashCommentPencil(FontAtlas f, InputState input, float cx, float cy, ClashRecord clash) =>
+            CommentPencil(input, cx, cy, FindClashComment(clash));
+
+        /// <summary>
+        /// A comment's pencil (C-B3; groups since the C-C1 feedback): drawn only when the comment has a picture; amber
+        /// when the picture already has markup.
+        /// </summary>
+        /// <returns>True when it was clicked (the click is consumed: the row isn't picked).</returns>
+        private bool CommentPencil(InputState input, float cx, float cy, CommentRecord comment)
         {
-            CommentRecord comment = FindClashComment(clash);
             if (comment == null || (comment.SnapshotData == null && comment.SnapshotOriginalData == null && comment.Thumbnail == null)) { return false; }
             float r = S(11);
             bool hover = Hover(input, cx - r, cy - r, r * 2f, r * 2f);
@@ -542,11 +564,13 @@ namespace BimGo.Game
         }
 
         /// <summary>
-        /// A clash comment's text: "Clash: test · A × B · crossing 32 mm · Level 2", then the clash's notes.
+        /// A clash comment's text: "Clash: test · A × B · crossing 32 mm · Level 2" (grids round B: " · Near C-4 : Level 2"
+        /// when the grids panel's "In clash comments" is on), then the clash's notes.
         /// </summary>
-        private static string ClashCommentText(ClashRecord clash, ClashTest test)
+        private string ClashCommentText(ClashRecord clash, ClashTest test)
         {
-            string text = $"Clash: {test?.Name ?? "clash test"} · {clash.A.Label} × {clash.B.Label} · {ClashAmount(clash)} · {ClashLevel(clash)}";
+            string text = $"Clash: {test?.Name ?? "clash test"} · {clash.A.Label} × {clash.B.Label} · {ClashAmount(clash)} · {ClashLevel(clash)}" +
+                (_grids.ClashComments ? ClashGridSuffix(clash, offset: false) : string.Empty);
             return string.IsNullOrWhiteSpace(clash.Notes) ? text : text + " · Notes: " + clash.Notes.Trim();
         }
 
@@ -676,7 +700,10 @@ namespace BimGo.Game
             return record != null && Comments.SetIssue(record, status: ClashCommentRules.CommentStatusFor(clash.Status), save: save);
         }
 
-        /// <summary>After a run or an imported report: every linked comment follows its clash's status (one save).</summary>
+        /// <summary>
+        /// After a run or an imported report: every linked comment follows its clash's status, and every group comment
+        /// its group's (C-C1); one save.
+        /// </summary>
         private void SyncClashComments()
         {
             if (_clashDocument == null || Comments == null) { return; }
@@ -685,6 +712,7 @@ namespace BimGo.Game
             {
                 if (!string.IsNullOrEmpty(clash.CommentId)) { changed |= SyncClashComment(clash, save: false); }
             }
+            changed |= SyncClashGroupComments();
             if (changed) { Comments.Save(); }
         }
 

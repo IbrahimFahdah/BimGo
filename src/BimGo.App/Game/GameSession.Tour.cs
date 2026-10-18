@@ -31,8 +31,9 @@ namespace BimGo.Game
         // Playback
         private bool _tourActive;
         private bool _tourPaused;
-        private TourTimeline _tour;
-        private BookmarkRecord[] _tourRecords;
+        private ITourTimeline _tour; // Round K-A: a bookmark tour or a camera path (one player)
+        private BookmarkRecord[] _tourRecords; // K-A: a path's keys play as records too (name, sun, colour profile)
+        private CameraPath _tourPath;          // K-A: the camera path playing, or null for the bookmark tour
         private TourSettings _tourRun;
         private float _tourTime;
         private TourPose _tourPose;
@@ -51,21 +52,35 @@ namespace BimGo.Game
         private EyePreset _tourSavedPreset;
         private bool _tourSavedEyeCustom;
         private bool _tourSavedUiHidden;
+        private string _tourSavedProfile;
+        private bool _tourSavedProfileOn;
+        private bool _tourSavedFlying; // K-C: a key photo puts walking back
+
+        // Polish round P-C: the sun blending between stops (a scratch time shown while it blends; NaN minutes = no blend)
+        private readonly SunTime _tourBlendSun = new();
+        private bool _tourSunBlending;
 
         // What the current stop applied (reference checks skip re-applying the same state)
         private SunTime _tourAppliedSun;
         private SectionCut _tourAppliedSection;
         private VisibilitySettings _tourAppliedVisibility;
 
-        // The tour settings view in the bookmark list: a draft saved when a change is finished (not mid-drag)
-        private bool _tourSettingsOpen;
+        // The tour settings (Round K-A: MEDIA → TOUR, was in the bookmark list): a draft saved when a change is finished
+        // (not mid-drag)
         private TourSettings _tourDraft;
         private bool _tourDraftDirty;
-        private int _tourStopScroll;
+        private readonly ScrollRegion _tourStopScroll = new();
+        private readonly ScrollRegion _tourSettingsScroll = new(); // polish round P-A1: the tour-wide settings scroll in a short window
 
-        private static readonly string[] TRANSITION_OPTIONS = { "Fade", "Glide" };
+        private static readonly string[] TRANSITION_OPTIONS = { "Fade", "Glide", "Smooth" }; // K-C: Smooth (TourSettings.Smooth)
         private static readonly string[] SWIVEL_DIRECTION_OPTIONS = { "Left", "Right" };
-        private const int SLIDER_TOUR_FADE = 40, SLIDER_TOUR_GLIDE = 41, SLIDER_TOUR_HOLD = 42, SLIDER_TOUR_SWIVEL = 43;
+        private const int SLIDER_TOUR_FADE = 40, SLIDER_TOUR_GLIDE = 41, SLIDER_TOUR_HOLD = 42, SLIDER_TOUR_SWIVEL = 43, SLIDER_TOUR_SPEED = 44;
+
+        // Round K-C: the smooth tour's length for the TOUR / VIDEO tabs (rebuilt when the bookmarks or the settings change)
+        private float _smoothTourLength;
+        private int _smoothTourStops = -1, _smoothTourRevision = -1;
+        private TourSettings _smoothTourFor;
+        private float _smoothTourEye;
 
         #endregion
 
@@ -90,15 +105,54 @@ namespace BimGo.Game
             }
             if (records.Count == 0)
             {
-                _bookmarksNotice = Bookmarks.Bookmarks.Count == 0
+                _bookmarksNotice = _mediaNotice = Bookmarks.Bookmarks.Count == 0
                     ? $"No bookmarks to tour yet: press {Key(InputAction.AddBookmark)} where you want a stop"
-                    : "Every bookmark is left out of the tour (TOUR SETTINGS ticks them back in)";
+                    : "Every bookmark is left out of the tour (MEDIA → TOUR ticks them back in)";
                 Sound.Play(SoundId.Error);
                 return false;
             }
 
-            // Remember the walkthrough as it is
-            _tourRun = Bookmarks.Tour.Copy().Clean();
+            TourSettings run = Bookmarks.Tour.Copy().Clean();
+            SaveWalkthroughForTour();
+
+            // Round K-C: SMOOTH plays the stops as a camera path (one player); one stop alone fades in and out
+            if (run.Smooth && records.Count >= 2)
+            {
+                CameraPath smooth = TourAsPath(records, run, _tourSavedEye, forStore: false);
+                BeginTour(PathTimeline(smooth), records.ToArray(), run, null);
+                Utilities.Log_Utils.Write($"Tour started (smooth): {_tour.Count} stop(s), {_tour.Duration:0.0} s, {run.SmoothSpeed:0.00} m/s.");
+                return true;
+            }
+
+            // Lay the stops out (eye height: the bookmark's, else the current one; P-C: a crouched bookmark films from the
+            // crouched eye, in the same proportion to its standing eye as the player's)
+            float crouchRatio = _player.Controller.StandEye > 0.01f ? _player.Controller.CrouchEye / _player.Controller.StandEye : 0.6f;
+            var stops = new List<TourStop>(records.Count);
+            foreach (BookmarkRecord record in records)
+            {
+                float stopEye = (record.EyeHeight ?? _tourSavedEye) * (record.Crouched && !record.Flying ? crouchRatio : 1f);
+                stops.Add(new TourStop(record.Local, stopEye, record.Yaw, Math.Clamp(record.Pitch, -1.5f, 1.5f),
+                    run.HoldFor(record), run.SwivelFor(record) * DEGREES));
+            }
+            BeginTour(new TourTimeline(stops, run.Transition, run.FadeSeconds, run.GlideSeconds), records.ToArray(), run, null);
+            Utilities.Log_Utils.Write($"Tour started: {_tour.Count} stop(s), {_tour.Duration:0.0} s, {_tourRun.Transition}.");
+            return true;
+        }
+
+        /// <summary>
+        /// Remembers the walkthrough as it is (put back when the tour or path ends; also used by stops that kept nothing).
+        /// Round K-C: the 3D editor's preview state (and a key photo's) is put back first, so it isn't what is remembered.
+        /// </summary>
+        private void SaveWalkthroughForTour()
+        {
+            if (_keyPhotoRestore) { ClosePhotoMode(); } // a key photo's walkthrough comes back first
+            EndPathEditState();
+            RememberWalkthrough();
+        }
+
+        /// <summary>K-C: remembers the walkthrough's position and state (<see cref="SaveWalkthroughForTour"/>'s part).</summary>
+        private void RememberWalkthrough()
+        {
             _tourSavedFeet = _player.Feet;
             _tourSavedYaw = _player.Yaw;
             _tourSavedPitch = _player.Pitch;
@@ -113,21 +167,52 @@ namespace BimGo.Game
             _tourSavedPreset = _eyePreset;
             _tourSavedEyeCustom = _eyeCustom;
             _tourSavedUiHidden = _uiHidden;
+            _tourSavedProfile = _appearance.Active;
+            _tourSavedProfileOn = _appearance.On;
+            _tourSavedFlying = _player.Flying;
+        }
 
-            // Lay the stops out (eye height: the bookmark's, else the current one)
-            _tourRecords = records.ToArray();
-            var stops = new List<TourStop>(_tourRecords.Length);
-            foreach (BookmarkRecord record in _tourRecords)
+        /// <summary>
+        /// K-C: puts back the state <see cref="RememberWalkthrough"/> kept: the sun, the colour profile, the cut and what
+        /// is hidden (not the position, eye height or UI: <see cref="StopTour"/> does those).
+        /// </summary>
+        private void RestoreWalkthroughState()
+        {
+            EndTourSunBlend();
+            SetSunQuiet(_tourSavedSun, _tourSavedShadows);
+            if (_appearance.Active != _tourSavedProfile || _appearance.On != _tourSavedProfileOn) // P-C: the profile as it was
             {
-                stops.Add(new TourStop(record.Local, record.EyeHeight ?? _tourSavedEye, record.Yaw, Math.Clamp(record.Pitch, -1.5f, 1.5f),
-                    _tourRun.HoldFor(record), _tourRun.SwivelFor(record) * DEGREES));
+                _appearance.Active = _tourSavedProfile;
+                _appearance.On = _tourSavedProfileOn;
+                _profileDirty = true;
             }
-            _tour = new TourTimeline(stops, _tourRun.Transition, _tourRun.FadeSeconds, _tourRun.GlideSeconds);
+            _sunPlaying = _tourSavedSunPlaying && _tourSavedShadows;
+            SetSectionQuiet(_tourSavedSection);
+            ApplyVisibility(_tourSavedVisibility, record: false);
+            _isolateBackup = _tourSavedIsolate;
+        }
+
+        /// <summary>
+        /// Starts playing a laid-out tour or path (the walkthrough already remembered by
+        /// <see cref="SaveWalkthroughForTour"/>): clears the stage and shows the first pose.
+        /// </summary>
+        /// <param name="timeline">The timing.</param>
+        /// <param name="records">Each stop's state (bookmarks, or a path's keys as records).</param>
+        /// <param name="run">The settings used while it plays (UI on / off, loop).</param>
+        /// <param name="path">The camera path playing, or null for the bookmark tour.</param>
+        private void BeginTour(ITourTimeline timeline, BookmarkRecord[] records, TourSettings run, CameraPath path)
+        {
+            _tour = timeline;
+            _tourRecords = records;
+            _tourRun = run;
+            _tourPath = path;
 
             // Clear the stage: menu, panels, a gun mid-move
-            CloseBookmarks();
+            CloseBookmarksPanel();
+            CloseMediaPanel(); // Round K-A: drafts saved first
             ClosePhotoMode();
             CloseSunPanel();
+            CloseGridsPanel(); // grids round A: one panel at a time
             CloseSunHours();
             CloseSectionEditor();
             if (_guns[_activeGun].CapturesInput) { _guns[_activeGun].OnCancel(); }
@@ -146,8 +231,6 @@ namespace BimGo.Game
             _window.Input.ReleaseAll();
             if (_window.IsActive) { _window.SetCaptured(true); }
             EvaluateTour();
-            Utilities.Log_Utils.Write($"Tour started: {_tour.Count} stop(s), {_tour.Duration:0.0} s, {_tourRun.Transition}.");
-            return true;
         }
 
         /// <summary>
@@ -160,23 +243,23 @@ namespace BimGo.Game
             _tourActive = false;
             _tourPaused = false;
 
-            SetSunQuiet(_tourSavedSun, _tourSavedShadows);
-            _sunPlaying = _tourSavedSunPlaying && _tourSavedShadows;
-            SetSectionQuiet(_tourSavedSection);
-            ApplyVisibility(_tourSavedVisibility, record: false);
-            _isolateBackup = _tourSavedIsolate;
+            RestoreWalkthroughState();
             _player.Controller.SetStandingEye(_tourSavedEye, force: true);
             _eyePreset = _tourSavedPreset;
             _eyeCustom = _tourSavedEyeCustom;
             _player.TeleportTo(_tourSavedFeet, _tourSavedYaw, _tourSavedPitch);
             _uiHidden = _tourSavedUiHidden;
 
+            bool path = _tourPath != null;
             _tour = null;
             _tourRecords = null;
+            _tourPath = null;
             _tourSavedVisibility = null;
             _tourSavedIsolate = null;
             _window.Input.ReleaseAll();
-            Toast(finished ? "Tour finished: back where you were" : "Tour stopped: back where you were", 2.4f);
+            Toast(path
+                ? finished ? "Path finished: back where you were" : "Path stopped: back where you were"
+                : finished ? "Tour finished: back where you were" : "Tour stopped: back where you were", 2.4f);
         }
 
         #endregion
@@ -195,6 +278,13 @@ namespace BimGo.Game
             if (_video != null)
             {
                 UpdateVideo(input);
+                return;
+            }
+
+            // Round K-C: PHOTOS OF ALL KEYS steps from key to key itself (Esc stops)
+            if (_keyPhotos != null)
+            {
+                UpdateKeyPhotos(input);
                 return;
             }
 
@@ -271,10 +361,59 @@ namespace BimGo.Game
         /// </summary>
         private void EvaluateTour()
         {
-            _tourPose = _tour.Evaluate(_tourTime);
+            _tourPose = _tour.Pose(_tourTime);
             if (_tourPose.Stop < 0) { return; }
             if (_tourPose.Stop != _tourAppliedStop) { ApplyTourStop(_tourPose.Stop); }
+            BlendTourSun(_tourPose); // polish round P-C: the sun blends between stops instead of cutting
             _player.TeleportTo(_tourPose.Feet, _tourPose.Yaw, _tourPose.Pitch);
+        }
+
+        /// <summary>
+        /// Polish round P-C: between two stops with different suns, the sun's date and time move from one to the other
+        /// (shadows on / off switch halfway); held at a stop, the stop's own sun (applied by <see cref="ApplyTourStop"/>).
+        /// </summary>
+        private void BlendTourSun(in TourPose pose)
+        {
+            int from = pose.BlendFrom, to = pose.BlendTo;
+            if (from < 0 || to < 0 || from == to || pose.BlendT >= 1f || from >= _tourRecords.Length || to >= _tourRecords.Length)
+            {
+                EndTourSunBlend();
+                return;
+            }
+            SunTime a = _tourRecords[from].Sun ?? _tourSavedSun, b = _tourRecords[to].Sun ?? _tourSavedSun;
+            bool shadowsA = _tourRecords[from].Sun != null || _tourSavedShadows, shadowsB = _tourRecords[to].Sun != null || _tourSavedShadows;
+            if (a == null || b == null) { return; }
+            bool same = a.Month == b.Month && a.Day == b.Day && a.Minutes == b.Minutes && a.DaylightSaving == b.DaylightSaving && shadowsA == shadowsB;
+            if (same)
+            {
+                EndTourSunBlend();
+                return;
+            }
+
+            float t = pose.BlendT;
+            double minutes = SunBlend.Between(a, b, t, DateTime.Today.Year, _tourBlendSun); // K-C: the date the short way round
+
+            _tourSunBlending = true;
+            _sunPlaying = false;
+            _sun.Time = _tourBlendSun;
+            _sun.Enabled = t < 0.5f ? shadowsA : shadowsB;
+            _sunBlendMinutes = minutes; // fractional: the sun moves smoothly (RecomputeSun)
+            RecomputeSun();
+            _tourAppliedSun = null; // the next stop applies its own sun
+        }
+
+        /// <summary>P-C: a blend that was showing ends: the stop's own sun again.</summary>
+        private void EndTourSunBlend()
+        {
+            if (!_tourSunBlending) { return; }
+            _tourSunBlending = false;
+            _sunBlendMinutes = double.NaN;
+            if ((_tourActive || _pathEditState) && _tourRecords != null && _tourAppliedStop >= 0 && _tourAppliedStop < _tourRecords.Length)
+            {
+                BookmarkRecord record = _tourRecords[_tourAppliedStop];
+                SetSunQuiet(record.Sun ?? _tourSavedSun, record.Sun != null || _tourSavedShadows);
+                _tourAppliedSun = record.Sun ?? _tourSavedSun;
+            }
         }
 
         /// <summary>
@@ -307,7 +446,8 @@ namespace BimGo.Game
                 _tourAppliedVisibility = visibility;
             }
 
-            ApplyEyeHeight(_tour[index].EyeHeight);
+            ApplyEyeHeight(record.EyeHeight ?? _tourSavedEye); // P-C: the standing eye (a crouched stop's camera is lower)
+            ApplyBookmarkProfile(record.ColourProfile ?? (_tourSavedProfileOn ? _tourSavedProfile : string.Empty), quiet: true); // P-C
         }
 
         /// <summary>The sun time and shadows on / off, without recording a change (tour).</summary>
@@ -339,10 +479,15 @@ namespace BimGo.Game
         private void BuildTourOverlay(int width, int height, float mapX, float mapY)
         {
             FontAtlas f = _ui.Atlas;
+            if (_keyPhotos != null)
+            {
+                // K-C: PHOTOS OF ALL KEYS: only its progress (no fades, no hint)
+                BuildKeyPhotosOverlay(f, width, height);
+                return;
+            }
             if (!_uiHidden)
             {
-                BuildStatusPanel(f);
-                BuildCoordinatePanel(f, S(20), S(20) + S(146) + S(10));
+                BuildInfoColumn(f, height, sunLegend: false, profileLegend: false, help: false); // P-A2: the left column
                 if (_showMap) { DrawMinimapOverlay(mapX, mapY); }
                 BuildRoomBanner(f, width);
                 BuildLiveBanner(f, width, height);
@@ -360,9 +505,9 @@ namespace BimGo.Game
             float hintAlpha = _tourPaused ? 1f : Math.Clamp((_tourHintUntil - _clock) / 0.6f, 0f, 1f);
             if (hintAlpha > 0f)
             {
-                string hint = _tourPaused
-                    ? HINT_TOUR_PAUSED.Text
-                    : HINT_TOUR_PLAYING.Text;
+                string hint = _tourPath != null
+                    ? _tourPaused ? HINT_PATH_PAUSED.Text : HINT_PATH_PLAYING.Text // Round K-A
+                    : _tourPaused ? HINT_TOUR_PAUSED.Text : HINT_TOUR_PLAYING.Text;
                 float hintW = UiBatch.Measure(f.Body, hint) + S(28);
                 float hx = MathF.Round(width * 0.5f - hintW * 0.5f);
                 float hy = height - S(_uiHidden ? 64 : 112);
@@ -381,10 +526,10 @@ namespace BimGo.Game
             float x = MathF.Round((width - w) * 0.5f), y = height - S(20) - h;
             _ui.Panel(x, y, w, h, UiTheme.PANEL, UiTheme.PANEL_BORDER);
 
-            Text.Clear().Append("TOUR · ").Append(stop + 1).Append(" / ").Append(_tour.Count);
+            Text.Clear().Append(_tourPath != null ? "PATH · KEY " : "TOUR · ").Append(stop + 1).Append(" / ").Append(_tour.Count);
             if (_tourPaused) { Text.Append(" · PAUSED"); }
             float used = _ui.Text(f.Small, x + S(14), y + S(12), Text.Span, UiTheme.BOOKMARK_LABEL, S(1.4f));
-            _ui.TextWrapped(f.Bold, x + S(14) + used + S(12), y + S(9), w - used - S(40), _tourRecords[stop].Name, UiTheme.TEXT, maxLines: 1);
+            _ui.TextWrapped(f.Bold, x + S(14) + used + S(12), y + S(9), w - used - S(40), _tourPath != null ? _tourPath.Name : _tourRecords[stop].Name, UiTheme.TEXT, maxLines: 1);
 
             float fraction = _tour.Duration > 0f ? Math.Clamp(_tourTime / _tour.Duration, 0f, 1f) : 1f;
             float barY = y + h - S(16), barW = w - S(28);
@@ -399,15 +544,15 @@ namespace BimGo.Game
 
         #endregion
 
-        #region Settings view (bookmark list)
+        #region Settings view (MEDIA → TOUR)
 
-        /// <summary>Opens or closes the tour settings view in place of the bookmark rows.</summary>
-        private void ToggleTourSettings()
+        /// <summary>Round K-A: the TOUR tab opens on a fresh draft of the saved settings.</summary>
+        private void ResetTourSettingsView()
         {
             FlushTourDraft();
-            _tourSettingsOpen = !_tourSettingsOpen;
-            _tourDraft = _tourSettingsOpen ? Bookmarks.Tour.Copy() : null;
-            _tourStopScroll = 0;
+            _tourDraft = Bookmarks.Tour.Copy();
+            _tourStopScroll.Reset();
+            _tourSettingsScroll.Reset();
             _activeSlider = -1;
         }
 
@@ -417,11 +562,11 @@ namespace BimGo.Game
             if (!_tourDraftDirty || _tourDraft == null) { return; }
             _tourDraftDirty = false;
             Bookmarks.SetTour(_tourDraft);
-            if (Bookmarks.LastError != null) { _bookmarksNotice = Bookmarks.LastError; }
+            if (Bookmarks.LastError != null) { _mediaNotice = Bookmarks.LastError; }
         }
 
         /// <summary>
-        /// The tour settings view: tour-wide settings on the left, each bookmark's overrides on the right.
+        /// The tour settings (MEDIA → TOUR): tour-wide settings on the left, each bookmark's overrides on the right.
         /// </summary>
         private void BuildTourSettings(FontAtlas f, InputState input, float x, float y, float w, float bottom)
         {
@@ -429,14 +574,28 @@ namespace BimGo.Game
             if (!input.LeftDown) { _activeSlider = -1; }
             TourSettings draft = _tourDraft;
             float lw = MathF.Min(S(320), w * 0.42f);
-            float ly = y;
+            float ly = BeginScroll(_tourSettingsScroll, input, x, y, lw + S(UiTheme.SCROLL_GUTTER), bottom - y, out _);
 
             _ui.Text(f.Body, x, ly, "Between stops", UiTheme.TEXT);
-            int transition = Segmented(f, input, x, ly + S(22), lw, TRANSITION_OPTIONS, (int)draft.Transition);
-            if (transition != (int)draft.Transition) { draft.Transition = (TourTransition)transition; _tourDraftDirty = true; }
+            int shownTransition = draft.Smooth ? 2 : (int)draft.Transition;
+            int transition = Segmented(f, input, x, ly + S(22), lw, TRANSITION_OPTIONS, shownTransition);
+            if (transition != shownTransition)
+            {
+                // K-C: Smooth is its own field (older builds keep reading the file); Fade / Glide switch it off
+                draft.Smooth = transition == 2;
+                if (transition < 2) { draft.Transition = (TourTransition)transition; }
+                _tourDraftDirty = true;
+            }
             ly += S(64);
 
-            if (draft.Transition == TourTransition.Fade)
+            if (draft.Smooth)
+            {
+                Text.Clear().Append(draft.SmoothSpeed, 2).Append(" m/s");
+                float speed = MathF.Round(Slider(f, input, SLIDER_TOUR_SPEED, x, ly, lw, "Speed between stops", Text.Span, draft.SmoothSpeed,
+                    TourSettings.MIN_SMOOTH_SPEED, TourSettings.MAX_SMOOTH_SPEED) * 4f) / 4f;
+                if (_activeSlider == SLIDER_TOUR_SPEED && speed != draft.SmoothSpeed) { draft.SmoothSpeed = speed; _tourDraftDirty = true; }
+            }
+            else if (draft.Transition == TourTransition.Fade)
             {
                 Text.Clear().Append(draft.FadeSeconds, 1).Append(" s");
                 float fade = MathF.Round(Slider(f, input, SLIDER_TOUR_FADE, x, ly, lw, "Fade (each way)", Text.Span, draft.FadeSeconds, 0f, TourSettings.MAX_FADE) * 10f) / 10f;
@@ -483,23 +642,27 @@ namespace BimGo.Game
             Text.Append(seconds % 60).Append(draft.Loop ? " per loop" : " in all");
             _ui.Text(f.Mono, x, ly, Text.Span, UiTheme.TEXT_SOFT);
             ly += S(32);
+            if (draft.Smooth)
+            {
+                // K-C: what Smooth does
+                ly += _ui.TextWrapped(f.Small, x, ly, lw, "Smooth: one spline through the stops; each holds (and swivels), the camera follows the path between them and turns into each view",
+                    UiTheme.TEXT_FAINT, maxLines: 3) + S(10);
+            }
+            _ui.TextWrapped(f.Small, x, ly, lw, "Video size and frame rate: the VIDEO tab (RECORD VIDEO below records this tour)", UiTheme.TEXT_FAINT, maxLines: 2);
+            ly += S(44);
 
-            // Walkthrough video (per machine): size and frame rate; RECORD VIDEO is beside PLAY TOUR
-            _ui.Text(f.Small, x, ly, "VIDEO (RECORD VIDEO BELOW)", UiTheme.TEXT_MUTED, S(1.4f));
-            ly += S(20);
-            float sizeW = lw * 0.6f;
-            int size = Segmented(f, input, x, ly, sizeW - S(6), VIDEO_SIZE_OPTIONS, (int)_videoSize);
-            if (size != (int)_videoSize) { _videoSize = (VideoSize)size; }
-            int rate = _videoFps >= 60 ? 1 : 0;
-            int pickedRate = Segmented(f, input, x + sizeW, ly, lw - sizeW, VIDEO_FPS_OPTIONS, rate);
-            if (pickedRate != rate) { _videoFps = pickedRate == 1 ? 60 : 30; }
-            ly += S(40);
-            if (_videoLastPath != null && SmallButton(f, input, x, ly, lw, S(28), "OPEN FOLDER (LAST VIDEO)")) { OpenVideoFolder(); }
+            // K-C: CONVERT TO PATH copies the ticked stops into a new camera path
+            bool convert = SmallButton(f, input, x, ly, lw, S(30), "CONVERT TO PATH");
+            ly += S(36);
+            ly += _ui.TextWrapped(f.Small, x, ly, lw, "Copies the ticked stops into a new camera path (MEDIA → PATHS) to edit freely; the tour stays as it is",
+                UiTheme.TEXT_FAINT, maxLines: 3) + S(12);
+            EndScroll(_tourSettingsScroll, input, ly);
 
             // Save once a change is finished (a slider is released, a click is done)
             if (_tourDraftDirty && !input.LeftDown) { FlushTourDraft(); }
 
             BuildTourStopRows(f, input, x + lw + S(32), y, w - lw - S(32), bottom);
+            if (convert) { ConvertTourToPath(); } // after drawing (it switches to PATHS)
         }
 
         /// <summary>
@@ -517,10 +680,11 @@ namespace BimGo.Game
             }
 
             float rowH = S(40);
-            int visible = Math.Max(1, (int)((bottom - y) / rowH));
-            int maxScroll = Math.Max(0, list.Count - visible);
-            if (input.Wheel != 0) { _tourStopScroll -= input.Wheel * 2; }
-            _tourStopScroll = Math.Clamp(_tourStopScroll, 0, maxScroll);
+            float listX = x;
+            float top = BeginScroll(_tourStopScroll, input, x, y, w, bottom - y, out float cw);
+            VisibleRows(_tourStopScroll, rowH, list.Count, out int first, out int last);
+            x += S(6);
+            w = cw - S(12);
 
             float small = S(28), bh = S(28), gap = S(4);
             float swivelW = S(96), holdW = S(52);
@@ -531,12 +695,11 @@ namespace BimGo.Game
             BookmarkRecord changed = null;
             float? newHold = null, newSwivel = null;
             bool newSkip = false;
-            int last = Math.Min(list.Count, _tourStopScroll + visible);
-            for (int i = _tourStopScroll; i < last; i++)
+            for (int i = first; i < last; i++)
             {
                 BookmarkRecord record = list[i];
-                float ry = y + (i - _tourStopScroll) * rowH;
-                if (((i - _tourStopScroll) & 1) == 0) { _ui.Rect(x - S(6), ry - S(4), w + S(12), rowH - S(4), Rgba.Hex(0xFFFFFF, 0.03f)); }
+                float ry = top + i * rowH + S(4);
+                if ((i & 1) == 0) { _ui.Rect(listX, ry - S(4), cw, rowH - S(4), UiTheme.ROW_STRIPE); }
                 float by = ry;
                 float alpha = record.TourSkip ? 0.45f : 1f;
 
@@ -583,17 +746,13 @@ namespace BimGo.Game
                 }
             }
 
-            if (maxScroll > 0)
-            {
-                Text.Clear().Append(_tourStopScroll + 1).Append('–').Append(last).Append(" of ").Append(list.Count).Append(" · wheel to scroll");
-                _ui.TextRight(f.Small, x + w, bottom + S(2), Text.Span, UiTheme.TEXT_FAINT);
-            }
+            EndScroll(_tourStopScroll, input, top + list.Count * rowH);
 
             // Act after drawing (the list must not change while it is being walked)
             if (changed != null)
             {
                 Bookmarks.SetTourOverrides(changed, newHold, newSwivel, newSkip);
-                if (Bookmarks.LastError != null) { _bookmarksNotice = Bookmarks.LastError; }
+                if (Bookmarks.LastError != null) { _mediaNotice = Bookmarks.LastError; }
             }
         }
 
@@ -619,6 +778,7 @@ namespace BimGo.Game
         /// </summary>
         private float TourLength(TourSettings settings, out int stops)
         {
+            if (settings.Smooth && SmoothTourLength(settings, out stops, out float smooth)) { return smooth; } // K-C
             stops = 0;
             float total = 0f;
             BookmarkRecord previous = null;
@@ -638,6 +798,137 @@ namespace BimGo.Game
             }
             if (settings.Transition == TourTransition.Glide && stops > 0) { total += settings.FadeSeconds * 2f; }
             return total;
+        }
+
+        #endregion
+
+        #region Smooth tour and CONVERT TO PATH (Round K-C)
+
+        /// <summary>
+        /// The tour's stops as a camera path (a tour is a path whose keys are the bookmarks): each key at the bookmark's
+        /// eye (feet + its eye height; crouched ones lower) holding its view for the stop's hold with its swivel, the path
+        /// following between them; the speed, fades, loop and UI from the tour.
+        /// </summary>
+        /// <param name="records">The ticked bookmarks, in order.</param>
+        /// <param name="run">The tour's settings.</param>
+        /// <param name="standEye">The eye height for bookmarks that kept none (m).</param>
+        /// <param name="forStore">
+        /// True for CONVERT TO PATH: the keys also copy each bookmark's sun, colour profile, cut and hidden items (the
+        /// smooth tour reads those from the bookmarks themselves).
+        /// </param>
+        private CameraPath TourAsPath(List<BookmarkRecord> records, TourSettings run, float standEye, bool forStore)
+        {
+            float crouchRatio = _player != null && _player.Controller.StandEye > 0.01f ? _player.Controller.CrouchEye / _player.Controller.StandEye : 0.6f;
+            var path = new CameraPath
+            {
+                Speed = Math.Clamp(run.SmoothSpeed, CameraPath.MIN_SPEED, CameraPath.MAX_SPEED),
+                Heading = CameraHeading.Follow,
+                FollowBetween = true,
+                Level = true,
+                FadeSeconds = Math.Clamp(run.FadeSeconds, 0f, CameraPath.MAX_FADE),
+                Loop = run.Loop,
+                ShowUi = run.ShowUi
+            };
+            int count = Math.Min(records.Count, CameraPath.MAX_KEYS);
+            for (int i = 0; i < count; i++)
+            {
+                BookmarkRecord record = records[i];
+                float eye = (record.EyeHeight ?? standEye) * (record.Crouched && !record.Flying ? crouchRatio : 1f);
+                float swivel = run.SwivelFor(record);
+                var key = new CameraKey
+                {
+                    Name = PathStore.CleanName(record.Name) ?? $"Stop {i + 1}",
+                    Yaw = record.Yaw,
+                    Pitch = Math.Clamp(record.Pitch, -1.5f, 1.5f),
+                    Heading = CameraHeading.Key,
+                    HoldSeconds = Math.Clamp(run.HoldFor(record), 0f, CameraKey.MAX_HOLD),
+                    Swivel = swivel != 0f ? swivel : null,
+                    Local = record.Local + new Vector3(0f, 0f, eye)
+                };
+                if (forStore)
+                {
+                    key.Sun = record.Sun?.Copy();
+                    key.ColourProfile = record.ColourProfile;
+                    key.Section = record.Section?.Clone();
+                    key.Visibility = record.Visibility?.Copy();
+                }
+                path.Keys.Add(key);
+            }
+            return path;
+        }
+
+        /// <summary>
+        /// The smooth tour's length and stop count for the settings view (no allocation unless the bookmarks or the
+        /// settings changed).
+        /// </summary>
+        /// <returns>False with fewer than two stops (a single stop plays as a fade).</returns>
+        private bool SmoothTourLength(TourSettings settings, out int stops, out float length)
+        {
+            float eye = CurrentStandingEye;
+            TourSettings last = _smoothTourFor;
+            bool same = last != null && _smoothTourRevision == Bookmarks.Revision && MathF.Abs(_smoothTourEye - eye) < 1e-4f
+                && last.SmoothSpeed == settings.SmoothSpeed && last.HoldSeconds == settings.HoldSeconds && last.FadeSeconds == settings.FadeSeconds
+                && last.Swivel == settings.Swivel && last.SwivelDegrees == settings.SwivelDegrees && last.SwivelDirection == settings.SwivelDirection
+                && last.Loop == settings.Loop;
+            if (!same)
+            {
+                _smoothTourFor = settings.Copy();
+                _smoothTourRevision = Bookmarks.Revision;
+                _smoothTourEye = eye;
+                var records = new List<BookmarkRecord>();
+                foreach (BookmarkRecord record in Bookmarks.Bookmarks)
+                {
+                    if (!record.TourSkip) { records.Add(record); }
+                }
+                _smoothTourStops = records.Count;
+                _smoothTourLength = records.Count >= 2 ? PathTimeline(TourAsPath(records, settings.Copy().Clean(), eye, forStore: false)).Duration : 0f;
+            }
+            stops = _smoothTourStops;
+            length = _smoothTourLength;
+            return _smoothTourStops >= 2;
+        }
+
+        /// <summary>
+        /// CONVERT TO PATH (MEDIA → TOUR): copies the ticked stops into a new camera path ("&lt;model&gt; tour") and
+        /// opens it in PATHS. The tour itself is left as it is.
+        /// </summary>
+        private void ConvertTourToPath()
+        {
+            FlushTourDraft();
+            var records = new List<BookmarkRecord>();
+            foreach (BookmarkRecord record in Bookmarks.Bookmarks)
+            {
+                if (!record.TourSkip) { records.Add(record); }
+            }
+            if (records.Count == 0)
+            {
+                _mediaNotice = Bookmarks.Bookmarks.Count == 0
+                    ? $"No bookmarks to convert yet: press {Key(InputAction.AddBookmark)} where you want a stop"
+                    : "Every bookmark is left out of the tour: tick the stops to convert";
+                Sound.Play(SoundId.Error);
+                return;
+            }
+
+            CameraPath path = TourAsPath(records, Bookmarks.Tour.Copy().Clean(), CurrentStandingEye, forStore: true);
+            string model = Path.GetFileNameWithoutExtension(DocumentName);
+            path.Name = (string.IsNullOrWhiteSpace(model) ? "Bookmark" : model.Trim()) + " tour";
+            CameraPath added = CameraPaths.AddPath(path);
+            if (added == null)
+            {
+                _mediaNotice = CameraPaths.LastError ?? "The path could not be made";
+                Sound.Play(SoundId.Error);
+                return;
+            }
+
+            SwitchMediaTab(MEDIA_PATHS);
+            _mediaPath = added;
+            _mediaKey = null;
+            _pathListScroll.ScrollToEnd();
+            string capped = records.Count > CameraPath.MAX_KEYS ? $" (the first {CameraPath.MAX_KEYS})" : string.Empty;
+            _mediaNotice = CameraPaths.LastError ?? $"Made “{added.Name}” from {added.Keys.Count} stop{(added.Keys.Count == 1 ? "" : "s")}{capped}: " +
+                "each key keeps its bookmark's view, hold, swivel, sun, profile, cut and hidden items · EDIT IN 3D to shape it";
+            Sound.Play(SoundId.Commit);
+            Utilities.Log_Utils.Write($"Tour converted to path: {added.Name}, {added.Keys.Count} keys.");
         }
 
         #endregion

@@ -65,6 +65,9 @@ namespace BimGo.Format
         /// <summary>Clash detection's sets, tests and results (Round C).</summary>
         public const string CLASHES_FILE = "clashes.json";
 
+        /// <summary>Round K: keyframed camera paths in a model folder.</summary>
+        public const string PATHS_FILE = "paths.json";
+
         /// <summary>Texture choices in a model folder (machine-specific image paths: never shared).</summary>
         public const string TEXTURE_OVERRIDES_FILE = "texture-overrides.json";
 
@@ -81,7 +84,8 @@ namespace BimGo.Format
             (BOOKMARKS_FILE, BimGoFormat.BOOKMARK_SIDECAR_SUFFIX),
             (SUN_FILE, BimGoFormat.SUN_SIDECAR_SUFFIX),
             (VISIBILITY_FILE, BimGoFormat.VISIBILITY_SIDECAR_SUFFIX),
-            (CLASHES_FILE, BimGoFormat.CLASH_SIDECAR_SUFFIX)
+            (CLASHES_FILE, BimGoFormat.CLASH_SIDECAR_SUFFIX),
+            (PATHS_FILE, BimGoFormat.PATHS_SIDECAR_SUFFIX) // Round K
         };
 
         #endregion

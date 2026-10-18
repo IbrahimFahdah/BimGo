@@ -179,6 +179,9 @@ namespace BimGo.Format
 
         /// <summary>Elevation (scene Z, metres).</summary>
         public float Elevation { get; set; }
+
+        /// <summary>Grids round A: false when the level isn't a building storey; absent = a storey (older files too).</summary>
+        public bool? Storey { get; set; }
     }
 
     public sealed class RoomDto
