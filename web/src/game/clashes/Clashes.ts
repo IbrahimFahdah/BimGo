@@ -174,6 +174,8 @@ export class Clashes {
   private search = '';
   searchFocused = false;
   private dockScroll = 0;
+  /** The dock's left edge this frame (other docks sit left of it in clash mode). */
+  dockLeft = 0;
   private scrollToCurrent = false;
   private testCount = 0;
   private dockCounts = '';
@@ -1009,6 +1011,7 @@ export class Clashes {
     overlays.begin(input);
     const w = Math.min(this.s(420), width * 0.42);
     const x = width - w - this.s(16), y = this.s(16), h = height - this.s(32);
+    this.dockLeft = x;
     ui.panel(x, y, w, h, UiTheme.PANEL_STRONG, UiTheme.PANEL_BORDER);
     const hover = (hx: number, hy: number, hw: number, hh: number) => input.mouseX >= hx && input.mouseX < hx + hw && input.mouseY >= hy && input.mouseY < hy + hh;
     const overDock = hover(x, y, w, h);

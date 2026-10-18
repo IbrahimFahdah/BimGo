@@ -73,7 +73,57 @@ export const UiTheme = {
   CARD: Rgba.hex(0x181c22),
   CARD_BORDER: Rgba.hex(0xffffff, 0.08),
   CONTROL: Rgba.hex(0x0f1216),
-  CONTROL_BORDER: Rgba.hex(0xffffff, 0.2)
+  CONTROL_BORDER: Rgba.hex(0xffffff, 0.2),
+
+  /** Keyboard / gamepad focus ring and a focused row's tint (polish round P-A). */
+  FOCUS: Rgba.hex(0x67e8f9),
+  HOVER: Rgba.hex(0xffffff, 0.08),
+  ROW_STRIPE: Rgba.hex(0xffffff, 0.03),
+  SCROLL_TRACK: Rgba.hex(0xffffff, 0.05),
+  SCROLL_THUMB: Rgba.hex(0xffffff, 0.28),
+  SCROLL_THUMB_HOT: Rgba.hex(0x67e8f9, 0.7),
+  DIVIDER: Rgba.hex(0xffffff, 0.1),
+
+  // ---- Spacing tokens (polish round P-A1): unscaled pixels, scaled by session.s()
+
+  /** Panel card widths: standard, wide (two panes or a grid), side (the model shows on the left). */
+  PANEL_WIDTH: 1000, PANEL_WIDTH_WIDE: 1180, PANEL_WIDTH_SIDE: 780,
+  /** Space between the window edge and a panel card (small windows, then from 900 px high). */
+  PANEL_MARGIN: 16, PANEL_MARGIN_LARGE: 40,
+  /** A card's inner padding: left / right, and top / bottom. */
+  PANEL_PAD: 24, PANEL_PAD_Y: 16,
+  /** The header: title and sub-line. */
+  HEADER_HEIGHT: 56,
+  /** The footer's button height, and the notice / hint strip above it. */
+  FOOTER_HEIGHT: 40, NOTICE_HEIGHT: 24,
+  /** Footer slot widths: BACK and CLOSE, and the bounds of a centre action. */
+  FOOTER_SIDE_WIDTH: 132, FOOTER_ACTION_MIN: 96, FOOTER_ACTION_MAX: 230,
+  /** Standard gaps. */
+  GAP: 12, GAP_SMALL: 8, GAP_LARGE: 20,
+  /** Row heights: a list row, a compact row. */
+  ROW_HEIGHT: 44, ROW_COMPACT: 28,
+  /** Control heights: buttons, small buttons, inputs / segmented / dropdowns. */
+  BUTTON_HEIGHT: 40, SMALL_BUTTON_HEIGHT: 30, CONTROL_HEIGHT: 32,
+  /** A label column beside a control (forms). */
+  LABEL_WIDTH: 140,
+  /** A scroll region's bar, the gutter kept for it, and one wheel notch. */
+  SCROLLBAR_WIDTH: 6, SCROLL_GUTTER: 14, WHEEL_STEP: 72,
+  /** The cursor-mode docks (sun, study, section, grids, clash dock): width and header height (P-A2). */
+  DOCK_WIDTH: 340, DOCK_HEADER_HEIGHT: 34,
+  /** The wider dock (the sun and daylight study). */
+  DOCK_WIDTH_WIDE: 380,
+  /** A dock's inner padding. */
+  DOCK_PAD: 16, DOCK_PAD_Y: 10,
+  /** A dock's footer buttons, and its notice strip above them. */
+  DOCK_FOOTER_HEIGHT: 30, DOCK_NOTICE_HEIGHT: 32,
+  /** The right-hand column's edge margin and the gap under the minimap; a shorter column puts the dock at the top. */
+  COLUMN_MARGIN: 20, COLUMN_GAP: 12, DOCK_MIN_HEIGHT: 320,
+  /** The minimap's size and the sun icon's. */
+  MINIMAP_WIDTH: 220, MINIMAP_HEIGHT: 208, SUN_ICON_SIZE: 52,
+  /** The left column's panels: status and coordinates (their heights), and its width. */
+  STATUS_HEIGHT: 146, COORDS_HEIGHT: 100, INFO_WIDTH: 250,
+  /** A legend collapsed to its title row. */
+  LEGEND_COLLAPSED_HEIGHT: 30
 } as const;
 
 /** The colour of a comment status (port of UiTheme.StatusColour). */

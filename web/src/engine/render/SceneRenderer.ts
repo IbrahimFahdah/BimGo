@@ -5,9 +5,11 @@ import { SCENE_VERTEX_SIZE } from '../../core/scene/SceneData';
 import { gl } from '../gl/Gl';
 import { ShaderProgram } from '../gl/ShaderProgram';
 import {
-  CAP_FS, CAP_STENCIL_FS, CAP_VS, EXPOSURE_FS, FULLSCREEN_VS, GEOMETRY_FS, GEOMETRY_GROUND_FS, GROUND_FS, GROUND_VS, SCENE_FS, SCENE_VS,
-  SHADOW_DEPTH_FS, SHADOW_TRANSMIT_FS, SHADOW_VS, SKY_FS
+  CAP_FS, CAP_STENCIL_FS, CAP_VS, EXPOSURE_FS, FULLSCREEN_VS, GEOMETRY_FS, GEOMETRY_GROUND_FS, GRASS_FS, GRASS_VS, GROUND_FS, GROUND_VS, PROFILE_WIDTH_TEXT,
+  SCENE_FS, SCENE_VS, SHADOW_DEPTH_FS, SHADOW_TRANSMIT_FS, SHADOW_VS, SKY_FS
 } from '../gl/Shaders';
+import { AppearanceProfiler } from '../../core/scene/AppearanceProfiles';
+import { GrassField } from '../../core/scene/GrassField';
 import type { LocalPlane } from '../../core/scene/SectionCut';
 import { FpsCamera } from './FpsCamera';
 import { ArtificialLighting, LightShadows } from './LightShadows';
@@ -19,7 +21,7 @@ import type { SceneBatches } from './SceneBatches';
 import { ScreenEffects } from './ScreenEffects';
 import { ShadowMaps, type ShadowPreset } from './ShadowMaps';
 import { ReflectionProbes } from './ReflectionProbes';
-import { NO_SUN, type SunLighting } from './SunLighting';
+import { NO_SUN, type SkyLook, SkyLooks, type SunLighting } from './SunLighting';
 
 /** Per-draw settings of the scene pass (port of SceneDrawParams). */
 export interface SceneDrawParams {
@@ -47,6 +49,8 @@ export interface SceneDrawParams {
   time?: number;
   /** Realistic: 0 = Revit tint off, 1 = multiply. */
   tintMode?: number;
+  /** Polish round P-C: the pass is a reflection probe's face (no profile, sparser grass). */
+  probe?: boolean;
   /** Apply the section cut (setSection): the player's view and highlights only. */
   section?: boolean;
 }
@@ -61,8 +65,15 @@ type Uniforms = Record<string, WebGLUniformLocation | null>;
  */
 const UNIT = {
   shadowMap: 1, transmit: 2, aoMap: 3, lightShadowMap: 5, materialTable: 6, tex0: 7,
-  probeArray: ReflectionProbes.ARRAY_UNIT, probeGrid: ReflectionProbes.GRID_UNIT, probeData: ReflectionProbes.DATA_UNIT
+  probeArray: ReflectionProbes.ARRAY_UNIT, probeGrid: ReflectionProbes.GRID_UNIT, probeData: ReflectionProbes.DATA_UNIT,
+  /** Grass round: the grass map (vertex shader). */
+  grassMap: 14,
+  /** Colour round A: the per-element profile colours (vertex shader). */
+  profile: 15
 } as const;
+
+/** Elements per row of the profile texture (Shaders.PROFILE_WIDTH). */
+const PROFILE_WIDTH = Number(PROFILE_WIDTH_TEXT);
 const PROBE_UNIFORMS = ['uReflectThreshold', 'uReflectGain', 'uReflectDebug', 'uTime', 'uProbesOn', 'uProbeGridOrigin', 'uProbeGridCell',
   'uProbeGridSize', 'uProbeMaxLod'];
 
@@ -72,6 +83,33 @@ const AO_UNIFORMS = ['uAoOn', 'uAoForward', 'uAoScale'];
 const ARTIFICIAL_UNIFORMS = ['uLightCount', 'uLightPos', 'uLightColor', 'uLightShadow', 'uLightShadowTexel', 'uEmissive', 'uShoulder'];
 const GEOMETRY_UNIFORMS = ['uViewProj', 'uModel', 'uEye', 'uRight', 'uUp', 'uForward'];
 const CLIP_UNIFORMS = ['uClipCount', 'uClipPlanes'];
+const SKY_UNIFORMS = ['uInvViewProj', 'uEye', 'uSun', 'uSunDir', 'uZenith', 'uHorizon', 'uSunDisc', 'uSunShape', 'uCloudCover', 'uCloudOffset',
+  'uMoonDir', 'uMoonSun', 'uMoonDisc', 'uMoonGlow', 'uNight', 'uStars', 'uTime', 'uCelestialX', 'uCelestialY', 'uCelestialZ'];
+const SCENE_EXTRA_UNIFORMS = ['uCloudCover', 'uCloudOffset', 'uWaterTint', 'uWaterReflect', 'uWaterWaves', 'uWaveScale', 'uProfilePass', 'uProfileDetail'];
+const GRASS_UNIFORMS = ['uViewProj', 'uEye', 'uGrassArea', 'uGrassSize', 'uSpacing', 'uSide', 'uInner', 'uFadeIn', 'uFadeOut', 'uRadius', 'uBladeHeight',
+  'uBladeWidth', 'uSway', 'uTime', 'uFogColor', 'uFogDensity', 'uGrassPalette', ...LIGHT_UNIFORMS, ...AO_UNIFORMS, ...ARTIFICIAL_UNIFORMS, ...CLIP_UNIFORMS];
+
+/** Near-grid blade spacing (m) per density, the near grid's radius (m) and the far ring's spacing factor (grass round). */
+const GRASS_SPACING = [0.13, 0.1, 0.075];
+const GRASS_NEAR = 12, GRASS_FAR_SPACING = 2.4, GRASS_BAND = 4, GRASS_NEAR_BLADES = 3, GRASS_FAR_BLADES = 2, GRASS_WIDTH = 0.02, GRASS_FAR_WIDTH = 2.0;
+const PROBE_GRASS_RADIUS = 20;
+
+/** Opacity of a colour profile's ghosted elements (as the clash view's ghost). */
+const PROFILE_GHOST_ALPHA = 0.12;
+/** How light a profile-coloured cap is against the element's colour (P-C). */
+const PROFILE_CAP_SHADE = 0.8;
+
+/** How the grass blades look this frame (grass round, port of GrassLook). */
+export interface GrassLook {
+  /** 0 low, 1 medium, 2 high. */
+  density: number;
+  /** Blade height (m, average). */
+  height: number;
+  /** How far blades reach (m). */
+  distance: number;
+  /** Water round W: how far blades sway (0–2). */
+  sway: number;
+}
 
 /**
  * Draws the scene, sky and ground with sun shadows, ambient occlusion, artificial lights and glow (port of
@@ -91,7 +129,7 @@ export class SceneRenderer {
   private geometryProgram!: ShaderProgram;
   private groundGeometryProgram!: ShaderProgram;
   private scene: Uniforms = {};
-  private sky: Uniforms = {};
+  private skyU: Uniforms = {};
   private ground: Uniforms = {};
   private depthU: Uniforms = {};
   private transmitU: Uniforms = {};
@@ -177,6 +215,53 @@ export class SceneRenderer {
   /** This frame's sun and sky (set by the session before UpdateShadows). */
   lighting: SunLighting = NO_SUN;
 
+  /** Sky round: clouds and the sun disc's look (and W-A: the stars), set each frame. A look only. */
+  sky: SkyLook = SkyLooks.defaults();
+
+  /** Grass round: water's body colour (rgb) and how much it replaces the material's (w; 0 = Revit's). */
+  waterTint: [number, number, number, number] = [0, 0, 0, 0];
+  /** Grass round: water's reflection strength (0–1). */
+  waterReflect = 1;
+  /** Water round W: ripple strength (0–2; 0 skips the waves). */
+  waterWaves = 1;
+  /** Water round W: wave size (0.25–4). */
+  waveScale = 1;
+  /** Water round W: the water clock (s; advanced at the ripple speed), driving the ripples. */
+  waterClock = 0;
+
+  // Colour round A: colour profiles (per-vertex element index, attribute 6; one RGBA8 texel per element)
+  private elementVbo: WebGLBuffer | null = null;
+  private profileTexture: WebGLTexture | null = null;
+  private profileReady = false;
+  private profileGhosts = false;
+  private profileGhostPass = false;
+  private profileDetail = AppearanceProfiler.DEFAULT_DETAIL;
+  private profileFailed = false;
+  /** Shows the uploaded profile in the scene passes (set each frame); probe captures always draw without it. */
+  profileOn = false;
+  get hasProfile(): boolean { return this.profileReady; }
+  /** True when the shown profile ghosts some elements (draw drawProfileGhosts after the opaque passes). */
+  get profileGhostsWanted(): boolean { return this.profileOn && this.profileReady && this.profileGhosts && this.ghostAlpha <= 0; }
+
+  // Grass round: blades over the grass materials (Realistic mode)
+  private grassProgram: ShaderProgram | null = null;
+  private grassU: Uniforms = {};
+  private grassFailed = false;
+  private grassMap: WebGLTexture | null = null;
+  private grassMinX = 0;
+  private grassMinY = 0;
+  private grassCell = 1;
+  private grassWidth = 0;
+  private grassHeight = 0;
+  private readonly grassPalette = new Float32Array(GrassField.MAX_PALETTE * 3);
+  /** The blades' look (set by the session). */
+  grass: GrassLook = { density: 1, height: 0.12, distance: 40, sway: 1 };
+  /** P-C: reflection probes capture the blades (set while blades show). */
+  probeGrass = false;
+  /** Blades drawn last frame (the budget). */
+  grassInstances = 0;
+  get hasGrass(): boolean { return this.grassMap !== null; }
+
   /** Chunks drawn by the last opaque pass (HUD statistics). */
   chunksDrawn = 0;
 
@@ -202,14 +287,14 @@ export class SceneRenderer {
 
     this.scene = locations(this.sceneProgram, ['uViewProj', 'uModel', 'uEye', 'uLightDir', 'uFogColor', 'uFogDensity', 'uWhitecard',
       'uPlan', 'uClipZ', 'uOverride', 'uGhost', 'uRealistic', 'uReflections', 'uTintMode', 'uSkyZenith', 'uSkyHorizon', ...PROBE_UNIFORMS, ...LIGHT_UNIFORMS,
-      ...AO_UNIFORMS, ...ARTIFICIAL_UNIFORMS, ...CLIP_UNIFORMS]);
-    this.sky = locations(this.skyProgram, ['uInvViewProj', 'uEye', 'uSun', 'uSunDir', 'uZenith', 'uHorizon', 'uSunDisc']);
+      ...AO_UNIFORMS, ...ARTIFICIAL_UNIFORMS, ...CLIP_UNIFORMS, ...SCENE_EXTRA_UNIFORMS]);
+    this.skyU = locations(this.skyProgram, SKY_UNIFORMS);
     this.ground = locations(this.groundProgram, ['uViewProj', 'uCenter', 'uHalf', 'uEye', 'uFogColor', ...LIGHT_UNIFORMS, ...AO_UNIFORMS, ...ARTIFICIAL_UNIFORMS]);
     this.depthU = locations(this.shadowDepthProgram, ['uViewProj', 'uModel']);
     this.transmitU = locations(this.shadowTransmitProgram, ['uViewProj', 'uModel', 'uGlass', 'uWhitecard']);
-    this.geometryU = locations(this.geometryProgram, [...GEOMETRY_UNIFORMS, 'uGlow', ...CLIP_UNIFORMS]);
+    this.geometryU = locations(this.geometryProgram, [...GEOMETRY_UNIFORMS, 'uGlow', ...CLIP_UNIFORMS, 'uProfilePass']);
     this.groundGeometryU = locations(this.groundGeometryProgram, [...GEOMETRY_UNIFORMS, 'uCenter', 'uHalf']);
-    for (const program of [this.sceneProgram, this.groundProgram]) { assignSamplerUnits(program); }
+    for (const program of [this.sceneProgram, this.groundProgram, this.geometryProgram, this.groundGeometryProgram]) { assignSamplerUnits(program); }
     for (const [u, program] of [[this.scene, this.sceneProgram], [this.ground, this.groundProgram]] as const) {
       program.use();
       gl.uniform1f(u.uLightShadowTexel, LightShadows.texel);
@@ -281,6 +366,8 @@ export class SceneRenderer {
     bind(UNIT.probeArray, gl.TEXTURE_2D_ARRAY, colourArray);
     bind(UNIT.probeGrid, gl.TEXTURE_2D_ARRAY, colourArray);
     bind(UNIT.probeData, gl.TEXTURE_2D, colour2d);
+    bind(UNIT.grassMap, gl.TEXTURE_2D, colour2d);
+    bind(UNIT.profile, gl.TEXTURE_2D, colour2d);
     gl.activeTexture(gl.TEXTURE0);
     this.placeholders = [depthArray, colourArray, colour2d];
     this.colourArrayPlaceholder = colourArray;
@@ -321,6 +408,11 @@ export class SceneRenderer {
       gl.bindBuffer(gl.ARRAY_BUFFER, this.uvVbo);
       gl.enableVertexAttribArray(5);
       gl.vertexAttribPointer(5, 2, gl.FLOAT, false, 8, 0);
+    }
+    if (this.elementVbo) {
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.elementVbo);
+      gl.enableVertexAttribArray(6);
+      gl.vertexAttribPointer(6, 1, gl.FLOAT, false, 4, 0);
     }
     this.dynamicIbo = gl.createBuffer();
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.dynamicIbo);
@@ -414,6 +506,20 @@ export class SceneRenderer {
   }
 
   /**
+   * QOL round: the water override (Water asset toggle, keywords, opaque too). Before the materials load it just sets the
+   * rule; afterwards it rebuilds the material table (cheap: images stay).
+   */
+  setWaterOverride(fromAsset: boolean, keywords: readonly string[], keywordsOpaque: boolean): void {
+    this.materials.waterFromAsset = fromAsset;
+    this.materials.waterKeywords = keywords ?? [];
+    this.materials.waterKeywordsOpaque = keywordsOpaque;
+    this.materials.refreshTable();
+  }
+
+  /** Water materials in the current table (shown under the override). */
+  get waterMaterialCount(): number { return this.materials.ready ? this.materials.waterCount : 0; }
+
+  /**
    * Builds (or rebuilds, from the Textures panel) the material table and texture arrays. Asynchronous: Realistic
    * shows material colours until it resolves.
    * @returns Null, or a short reason the textures couldn't all be shown.
@@ -490,8 +596,8 @@ export class SceneRenderer {
       this.shadows.bind();
       return null;
     }
-    // Sun below the horizon: no direct light, so nothing to shadow (keep the maps for when it rises)
-    if (this.lighting.altitudeDegrees < -1) { return null; }
+    // Sun below the horizon: no direct light, so nothing to shadow (keep the maps for when it rises; W-A: the moon casts them at night)
+    if (this.lighting.altitudeDegrees < -1 && !this.lighting.moonLights) { return null; }
 
     if (!this.shadows.ensure(preset, this.hasTransparent)) {
       this.shadows.bind();
@@ -615,6 +721,7 @@ export class SceneRenderer {
     this.applyGeometry(this.geometryU, camera.viewProjection, eye, right, up, forward);
     gl.uniform1f(this.geometryU.uGlow, glow ? 1 : 0);
     this.applyClip(this.geometryU, true);
+    gl.uniform1i(this.geometryU.uProfilePass, this.bindProfile(true) ? 1 : 0); // colour round A: ghosts don't occlude
     this.flushDynamic();
     this.drawBatches(camera.planes, groupVisible, false, false);
     if (this.dynamics && this.dynamics.instances.length > 0) { this.drawDynamicInstances(this.dynamics, camera.planes, false, this.geometryU.uModel); }
@@ -777,8 +884,10 @@ export class SceneRenderer {
     this.flushDynamic();
     const aoWas = this.aoActive;
     this.aoActive = false;
+    const profileWas = this.profileOn;
+    this.profileOn = false; // colour round A: probes capture the model's own colours
     const p: SceneDrawParams = {
-      ...template, reflections: false, probes: false, reflectDebug: 0, plan: false, sun: true, clipZMin: -1e7, clipZMax: 1e7
+      ...template, reflections: false, probes: false, reflectDebug: 0, plan: false, sun: true, clipZMin: -1e7, clipZMax: 1e7, probe: true
     };
     const clear = this.fogColour;
     const dynamics = this.dynamics;
@@ -787,7 +896,7 @@ export class SceneRenderer {
     for (const [probe, face] of this.probeFaces) {
       const { matrix, eye, planes } = this.probes.faceMatrix(probe, face);
       this.probes.beginFace(probe, face, clear, this.colourArrayPlaceholder);
-      this.drawSkyView(Mat4.invert(matrix) ?? Mat4.identity(), eye);
+      this.drawSkyView(Mat4.invert(matrix) ?? Mat4.identity(), eye, false); // W-A: no stars in probes
 
       p.viewProjection = matrix;
       p.planes = planes;
@@ -803,6 +912,7 @@ export class SceneRenderer {
       this.drawBatches(planes, groupVisible, false, false);
       if (hasDynamics) { this.drawDynamicInstances(dynamics, planes, false, this.scene.uModel); }
       this.drawGroundView(matrix, eye, groundZ);
+      if (this.probeGrass && p.realistic) { this.drawGrass(p, true); } // P-C: blades in the reflections
 
       gl.enable(gl.BLEND);
       gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
@@ -817,6 +927,7 @@ export class SceneRenderer {
       this.probes.endFace(probe, face);
     }
     this.aoActive = aoWas;
+    this.profileOn = profileWas;
     this.probes.endCapture();
   }
 
@@ -856,19 +967,33 @@ export class SceneRenderer {
     this.drawSkyView(camera.inverseViewProjection, camera.position);
   }
 
-  /** Draws the gradient sky (no depth) for any view (the camera, or a probe face). */
-  private drawSkyView(inverseViewProjection: Matrix4x4, eye: Vec3): void {
+  /** Draws the gradient sky (no depth) for any view (the camera, or a probe face); stars: W-A's night sky (not in probes). */
+  private drawSkyView(inverseViewProjection: Matrix4x4, eye: Vec3, stars = true): void {
     gl.disable(gl.DEPTH_TEST);
     gl.depthMask(false);
     this.skyProgram.use();
-    const u = this.sky, l = this.lighting;
+    const u = this.skyU, l = this.lighting, sky = this.sky;
     gl.uniformMatrix4fv(u.uInvViewProj, false, inverseViewProjection);
     gl.uniform3f(u.uEye, eye.x, eye.y, eye.z);
     gl.uniform1i(u.uSun, l.enabled ? 1 : 0);
-    gl.uniform3f(u.uSunDir, l.sunDirection.x, l.sunDirection.y, l.sunDirection.z);
+    const sunDir = V.lengthSquared(l.skySunDirection) > 0.5 ? l.skySunDirection : l.sunDirection; // W-A: the real sun
+    gl.uniform3f(u.uSunDir, sunDir.x, sunDir.y, sunDir.z);
     gl.uniform3f(u.uZenith, l.zenith.x, l.zenith.y, l.zenith.z);
     gl.uniform3f(u.uHorizon, l.horizon.x, l.horizon.y, l.horizon.z);
     gl.uniform3f(u.uSunDisc, l.sunDisc.x, l.sunDisc.y, l.sunDisc.z);
+    gl.uniform3f(u.uSunShape, Math.cos(SkyLooks.DISC_OUTER * sky.sunSize), Math.cos(SkyLooks.DISC_INNER * sky.sunSize), sky.sunGlare);
+    gl.uniform1f(u.uCloudCover, sky.cloudCover);
+    gl.uniform2f(u.uCloudOffset, sky.cloudOffsetX, sky.cloudOffsetY);
+    gl.uniform3f(u.uMoonDir, l.moonDirection.x, l.moonDirection.y, l.moonDirection.z);
+    gl.uniform3f(u.uMoonSun, l.moonSunDirection.x, l.moonSunDirection.y, l.moonSunDirection.z);
+    gl.uniform3f(u.uMoonDisc, l.moonDisc.x, l.moonDisc.y, l.moonDisc.z);
+    gl.uniform3f(u.uMoonGlow, l.moonGlow.x, l.moonGlow.y, l.moonGlow.z);
+    gl.uniform1f(u.uNight, l.night);
+    gl.uniform4f(u.uStars, stars ? sky.stars[0] : 0, sky.stars[1], sky.stars[2], sky.stars[3]);
+    gl.uniform1f(u.uTime, sky.time);
+    gl.uniform3f(u.uCelestialX, sky.celestialX.x, sky.celestialX.y, sky.celestialX.z);
+    gl.uniform3f(u.uCelestialY, sky.celestialY.x, sky.celestialY.y, sky.celestialY.z);
+    gl.uniform3f(u.uCelestialZ, sky.celestialZ.x, sky.celestialZ.y, sky.celestialZ.z);
     gl.bindVertexArray(this.emptyVao);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     gl.depthMask(true);
@@ -987,6 +1112,11 @@ export class SceneRenderer {
     gl.bindVertexArray(this.lineVao);
     gl.bindBuffer(gl.ARRAY_BUFFER, this.vbo);
     setVertexLayout();
+    if (this.elementVbo) {
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.elementVbo);
+      gl.enableVertexAttribArray(6);
+      gl.vertexAttribPointer(6, 1, gl.FLOAT, false, 4, 0);
+    }
     this.lineIbo = gl.createBuffer();
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.lineIbo);
     gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, lines, gl.STATIC_DRAW);
@@ -1030,7 +1160,13 @@ export class SceneRenderer {
     gl.uniform2f(u.uClipZ, p.clipZMin, p.clipZMax);
     this.applyClip(u, p.section === true);
     gl.uniform4f(u.uOverride, r, g, b, a);
-    gl.uniform1f(u.uGhost, a > 0 ? 0 : this.ghostAlpha);
+
+    // Colour round A: the profile (not on highlights, nor under the clash view's ghost / wireframe); its ghost pass
+    // draws the ghosted elements as the clash view's grey glass
+    const profilePass = a <= 0 && p.probe !== true && this.bindProfile(this.ghostAlpha <= 0) ? (this.profileGhostPass ? 2 : 1) : 0;
+    gl.uniform1i(u.uProfilePass, profilePass);
+    if (profilePass > 0) { gl.uniform1f(u.uProfileDetail, this.profileDetail); }
+    gl.uniform1f(u.uGhost, a > 0 ? 0 : profilePass === 2 ? PROFILE_GHOST_ALPHA : this.ghostAlpha);
 
     const realistic = p.realistic && !p.whitecard && this.hasMaterials;
     gl.uniform1i(u.uRealistic, realistic ? 1 : 0);
@@ -1040,7 +1176,13 @@ export class SceneRenderer {
     gl.uniform1f(u.uReflectThreshold, p.reflectThreshold && p.reflectThreshold > 0 ? p.reflectThreshold : 0.5);
     gl.uniform1f(u.uReflectGain, p.reflectGain && p.reflectGain > 0 ? p.reflectGain : 1);
     gl.uniform1i(u.uReflectDebug, p.reflectDebug ?? 0);
-    gl.uniform1f(u.uTime, p.time ?? 0);
+    gl.uniform1f(u.uTime, this.waterClock); // uTime only moves the water here (water round W)
+    gl.uniform1f(u.uCloudCover, this.sky.cloudCover);
+    gl.uniform2f(u.uCloudOffset, this.sky.cloudOffsetX, this.sky.cloudOffsetY);
+    gl.uniform4f(u.uWaterTint, this.waterTint[0], this.waterTint[1], this.waterTint[2], this.waterTint[3]);
+    gl.uniform1f(u.uWaterReflect, this.waterReflect);
+    gl.uniform1f(u.uWaterWaves, this.waterWaves);
+    gl.uniform1f(u.uWaveScale, Math.min(Math.max(this.waveScale, 0.25), 4));
     const probes = (p.probes === true || p.reflectDebug === 2) && this.probesActive;
     gl.uniform1i(u.uProbesOn, probes ? 1 : 0);
     if (probes) {
@@ -1062,6 +1204,254 @@ export class SceneRenderer {
 
   // #endregion
 
+  // #region Colour profiles (port of SceneRenderer.Profile.cs)
+
+  /**
+   * Uploads a profile's per-element codes (packed RGBA8, scene order). The element stream is made the first time.
+   * @returns Null, or why the profile can't be shown.
+   */
+  setProfile(codes: Uint32Array, detail: number, anyGhost: boolean): string | null {
+    if (!this.sceneData) { return null; }
+    if (this.profileFailed) { return 'Colour profiles couldn\'t be set up on this graphics card (see the console).'; }
+    if (!this.ensureElementStream()) { return 'Not enough graphics memory for colour profiles.'; }
+    const rows = Math.max(1, Math.ceil(codes.length / PROFILE_WIDTH));
+    const texels = new Uint32Array(PROFILE_WIDTH * rows);
+    texels.set(codes.subarray(0, Math.min(codes.length, texels.length)));
+    if (!this.profileTexture) {
+      this.profileTexture = gl.createTexture();
+      gl.activeTexture(gl.TEXTURE0 + UNIT.profile);
+      gl.bindTexture(gl.TEXTURE_2D, this.profileTexture);
+      setNearest(gl.TEXTURE_2D);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAX_LEVEL, 0);
+    }
+    gl.activeTexture(gl.TEXTURE0 + UNIT.profile);
+    gl.bindTexture(gl.TEXTURE_2D, this.profileTexture);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+    // R in the low byte (little-endian), as the vertex colours
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, PROFILE_WIDTH, rows, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(texels.buffer));
+    gl.activeTexture(gl.TEXTURE0);
+    if (gl.getError() === gl.OUT_OF_MEMORY) {
+      this.profileReady = false;
+      return 'Not enough graphics memory for colour profiles.';
+    }
+    this.profileDetail = Math.min(Math.max(detail, 0), 1);
+    this.profileGhosts = anyGhost;
+    this.profileReady = true;
+    return null;
+  }
+
+  /** How much of the surface's own shade shows under the colour (0–1). */
+  setProfileDetail(detail: number): void {
+    this.profileDetail = Math.min(Math.max(Number.isFinite(detail) ? detail : AppearanceProfiler.DEFAULT_DETAIL, 0), 1);
+  }
+
+  /** Forgets the uploaded profile. */
+  clearProfile(): void {
+    this.profileReady = false;
+    this.profileGhosts = false;
+  }
+
+  /** The per-vertex element index (attribute 6) on the static, dynamic and line VAOs, made once. */
+  private ensureElementStream(): boolean {
+    if (this.elementVbo) { return true; }
+    try {
+      const scene = this.sceneData!;
+      const perVertex = new Float32Array(scene.geometry.vertexCount);
+      const indices = scene.geometry.indices;
+      const fill = (start: number, count: number, element: number) => {
+        if (count <= 0 || start < 0) { return; }
+        const end = Math.min(indices.length, start + count);
+        for (let i = start; i < end; i++) {
+          const v = indices[i];
+          if (v < perVertex.length) { perVertex[v] = element; }
+        }
+      };
+      scene.elements.forEach((record, e) => {
+        fill(record.opaqueStart, record.opaqueCount, e);
+        fill(record.transparentStart, record.transparentCount, e);
+      });
+      this.elementVbo = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.elementVbo);
+      gl.bufferData(gl.ARRAY_BUFFER, perVertex, gl.STATIC_DRAW);
+      for (const vao of [this.vao, this.dynamicVao, this.lineVao]) {
+        if (!vao) { continue; }
+        gl.bindVertexArray(vao);
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.elementVbo);
+        gl.enableVertexAttribArray(6);
+        gl.vertexAttribPointer(6, 1, gl.FLOAT, false, 4, 0);
+      }
+      gl.bindVertexArray(null);
+      gl.bindBuffer(gl.ARRAY_BUFFER, null);
+      if (gl.getError() === gl.OUT_OF_MEMORY) { return false; }
+      console.info(`Colour profile: element stream for ${perVertex.length.toLocaleString()} vertices (${Math.round(perVertex.length * 4 / 1024).toLocaleString()} KB).`);
+      return true;
+    } catch (e) {
+      this.profileFailed = true;
+      console.warn('Colour profile: element stream failed:', e);
+      return false;
+    }
+  }
+
+  /** Binds the profile texture when the profile shows (and allowed); true when the pass should use it. */
+  private bindProfile(allowed: boolean): boolean {
+    if (!allowed || !this.profileOn || !this.profileReady || !this.profileTexture) { return false; }
+    gl.activeTexture(gl.TEXTURE0 + UNIT.profile);
+    gl.bindTexture(gl.TEXTURE_2D, this.profileTexture);
+    gl.activeTexture(gl.TEXTURE0);
+    return true;
+  }
+
+  /**
+   * The ghost pass: the ghosted (and see-through) elements' opaque and glass triangles as faint glass, after the opaque
+   * passes. The caller sets blending on and depth writes off (as for the glass pass).
+   */
+  drawProfileGhosts(p: SceneDrawParams, groupVisible: boolean[]): void {
+    if (!this.profileGhostsWanted) { return; }
+    this.profileGhostPass = true;
+    try {
+      this.sceneProgram.use();
+      this.applyUniforms(p, 0, 0, 0, 0, false);
+      this.drawBatches(p.planes, groupVisible, false, false);
+      this.drawBatches(p.planes, groupVisible, true, false);
+      const dynamics = this.dynamics;
+      if (dynamics && dynamics.instances.length > 0) {
+        this.flushDynamic();
+        this.drawDynamicInstances(dynamics, p.planes, false, this.scene.uModel);
+        this.drawDynamicInstances(dynamics, p.planes, true, this.scene.uModel);
+      }
+    } finally {
+      this.profileGhostPass = false;
+    }
+  }
+
+  // #endregion
+
+  // #region Grass (port of SceneRenderer.Grass.cs)
+
+  /** Uploads a grass field (null or empty frees it); null, or why grass can't be shown. */
+  setGrassField(field: GrassField | null): string | null {
+    this.releaseGrassMap();
+    if (!field || field.isEmpty) { return null; }
+    if (!this.ensureGrassProgram()) { return 'Grass blades could not be set up on this graphics card (see the console).'; }
+    const count = field.width * field.height;
+    const data = new Float32Array(count * 2);
+    for (let i = 0; i < count; i++) {
+      data[i * 2] = field.heights[i];
+      data[i * 2 + 1] = field.palette[i];
+    }
+    this.grassMap = gl.createTexture();
+    gl.activeTexture(gl.TEXTURE0 + UNIT.grassMap);
+    gl.bindTexture(gl.TEXTURE_2D, this.grassMap);
+    setNearest(gl.TEXTURE_2D);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAX_LEVEL, 0);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG32F, field.width, field.height, 0, gl.RG, gl.FLOAT, data);
+    gl.activeTexture(gl.TEXTURE0);
+    if (gl.getError() === gl.OUT_OF_MEMORY) {
+      this.releaseGrassMap();
+      return 'Not enough graphics memory for the grass map: grass blades are off.';
+    }
+    this.grassMinX = field.minX;
+    this.grassMinY = field.minY;
+    this.grassCell = field.cell;
+    this.grassWidth = field.width;
+    this.grassHeight = field.height;
+    for (let i = 0; i < GrassField.MAX_PALETTE; i++) {
+      const c = field.colours.length === 0 ? GrassField.DEFAULT_GREEN : field.colours[Math.min(i, field.colours.length - 1)];
+      this.grassPalette.set([c.x, c.y, c.z], i * 3);
+    }
+    console.info(`Grass: ${field.grassCells.toLocaleString()} cells of ${field.cell.toFixed(3)} m (${field.width} × ${field.height}), ${field.grassTriangles.toLocaleString()} triangles, ${field.colours.length} colours.`);
+    return null;
+  }
+
+  private ensureGrassProgram(): boolean {
+    if (this.grassProgram) { return true; }
+    if (this.grassFailed) { return false; }
+    try {
+      this.grassProgram = ShaderProgram.create('grass', GRASS_VS, GRASS_FS);
+    } catch (e) {
+      this.grassFailed = true;
+      console.warn('Grass shader failed:', e);
+      return false;
+    }
+    this.grassU = locations(this.grassProgram, GRASS_UNIFORMS);
+    assignSamplerUnits(this.grassProgram);
+    this.grassProgram.use();
+    gl.uniform1f(this.grassU.uLightShadowTexel, LightShadows.texel);
+    gl.useProgram(null);
+    return true;
+  }
+
+  private releaseGrassMap(): void {
+    if (this.grassMap) { gl.deleteTexture(this.grassMap); }
+    this.grassMap = null;
+    this.grassInstances = 0;
+  }
+
+  /** Draws the blades (after the opaque scene and the ground, depth test and writes on); probe: a probe face (sparser, nearer). */
+  drawGrass(p: SceneDrawParams, probe = false): void {
+    if (!probe) { this.grassInstances = 0; }
+    if (!this.grassMap || !this.grassProgram) { return; }
+    const look = this.grass;
+    let radius = Math.min(Math.max(look.distance, 5), 200);
+    const height = Math.min(Math.max(look.height, 0.01), 1);
+    let spacing = GRASS_SPACING[Math.min(Math.max(look.density, 0), GRASS_SPACING.length - 1)];
+    if (probe) {
+      radius = Math.min(radius, PROBE_GRASS_RADIUS);
+      spacing = GRASS_SPACING[0] * GRASS_FAR_SPACING;
+    }
+    const u = this.grassU;
+    this.grassProgram.use();
+    gl.uniformMatrix4fv(u.uViewProj, false, p.viewProjection);
+    gl.uniform3f(u.uEye, p.eye.x, p.eye.y, p.eye.z);
+    gl.uniform3f(u.uGrassArea, this.grassMinX, this.grassMinY, this.grassCell);
+    gl.uniform2f(u.uGrassSize, this.grassWidth, this.grassHeight);
+    gl.uniform1f(u.uBladeHeight, height);
+    gl.uniform1f(u.uTime, p.time ?? 0);
+    gl.uniform1f(u.uSway, Math.min(Math.max(look.sway, 0), 2));
+    const fog = p.sun ? this.fogColour : SceneRenderer.FOG_COLOUR;
+    gl.uniform3f(u.uFogColor, fog.x, fog.y, fog.z);
+    gl.uniform1f(u.uFogDensity, p.fogDensity);
+    gl.uniform3fv(u.uGrassPalette, this.grassPalette);
+    this.applyLight(u, p.sun, false);
+    this.applyAo(u, false);
+    this.applyArtificial(u, true);
+    this.applyClip(u, p.section === true);
+    gl.activeTexture(gl.TEXTURE0 + UNIT.grassMap);
+    gl.bindTexture(gl.TEXTURE_2D, this.grassMap);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindVertexArray(this.emptyVao);
+    const near = Math.min(GRASS_NEAR, radius);
+    if (probe) {
+      const counted = this.grassInstances;
+      this.drawGrassGrid(spacing, GRASS_WIDTH * GRASS_FAR_WIDTH, GRASS_FAR_BLADES, 0, 0, radius * 0.7, radius);
+      this.grassInstances = counted;
+    } else if (radius <= near + GRASS_BAND) {
+      this.drawGrassGrid(spacing, GRASS_WIDTH, GRASS_NEAR_BLADES, 0, 0, radius * 0.7, radius);
+    } else {
+      this.drawGrassGrid(spacing, GRASS_WIDTH, GRASS_NEAR_BLADES, 0, 0, near, near + GRASS_BAND);
+      this.drawGrassGrid(spacing * GRASS_FAR_SPACING, GRASS_WIDTH * GRASS_FAR_WIDTH, GRASS_FAR_BLADES, near, near + GRASS_BAND,
+        Math.max(near + GRASS_BAND, radius * 0.7), radius);
+    }
+    gl.bindVertexArray(null);
+  }
+
+  private drawGrassGrid(spacing: number, width: number, blades: number, inner: number, fadeIn: number, fadeOut: number, radius: number): void {
+    const u = this.grassU;
+    const side = Math.ceil(radius * 2 / spacing) + 2;
+    gl.uniform1f(u.uSpacing, spacing);
+    gl.uniform1i(u.uSide, side);
+    gl.uniform1f(u.uInner, inner);
+    gl.uniform1f(u.uFadeIn, fadeIn);
+    gl.uniform1f(u.uFadeOut, fadeOut);
+    gl.uniform1f(u.uRadius, radius);
+    gl.uniform1f(u.uBladeWidth, width);
+    const instances = side * side;
+    gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 9 * blades, instances);
+    this.grassInstances += instances * blades;
+  }
+
+  // #endregion
+
   // #region Section cut (port of SceneRenderer.Section.cs)
 
   // The scene and geometry pre-pass shaders discard what the cut's planes remove; drawSectionCaps fills the cut
@@ -1073,7 +1463,8 @@ export class SceneRenderer {
 
   private initialiseSection(): void {
     this.capStencilProgram = ShaderProgram.create('section stencil', SCENE_VS, CAP_STENCIL_FS);
-    this.capStencilU = locations(this.capStencilProgram, ['uViewProj', 'uModel', 'uCapPlane', 'uCapShade']);
+    this.capStencilU = locations(this.capStencilProgram, ['uViewProj', 'uModel', 'uCapPlane', 'uCapShade', 'uProfilePass', 'uCapColourPass']);
+    assignSamplerUnits(this.capStencilProgram); // colour round A: SCENE_VS's profile sampler (ghosted elements get no caps)
     this.capProgram = ShaderProgram.create('section cap', CAP_VS, CAP_FS);
     this.capU = locations(this.capProgram, ['uViewProj', 'uClipCount', 'uClipPlanes', 'uSkip', 'uColor']);
     gl.useProgram(null);
@@ -1134,22 +1525,35 @@ export class SceneRenderer {
       gl.disable(gl.DEPTH_TEST);
       gl.stencilFunc(gl.ALWAYS, 0, 1);
       gl.stencilOp(gl.KEEP, gl.KEEP, gl.INVERT);
-      this.capStencilProgram.use();
-      gl.uniformMatrix4fv(this.capStencilU.uViewProj, false, viewProjection);
-      gl.uniformMatrix4fv(this.capStencilU.uModel, false, this.identity);
-      gl.uniform4f(this.capStencilU.uCapPlane, cp[o], cp[o + 1], cp[o + 2], cp[o + 3]);
-      gl.uniform1f(this.capStencilU.uCapShade, 1);
-      this.drawBatches(frustum, groupVisible, false, false);
-      if (dynamics && dynamics.instances.length > 0) { this.drawDynamicInstances(dynamics, frustum, false, this.capStencilU.uModel); }
+      gl.stencilMask(1); // P-C: the parity in bit 1 only (bit 2 marks profile-coloured caps)
+      this.drawCapScene(viewProjection, frustum, groupVisible, dynamics, cp, o, 1);
+      gl.stencilMask(0xff);
 
       gl.colorMask(true, true, true, true);
       gl.enable(gl.DEPTH_TEST);
+      if (!this.capPolygon(i, eye, extent)) { continue; }
+
+      // (1b) P-C: a colour profile shows: inside cut solids it coloured, the surface seen through the cut takes the
+      // element's colour and marks stencil bit 2
+      const coloured = this.profileOn && this.profileReady && this.ghostAlpha <= 0;
+      if (coloured) {
+        gl.depthFunc(gl.LEQUAL);
+        gl.enable(gl.POLYGON_OFFSET_FILL);
+        gl.polygonOffset(-1, -4);
+        gl.stencilFunc(gl.EQUAL, 3, 1);
+        gl.stencilOp(gl.KEEP, gl.KEEP, gl.REPLACE);
+        this.capStencilProgram.use();
+        gl.uniform1i(this.capStencilU.uCapColourPass, 1);
+        this.drawCapScene(viewProjection, frustum, groupVisible, dynamics, cp, o, PROFILE_CAP_SHADE);
+        gl.uniform1i(this.capStencilU.uCapColourPass, 0);
+        gl.disable(gl.POLYGON_OFFSET_FILL);
+      }
+
       gl.depthFunc(gl.LESS);
-      gl.stencilFunc(gl.EQUAL, 1, 1);
       gl.stencilOp(gl.KEEP, gl.KEEP, gl.KEEP);
+      gl.stencilFunc(gl.EQUAL, 1, coloured ? 3 : 1); // the flat cap: where no element colour went
 
       // (2) The cap polygon in the flat cap colour
-      if (!this.capPolygon(i, eye, extent)) { continue; }
       gl.depthMask(true);
       this.capProgram.use();
       gl.uniformMatrix4fv(this.capU.uViewProj, false, viewProjection);
@@ -1161,13 +1565,33 @@ export class SceneRenderer {
       gl.bindBuffer(gl.ARRAY_BUFFER, this.capVbo);
       gl.bufferSubData(gl.ARRAY_BUFFER, 0, this.capCorners);
       gl.drawArrays(gl.TRIANGLES, 0, 6);
+      if (coloured) {
+        // P-C: the coloured pixels get the cap plane's depth too (nothing behind the cut shows through later)
+        gl.colorMask(false, false, false, false);
+        gl.stencilFunc(gl.EQUAL, 3, 3);
+        gl.drawArrays(gl.TRIANGLES, 0, 6);
+      }
       gl.bindVertexArray(null);
+      gl.colorMask(true, true, true, true);
     }
     gl.disable(gl.STENCIL_TEST);
     gl.colorMask(true, true, true, true);
     gl.depthMask(true);
     gl.enable(gl.DEPTH_TEST);
     gl.depthFunc(gl.LEQUAL);
+  }
+
+  /** The opaque scene cut by one plane into the stencil (and, in the colour pass, the profile's colours). */
+  private drawCapScene(viewProjection: Matrix4x4, frustum: Float32Array, groupVisible: boolean[], dynamics: DynamicSet | null,
+    cp: Float32Array, o: number, shade: number): void {
+    this.capStencilProgram.use();
+    gl.uniformMatrix4fv(this.capStencilU.uViewProj, false, viewProjection);
+    gl.uniformMatrix4fv(this.capStencilU.uModel, false, this.identity);
+    gl.uniform4f(this.capStencilU.uCapPlane, cp[o], cp[o + 1], cp[o + 2], cp[o + 3]);
+    gl.uniform1f(this.capStencilU.uCapShade, shade);
+    gl.uniform1i(this.capStencilU.uProfilePass, this.bindProfile(this.ghostAlpha <= 0) ? 1 : 0); // colour round A: no caps on ghosts
+    this.drawBatches(frustum, groupVisible, false, false);
+    if (dynamics && dynamics.instances.length > 0) { this.drawDynamicInstances(dynamics, frustum, false, this.capStencilU.uModel); }
   }
 
   /** The cap polygon of plane i as two triangles: a box face, or a square of half size extent around the eye's foot on a free plane. */
@@ -1270,6 +1694,14 @@ export class SceneRenderer {
     gl.deleteVertexArray(this.emptyVao);
     gl.deleteVertexArray(this.dynamicVao);
     gl.deleteBuffer(this.dynamicIbo);
+    this.releaseGrassMap();
+    this.grassProgram?.dispose();
+    this.grassProgram = null;
+    gl.deleteBuffer(this.elementVbo);
+    gl.deleteTexture(this.profileTexture);
+    this.elementVbo = null;
+    this.profileTexture = null;
+    this.profileReady = false;
   }
 }
 
@@ -1295,6 +1727,8 @@ function assignSamplerUnits(program: ShaderProgram): void {
   set('uProbeArray', UNIT.probeArray);
   set('uProbeGrid', UNIT.probeGrid);
   set('uProbeData', UNIT.probeData);
+  set('uGrassMap', UNIT.grassMap);
+  set('uProfileTex', UNIT.profile);
 }
 
 function setNearest(target: GLenum): void {

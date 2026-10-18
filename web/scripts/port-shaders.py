@@ -94,7 +94,29 @@ out = [
     f"const HEADER = {js_string(HEADER)};",
     "",
 ]
+# C# constants may reference ones declared later; JS consts may not (temporal dead zone): emit dependencies first,
+# otherwise in the C# order
+ordered = []
+visiting = set()
+
+
+def visit(name):
+    if name in ordered or name not in consts:
+        return
+    if name in visiting:
+        sys.exit(f"Circular shader constants at {name}")
+    visiting.add(name)
+    for kind, value in consts[name]:
+        if kind == "ref":
+            visit(value)
+    visiting.discard(name)
+    ordered.append(name)
+
+
 for name in names:
+    visit(name)
+
+for name in ordered:
     pieces = []
     for kind, value in consts[name]:
         if kind == "ref":

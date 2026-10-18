@@ -80,6 +80,10 @@ export class UiBatch {
 
   /** A filled rectangle. */
   rect(x: number, y: number, w: number, h: number, colour: number): void {
+    if (this.clipDepth > 0) {
+      this.quad(x, y, x + w, y + h, this.wu, this.wv, this.wu, this.wv, colour);
+      return;
+    }
     const u = this.wu, v = this.wv;
     this.push(x, y, u, v, colour);
     this.push(x + w, y, u, v, colour);
@@ -115,6 +119,10 @@ export class UiBatch {
 
   /** A filled triangle. */
   triangle(x0: number, y0: number, x1: number, y1: number, x2: number, y2: number, colour: number): void {
+    if (this.clipDepth > 0) {
+      this.clippedTriangle(x0, y0, x1, y1, x2, y2, colour);
+      return;
+    }
     this.push(x0, y0, this.wu, this.wv, colour);
     this.push(x1, y1, this.wu, this.wv, colour);
     this.push(x2, y2, this.wu, this.wv, colour);
@@ -170,12 +178,7 @@ export class UiBatch {
       if (ch !== ' ') {
         const gx = roundEven(pen + glyph.offsetX), gy = top + glyph.offsetY;
         const gx1 = gx + glyph.width, gy1 = gy + glyph.height;
-        this.push(gx, gy, glyph.u0, glyph.v0, colour);
-        this.push(gx1, gy, glyph.u1, glyph.v0, colour);
-        this.push(gx1, gy1, glyph.u1, glyph.v1, colour);
-        this.push(gx, gy, glyph.u0, glyph.v0, colour);
-        this.push(gx1, gy1, glyph.u1, glyph.v1, colour);
-        this.push(gx, gy1, glyph.u0, glyph.v1, colour);
+        this.quad(gx, gy, gx1, gy1, glyph.u0, glyph.v0, glyph.u1, glyph.v1, colour);
       }
       pen += glyph.advance + tracking;
     }
@@ -230,6 +233,119 @@ export class UiBatch {
 
   // #endregion
 
+  // #region Clipping (polish round P-A1)
+
+  // The clip stack: each entry is the clip rectangle in force before a push. Clipping is done on the CPU as shapes are
+  // queued (no scissor, so the single batch is kept): rectangles, glyphs and images are cut with their texture
+  // coordinates; triangles are cut to polygons.
+  private static readonly MAX_CLIP_DEPTH = 16;
+  private readonly clipStack = new Float32Array(UiBatch.MAX_CLIP_DEPTH * 4);
+  private clipDepth = 0;
+  private clipX0 = 0;
+  private clipY0 = 0;
+  private clipX1 = 0;
+  private clipY1 = 0;
+
+  /** True while a clip rectangle is in force. */
+  get clipActive(): boolean { return this.clipDepth > 0; }
+
+  /** Clips what is queued next to a rectangle (intersected with the clip in force) until popClip. */
+  pushClip(x: number, y: number, w: number, h: number): void {
+    if (this.clipDepth >= UiBatch.MAX_CLIP_DEPTH) { throw new Error('UI clip stack overflow.'); }
+    const at = this.clipDepth * 4;
+    this.clipStack[at] = this.clipX0;
+    this.clipStack[at + 1] = this.clipY0;
+    this.clipStack[at + 2] = this.clipX1;
+    this.clipStack[at + 3] = this.clipY1;
+    let x0 = x, y0 = y, x1 = x + Math.max(w, 0), y1 = y + Math.max(h, 0);
+    if (this.clipDepth > 0) {
+      x0 = Math.max(x0, this.clipX0);
+      y0 = Math.max(y0, this.clipY0);
+      x1 = Math.min(x1, this.clipX1);
+      y1 = Math.min(y1, this.clipY1);
+    }
+    this.clipX0 = x0;
+    this.clipY0 = y0;
+    this.clipX1 = Math.max(x1, x0);
+    this.clipY1 = Math.max(y1, y0);
+    this.clipDepth++;
+  }
+
+  /** Ends the innermost pushClip. */
+  popClip(): void {
+    if (this.clipDepth === 0) { return; }
+    this.clipDepth--;
+    const at = this.clipDepth * 4;
+    this.clipX0 = this.clipStack[at];
+    this.clipY0 = this.clipStack[at + 1];
+    this.clipX1 = this.clipStack[at + 2];
+    this.clipY1 = this.clipStack[at + 3];
+  }
+
+  /** Drops every clip (a frame that ended without popping them all). */
+  resetClip(): void { this.clipDepth = 0; }
+
+  /** The clip rectangle in force, or null when none (gamepad focus targets keep the part that shows). */
+  getClip(): { x0: number; y0: number; x1: number; y1: number } | null {
+    return this.clipDepth === 0 ? null : { x0: this.clipX0, y0: this.clipY0, x1: this.clipX1, y1: this.clipY1 };
+  }
+
+  /** True when a point is inside the clip in force (always true without one). */
+  clipContains(x: number, y: number): boolean {
+    return this.clipDepth === 0 || (x >= this.clipX0 && x < this.clipX1 && y >= this.clipY0 && y < this.clipY1);
+  }
+
+  /** An axis-aligned textured quad, cut to the clip with its texture coordinates. */
+  private quad(x0: number, y0: number, x1: number, y1: number, u0: number, v0: number, u1: number, v1: number, colour: number): void {
+    if (x1 < x0) { [x0, x1] = [x1, x0]; [u0, u1] = [u1, u0]; }
+    if (y1 < y0) { [y0, y1] = [y1, y0]; [v0, v1] = [v1, v0]; }
+    if (this.clipDepth > 0) {
+      if (x1 <= this.clipX0 || x0 >= this.clipX1 || y1 <= this.clipY0 || y0 >= this.clipY1) { return; }
+      const w = x1 - x0, h = y1 - y0;
+      if (x0 < this.clipX0) { u0 += (u1 - u0) * (this.clipX0 - x0) / w; x0 = this.clipX0; }
+      if (x1 > this.clipX1) { u1 -= (u1 - u0) * (x1 - this.clipX1) / (x1 - x0); x1 = this.clipX1; }
+      if (y0 < this.clipY0) { v0 += (v1 - v0) * (this.clipY0 - y0) / h; y0 = this.clipY0; }
+      if (y1 > this.clipY1) { v1 -= (v1 - v0) * (y1 - this.clipY1) / (y1 - y0); y1 = this.clipY1; }
+    }
+    this.push(x0, y0, u0, v0, colour);
+    this.push(x1, y0, u1, v0, colour);
+    this.push(x1, y1, u1, v1, colour);
+    this.push(x0, y0, u0, v0, colour);
+    this.push(x1, y1, u1, v1, colour);
+    this.push(x0, y1, u0, v1, colour);
+  }
+
+  private readonly clipAx = new Float32Array(8);
+  private readonly clipAy = new Float32Array(8);
+  private readonly clipBx = new Float32Array(8);
+  private readonly clipBy = new Float32Array(8);
+
+  /** A flat triangle cut to the clip (Sutherland-Hodgman against the four edges, then a fan). */
+  private clippedTriangle(x0: number, y0: number, x1: number, y1: number, x2: number, y2: number, colour: number): void {
+    const minX = Math.min(x0, x1, x2), maxX = Math.max(x0, x1, x2), minY = Math.min(y0, y1, y2), maxY = Math.max(y0, y1, y2);
+    if (maxX <= this.clipX0 || minX >= this.clipX1 || maxY <= this.clipY0 || minY >= this.clipY1) { return; }
+    if (minX >= this.clipX0 && maxX <= this.clipX1 && minY >= this.clipY0 && maxY <= this.clipY1) {
+      this.push(x0, y0, this.wu, this.wv, colour);
+      this.push(x1, y1, this.wu, this.wv, colour);
+      this.push(x2, y2, this.wu, this.wv, colour);
+      return;
+    }
+    const ax = this.clipAx, ay = this.clipAy, bx = this.clipBx, by = this.clipBy;
+    ax[0] = x0; ay[0] = y0; ax[1] = x1; ay[1] = y1; ax[2] = x2; ay[2] = y2;
+    let count = 3;
+    count = clipEdge(ax, ay, count, bx, by, 0, this.clipX0);
+    count = clipEdge(bx, by, count, ax, ay, 1, this.clipX1);
+    count = clipEdge(ax, ay, count, bx, by, 2, this.clipY0);
+    count = clipEdge(bx, by, count, ax, ay, 3, this.clipY1);
+    for (let i = 1; i + 1 < count; i++) {
+      this.push(ax[0], ay[0], this.wu, this.wv, colour);
+      this.push(ax[i], ay[i], this.wu, this.wv, colour);
+      this.push(ax[i + 1], ay[i + 1], this.wu, this.wv, colour);
+    }
+  }
+
+  // #endregion
+
   // #region Flush
 
   private push(x: number, y: number, u: number, v: number, colour: number): void {
@@ -257,12 +373,7 @@ export class UiBatch {
   image(texture: WebGLTexture | null, x: number, y: number, w: number, h: number, screenWidth: number, screenHeight: number, tint = 0xffffffff): void {
     if (!texture) { return; }
     this.flushWith(screenWidth, screenHeight, null);
-    this.push(x, y, 0, 0, tint);
-    this.push(x + w, y, 1, 0, tint);
-    this.push(x + w, y + h, 1, 1, tint);
-    this.push(x, y, 0, 0, tint);
-    this.push(x + w, y + h, 1, 1, tint);
-    this.push(x, y + h, 0, 1, tint);
+    this.quad(x, y, x + w, y + h, 0, 0, 1, 1, tint);
     this.flushWith(screenWidth, screenHeight, texture);
   }
 
@@ -311,6 +422,34 @@ export class UiBatch {
   }
 
   // #endregion
+}
+
+/** One Sutherland-Hodgman pass: keeps the part of a polygon inside one clip edge (0 left, 1 right, 2 top, 3 bottom). */
+function clipEdge(inX: Float32Array, inY: Float32Array, count: number, outX: Float32Array, outY: Float32Array, edge: number, value: number): number {
+  if (count === 0) { return 0; }
+  const inside = (x: number, y: number) => (edge === 0 ? x >= value : edge === 1 ? x <= value : edge === 2 ? y >= value : y <= value);
+  let written = 0;
+  let px = inX[count - 1], py = inY[count - 1];
+  let pIn = inside(px, py);
+  for (let i = 0; i < count; i++) {
+    const cx = inX[i], cy = inY[i];
+    const cIn = inside(cx, cy);
+    if (cIn !== pIn && written < outX.length) {
+      const t = edge < 2 ? (value - px) / (cx - px) : (value - py) / (cy - py);
+      outX[written] = px + (cx - px) * t;
+      outY[written] = py + (cy - py) * t;
+      written++;
+    }
+    if (cIn && written < outX.length) {
+      outX[written] = cx;
+      outY[written] = cy;
+      written++;
+    }
+    px = cx;
+    py = cy;
+    pIn = cIn;
+  }
+  return written;
 }
 
 /**

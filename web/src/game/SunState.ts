@@ -3,11 +3,16 @@ import { type Vec3, vec3 } from '../core/math/Vector';
 import type { SiteInfo } from '../core/scene/ModelInfo';
 import { TimeZones } from '../core/scene/Places';
 import { type GeoLocation, isLocationValid, SolarPosition } from '../core/scene/SolarPosition';
-import { createSunLighting, NO_SUN, type SunLighting } from '../engine/render/SunLighting';
+import { LunarPosition } from '../core/scene/LunarPosition';
+import { createSunLighting, NO_SUN, type SkyLook, SkyLooks, type SunLighting } from '../engine/render/SunLighting';
 
 export const TIME_STEP = 5;           // minutes per slider / [ ] step
 const PLAY_SPEED = 60;                // clock minutes per real second while playing
-const COMPASS = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
+export const COMPASS = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
+
+/** Cloud drift at speed 1 (noise units per second) and its direction (from the west-south-west). */
+const CLOUD_DRIFT = 0.012;
+const CLOUD_WIND_X = 0.92 / Math.hypot(0.92, 0.38), CLOUD_WIND_Y = 0.38 / Math.hypot(0.92, 0.38);
 export const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
 /**
@@ -27,6 +32,21 @@ export class SunState {
   altitude = 0;
   /** Degrees clockwise from true north. */
   azimuth = 0;
+  /** Round W-A: towards the moon (scene axes), its altitude / azimuth (degrees), lit fraction and waxing. */
+  moonDirection: Vec3 = vec3(0, 0, -1);
+  moonAltitude = 0;
+  moonAzimuth = 0;
+  moonLit = 0;
+  moonWaxing = false;
+  /** Round W-A: the equatorial axes in scene axes (the stars turn in them). */
+  private celestialX: Vec3 = vec3(1, 0, 0);
+  private celestialY: Vec3 = vec3(0, 1, 0);
+  private celestialZ: Vec3 = vec3(0, 0, 1);
+  /** Sky round: where the clouds have drifted to. */
+  private cloudX = 0;
+  private cloudY = 0;
+  /** Polish round P-C: the tour's sun blend sets fractional minutes here (NaN: none). */
+  blendMinutes = NaN;
   playing = false;
   playMinutes = 0;
   revision = 0;
@@ -116,11 +136,46 @@ export class SunState {
 
   recompute(): void {
     const t = this.settings.time;
-    const minutes = this.playing ? this.playMinutes : t.minutes;
-    const { altitude, azimuth } = SolarPosition.compute(this.location, new Date().getFullYear(), t.month, t.day, minutes, t.daylightSaving);
+    const minutes = !Number.isNaN(this.blendMinutes) ? this.blendMinutes : this.playing ? this.playMinutes : t.minutes;
+    const year = new Date().getFullYear();
+    const { altitude, azimuth } = SolarPosition.compute(this.location, year, t.month, t.day, minutes, t.daylightSaving);
     this.altitude = altitude * 180 / Math.PI;
     this.azimuth = azimuth * 180 / Math.PI;
     this.direction = SolarPosition.toModel(SolarPosition.direction(altitude, azimuth), this.northAngle);
+
+    // W-A: the moon and the turning sky (same date, time and place)
+    const moon = LunarPosition.compute(this.location, year, t.month, t.day, minutes, t.daylightSaving);
+    this.moonAltitude = moon.altitude * 180 / Math.PI;
+    this.moonAzimuth = moon.azimuth * 180 / Math.PI;
+    this.moonLit = moon.illuminated;
+    this.moonWaxing = moon.waxing;
+    this.moonDirection = SolarPosition.toModel(SolarPosition.direction(moon.altitude, moon.azimuth), this.northAngle);
+    const sky = LunarPosition.equatorialToTrueNorth(LunarPosition.localSiderealTime(this.location, year, t.month, t.day, minutes, t.daylightSaving),
+      this.location.latitude);
+    this.celestialX = SolarPosition.toModel(vec3(sky[0], sky[1], sky[2]), this.northAngle);
+    this.celestialY = SolarPosition.toModel(vec3(sky[4], sky[5], sky[6]), this.northAngle);
+    this.celestialZ = SolarPosition.toModel(vec3(sky[8], sky[9], sky[10]), this.northAngle);
+  }
+
+  /** Sky round: drifts the clouds and returns the frame's sky look (and W-A's stars). */
+  advanceSky(dt: number, clock: number): SkyLook {
+    const s = this.settings;
+    const step = CLOUD_DRIFT * s.cloudSpeed * dt;
+    this.cloudX += CLOUD_WIND_X * step;
+    this.cloudY += CLOUD_WIND_Y * step;
+    if (this.cloudX * this.cloudX + this.cloudY * this.cloudY > 1e8) { this.cloudX = this.cloudY = 0; } // keep the noise precise
+    const look = SkyLooks.defaults();
+    look.cloudCover = s.cloudCover;
+    look.cloudOffsetX = this.cloudX;
+    look.cloudOffsetY = this.cloudY;
+    look.sunSize = s.sunSize;
+    look.sunGlare = s.sunGlare;
+    look.stars = s.stars ? [s.starDensity, s.starBrightness, s.starTwinkle, s.milkyWay] : [0, 0, 0, 0];
+    look.time = clock % 3600;
+    look.celestialX = this.celestialX;
+    look.celestialY = this.celestialY;
+    look.celestialZ = this.celestialZ;
+    return look;
   }
 
   /** After any edit: clamp, bump the revision and recompute. */
@@ -132,6 +187,16 @@ export class SunState {
     s.skyIntensity = clamp(s.skyIntensity, 0, 2);
     s.shadowIntensity = clamp(s.shadowIntensity, 0, 1);
     s.glassTransmission = clamp(s.glassTransmission, 0, 2);
+    const c = (v: number, lo: number, hi: number, fallback: number) => (Number.isFinite(v) ? Math.min(Math.max(v, lo), hi) : fallback);
+    s.cloudCover = c(s.cloudCover, 0, 1, 0);
+    s.cloudSpeed = c(s.cloudSpeed, 0, 2, 1);
+    s.sunSize = c(s.sunSize, 0.25, 2, 1);
+    s.sunGlare = c(s.sunGlare, 0, 2, 1);
+    s.moonLight = c(s.moonLight, 0, 2, 1);
+    s.starDensity = c(s.starDensity, 0, 2, 1);
+    s.starBrightness = c(s.starBrightness, 0, 2, 1);
+    s.starTwinkle = c(s.starTwinkle, 0, 2, 1);
+    s.milkyWay = c(s.milkyWay, 0, 2, 1);
     this.revision++;
     this.recompute();
   }
@@ -197,7 +262,36 @@ export class SunState {
 
   lighting(): SunLighting {
     const s = this.settings;
-    return s.enabled ? createSunLighting(this.direction, s.sunIntensity, s.skyIntensity, s.shadowIntensity, s.glassTransmission) : NO_SUN;
+    if (!s.enabled) { return NO_SUN; }
+    // W-A: the moon's phase (real, or chosen: the light on its face turned to give that lit fraction)
+    const lit = s.moonPhase ?? this.moonLit;
+    const lighting = createSunLighting(this.direction, s.sunIntensity, s.skyIntensity, s.shadowIntensity, s.glassTransmission,
+      this.moonDirection, lit, s.moon, s.moonLight);
+    if (s.moonPhase !== null) {
+      const sun = this.direction, moon = this.moonDirection;
+      const d = sun.x * moon.x + sun.y * moon.y + sun.z * moon.z;
+      let side = vec3(sun.x - moon.x * d, sun.y - moon.y * d, sun.z - moon.z * d);
+      const len2 = (v: Vec3) => v.x * v.x + v.y * v.y + v.z * v.z;
+      if (len2(side) < 1e-6) { side = vec3(moon.y, -moon.x, 0); }
+      if (len2(side) < 1e-6) { side = vec3(1, 0, 0); }
+      const l = Math.sqrt(len2(side));
+      side = vec3(side.x / l, side.y / l, side.z / l);
+      const cosElongation = Math.min(Math.max(1 - 2 * s.moonPhase, -1), 1);
+      const sinElongation = Math.sqrt(1 - cosElongation * cosElongation);
+      lighting.moonSunDirection = vec3(moon.x * cosElongation + side.x * sinElongation, moon.y * cosElongation + side.y * sinElongation,
+        moon.z * cosElongation + side.z * sinElongation);
+    }
+    return lighting;
+  }
+
+  /** Round W-A: the moon line of the NIGHT tab ("62 % lit, waxing · 34° up, NE"). */
+  moonText(): string {
+    const s = this.settings;
+    const lit = s.moonPhase ?? this.moonLit;
+    let text = `${Math.round(lit * 100)} % lit`;
+    if (s.moonPhase === null) { text += this.moonWaxing ? ', waxing' : ', waning'; }
+    text += this.moonAltitude > 0 ? ` · ${Math.round(this.moonAltitude)}° up, ${COMPASS[Math.round(this.moonAzimuth / 45) & 7]}` : ' · below the horizon';
+    return text;
   }
 
   describeTime(): string {

@@ -49,6 +49,7 @@ import { ScanGun } from './guns/ScanGun';
 import { TeleportGun } from './guns/TeleportGun';
 import { LightMode, Lights } from './Lights';
 import { PauseMenu, TextEditor } from './Menus';
+import { PanelShell } from './PanelShell';
 import { Reflections } from './Reflections';
 import { drawProgress, type ProgressState } from './ProgressScreen';
 import { Player } from './Player';
@@ -202,7 +203,8 @@ export class GameSession implements GunHost, EditHost {
   /** True when no gun is out (0 or the gun wheel): no gun panel, hints, aiming or firing. */
   unarmed = false;
   /** This frame's length (gamepad look). */
-  private frameTime = 0;
+  /** The last frame's length (s). */
+  frameTime = 0;
   /** Clash detection (Round C): dormant until Y or pause menu → CLASHES. */
   readonly clashes: Clashes;
   /** Clash mode is on (the docked clash list). */
@@ -220,6 +222,8 @@ export class GameSession implements GunHost, EditHost {
   private sceneRevision = 0;
   private slowFrameTime = 0;
   readonly editor: TextEditor;
+  /** Polish round P-A1 / P-A2: the panel and dock shell (scroll regions, footers, the dock column). */
+  readonly shell: PanelShell;
   readonly reflections: Reflections;
   aim: AimInfo = { hasHit: false, hit: null, origin: vec3(), direction: vec3(1, 0, 0) };
 
@@ -368,6 +372,7 @@ export class GameSession implements GunHost, EditHost {
     });
     this.doorCategory = findCategory(KEY_DOORS)?.index ?? -1;
     this.levelNamesUpper = scene.levels.map(l => l.name.toUpperCase());
+    this.shell = new PanelShell(this);
     this.menu = new PauseMenu(this);
     this.sunPanel = new SunPanel(this);
     this.sunHours = new SunHoursMode(this);
@@ -614,6 +619,7 @@ export class GameSession implements GunHost, EditHost {
     this.updateAim();
     this.updateGuns(dt);
     this.sun.update(dt);
+    this.renderer.sky = this.sun.advanceSky(dt, this.clock); // sky round: cloud drift and the sky look (W-A: the stars)
     this.sunHours.update();
     this.render();
     this.updateFps(dt);
@@ -872,6 +878,21 @@ export class GameSession implements GunHost, EditHost {
   }
 
   /** Y / pause menu → CLASHES: clash mode on or off. */
+  /**
+   * One level back (Esc, the gamepad's B, ← BACK): an open dropdown or confirm, then the panel's sub-view, then the
+   * panel. False when nothing was open (Esc then resumes).
+   */
+  panelBack(): boolean {
+    return this.paused && this.menu.closePanels();
+  }
+
+  /** CLOSE: every level of the open panel closes and the walkthrough (or clash mode) carries on. */
+  closePanelToGame(): void {
+    this.menu.closeOverlay();
+    for (let guard = 0; guard < 12 && this.panelBack(); guard++) { /* one level at a time */ }
+    if (this.paused) { this.setPaused(false); }
+  }
+
   toggleClashMode(): void {
     this.clashes.toggle();
   }
@@ -1868,7 +1889,8 @@ export class GameSession implements GunHost, EditHost {
     // ---- Window pass: minimap 3D, then all 2D UI in one batch
     gl.viewport(0, 0, width, height);
     const mapX = width - this.s(20) - this.s(220), mapY = this.s(20);
-    if (this.showMap && !this.paused && !this.uiHidden && !this.photo.open && !this.clashModeOn) { this.drawMinimapPlan(mapX + this.s(8), mapY + this.s(30), this.s(204), this.s(170)); }
+    this.shell.beginFrame(); // P-A2: last frame's dock sat over the minimap (a short window): it hides
+    if (this.showMap && !this.paused && !this.uiHidden && !this.photo.open && !this.clashModeOn && !this.shell.dockOverMap) { this.drawMinimapPlan(mapX + this.s(8), mapY + this.s(30), this.s(204), this.s(170)); }
 
     if (this.paused) {
       // A text box opened from a panel (reply, assignee, edit) sits over the menu, which then gets no clicks

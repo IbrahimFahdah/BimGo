@@ -2,6 +2,7 @@ import type { MaterialData, SceneMaterial } from '../../core/scene/MaterialData'
 import { type Vec3, vec3 } from '../../core/math/Vector';
 import { caps, gl } from '../gl/Gl';
 import { ProxyPack } from './ProxyPack';
+import { MaterialOverrides } from '../../core/scene/MaterialOverrides';
 
 /**
  * Realistic-mode material data on the GPU (port of BimGo.App/Rendering/MaterialTextures.cs): a table of five RGBA32F
@@ -23,6 +24,14 @@ export class MaterialTextures {
 
   /** Proxies take the material's colour (their pattern keeps its contrast). */
   proxyMaterialColour = true;
+
+  /** QOL round: the water override (pause menu → Appearance). Change, then refreshTable. */
+  waterFromAsset = true;
+  waterKeywords: readonly string[] = ['water'];
+  waterKeywordsOpaque = false;
+
+  /** The last table's inputs, so a water override change rebuilds only the table (no image decoding). */
+  private lastTable: [SceneMaterial[], (string | null)[], (string | null)[], ProxyPack | null, Map<string, [number, number]>, Map<string, Vec3>] | null = null;
 
   private table: WebGLTexture | null = null;
   private readonly arrays: (WebGLTexture | null)[] = [null, null, null, null];
@@ -120,6 +129,7 @@ export class MaterialTextures {
       });
 
       this.uploadTable(table, keys, proxyOf, proxies, placements, averages);
+      this.lastTable = [table, keys, proxyOf, proxies, placements, averages];
       gl.activeTexture(gl.TEXTURE0);
 
       if (gl.getError() === gl.OUT_OF_MEMORY) {
@@ -196,13 +206,14 @@ export class MaterialTextures {
       data[o + 15] = layer;
       put(o + 16, m.assetTint ?? vec3(1, 1, 1), proxy ? MaterialTextures.FLAG_PROXY : m.invert ? MaterialTextures.FLAG_INVERT : 0);
 
-      // Reflections: raw strength and blur; tiers and threshold in the shader
-      data[o + 20] = m.shine;
-      data[o + 21] = m.roughness ?? 1;
-      data[o + 22] = (m.metallic ? MaterialTextures.FLAG_METALLIC : 0) + (m.water ? MaterialTextures.FLAG_WATER : 0);
-      data[o + 23] = m.water ? (m.waterBump > 0 ? m.waterBump : 0.1) : 0;
-      if (m.shine > 0) { this.shinyCount++; }
-      if (m.water) { this.waterCount++; }
+      // Reflections: raw strength and blur; tiers and threshold in the shader. QOL round: water as the override says
+      const look = MaterialOverrides.look(m, this.waterFromAsset, this.waterKeywords, this.waterKeywordsOpaque);
+      data[o + 20] = look.shine;
+      data[o + 21] = look.roughness ?? 1;
+      data[o + 22] = (m.metallic ? MaterialTextures.FLAG_METALLIC : 0) + (look.water ? MaterialTextures.FLAG_WATER : 0);
+      data[o + 23] = look.water ? (look.bump > 0 ? look.bump : MaterialOverrides.KEYWORD_WATER_BUMP) : 0;
+      if (look.shine > 0) { this.shinyCount++; }
+      if (look.water) { this.waterCount++; }
     });
 
     this.table = gl.createTexture();
@@ -215,7 +226,17 @@ export class MaterialTextures {
     this.materialCount = count;
   }
 
+  /** QOL round: re-uploads the material table (after a water override change). Cheap: the images stay. */
+  refreshTable(): void {
+    if (!this.table || !this.lastTable) { return; }
+    gl.deleteTexture(this.table);
+    this.table = null;
+    this.uploadTable(...this.lastTable);
+    gl.activeTexture(gl.TEXTURE0);
+  }
+
   release(): void {
+    this.lastTable = null;
     gl.deleteTexture(this.table);
     this.table = null;
     this.arrays.forEach((t, b) => { gl.deleteTexture(t); this.arrays[b] = null; });

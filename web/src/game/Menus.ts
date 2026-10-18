@@ -58,7 +58,8 @@ export class Widgets {
 
   hover(x: number, y: number, w: number, h: number): boolean {
     const i = this.input;
-    return i.mouseX >= x && i.mouseX < x + w && i.mouseY >= y && i.mouseY < y + h;
+    // P-A1: what a scroll region clips can't be clicked
+    return i.mouseX >= x && i.mouseX < x + w && i.mouseY >= y && i.mouseY < y + h && this.ui.clipContains(i.mouseX, i.mouseY);
   }
 
   menuButton(f: FontAtlas, x: number, y: number, w: number, label: string, primary: boolean, danger: boolean, enabled = true, height = 0): boolean {

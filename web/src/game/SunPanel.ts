@@ -12,11 +12,28 @@ import { Widgets } from './Menus';
 import { MONTHS, TIME_STEP, two } from './SunState';
 import { UnitFormat } from './UnitFormat';
 import { Hints } from './Hints';
+import { DOCK_CLOSE, ScrollRegion } from './PanelShell';
+import type { SunSettings } from '../core/format/DocumentModels';
 
 const QUALITY_OPTIONS = ['Low', 'Medium', 'High'];
 const LIGHT_MODE_OPTIONS = ['Off', 'Glow', 'Glow + light'];
 const MONTHS_UPPER = MONTHS.map(m => m.toUpperCase());
-const SLIDER = { time: 10, sun: 11, sky: 12, shadow: 13, glass: 14, lights: 15, bloom: 16 } as const;
+const SLIDER = {
+  time: 10, sun: 11, sky: 12, shadow: 13, glass: 14, lights: 15, bloom: 16,
+  clouds: 20, cloudSpeed: 21, sunSize: 22, sunGlare: 23,                                          // sky round
+  moonLight: 32, starDensity: 33, starBrightness: 34, starTwinkle: 35, milkyWay: 36                 // W-A
+} as const;
+
+/** Sky round / W-A: the sun dock's lower tabs. */
+const SUN_TABS = ['LIGHTING', 'SKY', 'NIGHT'];
+
+/** Round W-A: the moon's phase: real, or a chosen lit fraction (the four chosen phases are drawn as moons). */
+const MOON_PHASE_OPTIONS = ['Actual', '', '', '', ''];
+const MOON_PHASE_NAMES = ['Actual phase for the date', 'Full', 'Gibbous', 'Half', 'Crescent'];
+const MOON_PHASE_VALUES = [0, 1, 0.8, 0.5, 0.2];
+
+type SunSlider = 'sunIntensity' | 'skyIntensity' | 'shadowIntensity' | 'glassTransmission' | 'cloudCover' | 'cloudSpeed' | 'sunSize' | 'sunGlare'
+  | 'moonLight' | 'starDensity' | 'starBrightness' | 'starTwinkle' | 'milkyWay';
 
 /**
  * The sun icon and the SUN, SHADOWS & LIGHTS panel (port of the panel half of BimGo.App/Game/GameSession.Sun.cs and
@@ -30,6 +47,10 @@ export class SunPanel {
   /** Month / day text boxes: 0 = none focused, 1 = month, 2 = day. */
   private field = 0;
   private fieldText = '';
+  /** The open lower tab (0 lighting, 1 sky, 2 night; per session). */
+  private tab = 0;
+  /** P-A2: the dock's body. */
+  private readonly scroll = new ScrollRegion();
 
   constructor(private readonly session: GameSession) {
     this.w = new Widgets(session);
@@ -165,40 +186,59 @@ export class SunPanel {
 
   // #region Panel
 
+  /**
+   * The sun dock (P-A2: the right-hand dock column, the shared header, scrolling body and footer): place, shadows,
+   * quality, time, date, daylight saving, then the LIGHTING / SKY / NIGHT tabs. The location picker takes its place.
+   */
   build(f: FontAtlas, input: InputState): void {
-    const session = this.session, ui = session.ui, w = this.w;
-    const sun = session.sun, settings = sun.settings, viewer = session.settings;
+    const session = this.session, ui = session.ui, w = this.w, shell = session.shell;
     if (!input.leftDown) { w.activeSlider = -1; }
+    const pw = this.s(UiTheme.DOCK_WIDTH);
 
-    const pw = this.s(340), ph = this.s(600);
-    const icon = this.iconRect();
-    const x = session.screenWidth - this.s(20) - pw;
-    const y = Math.max(this.s(20), icon.y - this.s(10) - ph);
-    ui.panel(x, y, pw, ph, UiTheme.PANEL_STRONG, Rgba.withAlpha(UiTheme.SUN, 0.5));
-
-    // The location picker (CHANGE…) takes the panel's place while open
     if (this.location.open) {
-      this.location.build(f, w, input, x, y, pw, ph);
+      // Its own layout (laid out against its bottom): the column's height up to the old panel's
+      const column = shell.dockColumn(pw);
+      let top = column.top;
+      let lh = Math.min(this.s(624), column.bottom - top);
+      if (lh < this.s(560) && session.showMap) {
+        top = this.s(UiTheme.COLUMN_MARGIN); // too short under the minimap: over it (it hides)
+        shell.dockOverMapNext = true;
+        lh = Math.min(this.s(624), column.bottom - top);
+      }
+      ui.panel(column.x, top, pw, lh, UiTheme.PANEL_STRONG, Rgba.withAlpha(UiTheme.SUN, 0.5));
+      this.location.build(f, w, input, column.x, top, pw, lh);
       return;
     }
 
     // A click anywhere outside a month / day box leaves it
     if (input.leftPressed && this.field !== 0) { this.commitField(); }
 
-    const ix = x + this.s(16), iw = pw - this.s(32);
-    let cy = y + this.s(14);
+    const d = shell.beginDock('SUN, SHADOWS & LIGHTS', UiTheme.SUN_LABEL, Rgba.withAlpha(UiTheme.SUN, 0.5), pw, this.scroll, false);
+    let cy = shell.beginDockBody(d, this.scroll, input, w.activeSlider < 0);
+    const stay = this.buildBody(f, input, d.ix, cy, d.iw);
+    cy = stay.bottom;
+    shell.endDockBody(this.scroll, input, cy);
+    if (!stay.stay) { return; } // CHANGE… or STUDY… left the dock
+    if (shell.endDock(d, null, Hints.sunFoot.text) === DOCK_CLOSE) { this.close(); }
+  }
 
-    // Header
-    ui.text(f.small, ix, cy, 'SUN, SHADOWS & LIGHTS', UiTheme.SUN_LABEL, this.s(2));
-    ui.textRight(f.small, ix + iw, cy, Hints.sunClose.text, UiTheme.TEXT_FAINT, this.s(0.6));
-    cy += this.s(22);
-    const changeW = this.s(78);
+  /** The dock's body from its first line; stay is false when a button left the dock (the location picker, the study). */
+  private buildBody(f: FontAtlas, input: InputState, ix: number, cy: number, iw: number): { stay: boolean; bottom: number } {
+    const session = this.session, ui = session.ui, w = this.w;
+    const sun = session.sun, settings = sun.settings, viewer = session.settings;
+
+    // Place: the location label, CHANGE… and (QOL round) STUDY…
+    const changeW = this.s(78), studyW = this.s(70);
     const placeColour = sun.hasOverride ? UiTheme.SUN : sun.locationKnown ? UiTheme.TEXT_MUTED : UiTheme.MEASURE_LABEL;
-    ui.textWrapped(f.small, ix, cy + this.s(3), iw - changeW - this.s(8), sun.placeLabel, placeColour, 1);
+    ui.textWrapped(f.small, ix, cy + this.s(3), iw - changeW - studyW - this.s(14), sun.placeLabel, placeColour, 1);
     if (w.smallButton(f, ix + iw - changeW, cy - this.s(2), changeW, this.s(22), 'CHANGE…')) {
       this.commitField();
       this.location.show();
-      return;
+      return { stay: false, bottom: cy };
+    }
+    if (w.smallButton(f, ix + iw - changeW - this.s(6) - studyW, cy - this.s(2), studyW, this.s(22), 'STUDY…')) {
+      session.sunHours.show(); // closes this dock (one panel at a time)
+      return { stay: false, bottom: cy };
     }
     cy += this.s(26);
 
@@ -257,8 +297,16 @@ export class SunPanel {
     // Where the sun is
     ui.text(f.small, ix, cy, sun.info(), sun.altitude > 0 ? UiTheme.TEXT_MUTED : UiTheme.MEASURE_LABEL, this.s(0.4));
     cy += this.s(24);
-    ui.rect(ix, cy, iw, Math.max(1, ui.scale), Rgba.hex(0xffffff, 0.1));
-    cy += this.s(12);
+
+    // Sky round (the tabs' line is the divider): LIGHTING (intensities, lights) · SKY (clouds, the sun disc) · NIGHT
+    const tab = w.tabs(f, ix, cy, iw, SUN_TABS, this.tab);
+    if (tab !== this.tab) {
+      this.tab = tab;
+      w.activeSlider = -1;
+    }
+    cy += this.s(34);
+    if (this.tab === 1) { return { stay: true, bottom: this.buildSkyTab(f, ix, cy, iw) }; }
+    if (this.tab === 2) { return { stay: true, bottom: this.buildNightTab(f, ix, cy, iw) }; }
 
     // Intensities
     this.intensity(f, SLIDER.sun, ix, cy, iw, 'Sunlight', 'sunIntensity', 2);
@@ -280,15 +328,110 @@ export class SunPanel {
       sun.changed();
     }
     ui.textRight(f.small, ix + iw, cy + this.s(8), Hints.sunKeys.text, UiTheme.TEXT_FAINT, this.s(0.4));
+    return { stay: true, bottom: cy + this.s(28) };
   }
 
-  private intensity(f: FontAtlas, id: number, x: number, y: number, w: number, label: string,
-    key: 'sunIntensity' | 'skyIntensity' | 'shadowIntensity' | 'glassTransmission', max: number): void {
+  /** Sky round: the SKY tab: cloud cover and drift, the sun disc's size and glare (a look only), RESET SKY. */
+  private buildSkyTab(f: FontAtlas, ix: number, cy: number, iw: number): number {
+    const ui = this.session.ui, sun = this.session.sun, settings = sun.settings;
+    this.intensity(f, SLIDER.clouds, ix, cy, iw, 'Cloud cover', 'cloudCover', 1);
+    cy += this.s(54);
+    this.intensity(f, SLIDER.cloudSpeed, ix, cy, iw, 'Cloud drift', 'cloudSpeed', 2);
+    cy += this.s(54);
+    this.intensity(f, SLIDER.sunSize, ix, cy, iw, 'Sun size', 'sunSize', 2);
+    cy += this.s(54);
+    this.intensity(f, SLIDER.sunGlare, ix, cy, iw, 'Sun glare', 'sunGlare', 2);
+    cy += this.s(54);
+    ui.textWrapped(f.small, ix, cy, iw, 'A look only: clouds and the sun disc don\'t change the lighting, shadows or studies. Saved with the model.', UiTheme.TEXT_FAINT, 3);
+    cy += this.s(52);
+    if (this.w.smallButton(f, ix, cy, this.s(150), this.s(28), 'RESET SKY')) {
+      settings.cloudCover = 0;
+      settings.cloudSpeed = settings.sunSize = settings.sunGlare = 1;
+      sun.changed();
+    }
+    return cy + this.s(28);
+  }
+
+  /** Round W-A: the NIGHT tab: the moon (on / off, phase real or chosen, moonlight) and the stars, RESET NIGHT. */
+  private buildNightTab(f: FontAtlas, ix: number, cy: number, iw: number): number {
+    const ui = this.session.ui, w = this.w, sun = this.session.sun, settings = sun.settings;
+    const moon = w.checkbox(f, ix, cy, iw, 'Moon (its real place in the sky)', settings.moon);
+    if (moon !== settings.moon) { settings.moon = moon; sun.changed(); }
+    cy += this.s(30);
+    ui.text(f.small, ix, cy, sun.moonText(), sun.moonAltitude > 0 ? UiTheme.TEXT_MUTED : UiTheme.TEXT_FAINT, this.s(0.4));
+    cy += this.s(24);
+
+    let shown = 0;
+    if (settings.moonPhase !== null) {
+      const chosen = settings.moonPhase;
+      shown = 1;
+      for (let i = 2; i < MOON_PHASE_VALUES.length; i++) {
+        if (Math.abs(MOON_PHASE_VALUES[i] - chosen) < Math.abs(MOON_PHASE_VALUES[shown] - chosen)) { shown = i; }
+      }
+    }
+    ui.text(f.body, ix, cy, 'Phase', UiTheme.TEXT_SOFT);
+    ui.textRight(f.small, ix + iw, cy + this.s(2), MOON_PHASE_NAMES[shown] + (shown > 0 ? ` · ${Math.round(MOON_PHASE_VALUES[shown] * 100)} % lit` : ''), UiTheme.TEXT_MUTED);
+    cy += this.s(22);
+    const phase = w.segmented(f, ix, cy, iw, MOON_PHASE_OPTIONS, shown);
+    const segment = iw / MOON_PHASE_OPTIONS.length;
+    for (let i = 1; i < MOON_PHASE_OPTIONS.length; i++) {
+      this.drawMoonIcon(ix + segment * (i + 0.5), cy + this.s(16), this.s(8), MOON_PHASE_VALUES[i]);
+    }
+    if (phase !== shown) {
+      settings.moonPhase = phase === 0 ? null : MOON_PHASE_VALUES[phase];
+      sun.changed();
+    }
+    cy += this.s(42);
+    this.intensity(f, SLIDER.moonLight, ix, cy, iw, 'Moonlight', 'moonLight', 2);
+    cy += this.s(54);
+
+    const stars = w.checkbox(f, ix, cy, iw, 'Stars (turning with the sky)', settings.stars);
+    if (stars !== settings.stars) { settings.stars = stars; sun.changed(); }
+    cy += this.s(32);
+    if (settings.stars) {
+      this.intensity(f, SLIDER.starDensity, ix, cy, iw, 'Star density', 'starDensity', 2);
+      cy += this.s(54);
+      this.intensity(f, SLIDER.starBrightness, ix, cy, iw, 'Star brightness', 'starBrightness', 2);
+      cy += this.s(54);
+      this.intensity(f, SLIDER.starTwinkle, ix, cy, iw, 'Twinkle', 'starTwinkle', 2);
+      cy += this.s(54);
+      this.intensity(f, SLIDER.milkyWay, ix, cy, iw, 'Milky Way', 'milkyWay', 2);
+      cy += this.s(54);
+    }
+    ui.textWrapped(f.small, ix, cy, iw,
+      'Shows with shadows on once the sun is down. With the sun below the horizon the moon lights the scene and casts the shadows. Saved with the model.',
+      UiTheme.TEXT_FAINT, 3);
+    cy += this.s(52);
+    if (w.smallButton(f, ix, cy, this.s(150), this.s(28), 'RESET NIGHT')) {
+      settings.moon = settings.stars = true;
+      settings.moonPhase = null;
+      settings.moonLight = settings.starDensity = settings.starBrightness = settings.starTwinkle = settings.milkyWay = 1;
+      sun.changed();
+    }
+    return cy + this.s(28);
+  }
+
+  /** Round W-A: a small moon at a lit fraction (lit on the right): the dark disc, then the lit part row by row. */
+  private drawMoonIcon(cx: number, cy: number, r: number, lit: number): void {
+    const ui = this.session.ui;
+    ui.circle(cx, cy, r, Rgba.hex(0x000000, 0.45), 24);
+    const light = Rgba.hex(0xf3f0e4);
+    const step = Math.max(1, ui.scale);
+    const k = Math.min(Math.max(lit, 0), 1);
+    for (let y = -r + step * 0.5; y < r; y += step) {
+      const half = Math.sqrt(Math.max(r * r - y * y, 0));
+      const from = half * (1 - 2 * k);
+      if (half - from > 0.25) { ui.rect(cx + from, cy + y - step * 0.5, half - from, step, light); }
+    }
+  }
+
+  private intensity(f: FontAtlas, id: number, x: number, y: number, w: number, label: string, key: SunSlider, max: number): void {
     const sun = this.session.sun;
-    const value = sun.settings[key];
+    const settings = sun.settings as SunSettings & Record<SunSlider, number>;
+    const value = settings[key];
     const result = Math.round(this.w.slider(f, id, x, y, w, label, `${Math.round(value * 100)} %`, value, 0, max) * 20) / 20; // 5 % steps
     if (Math.abs(result - value) > 1e-4) {
-      sun.settings[key] = result;
+      settings[key] = key === 'sunSize' ? Math.max(result, 0.25) : result;
       sun.changed();
     }
   }
