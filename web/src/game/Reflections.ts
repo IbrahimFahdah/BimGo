@@ -62,7 +62,9 @@ export class Reflections {
     // Stale after a change, once things have settled for a moment
     const l = renderer.lighting;
     const key = [sceneKey, l.enabled, l.sunDirection.x, l.sunDirection.y, l.sunDirection.z, l.sunColour.x, l.skyColour.x, l.zenith.x, l.horizon.x,
-      l.shadowStrength, l.glass, s.lightMode, s.lightIntensity, s.colour, s.revitTint].join('|');
+      l.shadowStrength, l.glass, session.sun?.settings.cloudCover ?? 0, // sky round: probes re-bake when the cover changes
+      s.lightMode, s.lightIntensity, s.colour, s.revitTint,
+      renderer.probeGrass, session.grass.grassCells, s.grassHeightMm].join('|'); // P-C: blades came (or went), or the field was rebuilt
     if (this.probeKey === '') { this.probeKey = key; }
     else if (key !== this.probeKey) {
       this.probeKey = key;

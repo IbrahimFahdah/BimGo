@@ -12,6 +12,7 @@ import type { GameSession } from './GameSession';
 import { Widgets } from './Menus';
 import { Hints } from './Hints';
 import { keyOf } from '../platform/Hotkeys';
+import { DOCK_CLOSE, ScrollRegion } from './PanelShell';
 
 /** The default cap colour (dark grey). */
 export const DEFAULT_CAP_COLOUR = 0x3d4045;
@@ -44,6 +45,7 @@ export const formatColour = (rgb: number) => '#' + (rgb & 0xffffff).toString(16)
  */
 export class SectionMode {
   open = false;
+  private readonly dockScroll = new ScrollRegion();
   /** The current cut (Revit internal metres). */
   private cut = new SectionCut();
   /** Its planes in scene-local coordinates (what the shaders and picking use). */
@@ -401,18 +403,18 @@ export class SectionMode {
     overlay.draw(camera, false, 1, false);
   }
 
-  /** The editor's panel (top right): fit buttons, box / plane switches, cap colour, clear, close. */
+  /**
+   * The editor's dock (polish round P-A2: the right-hand dock column and the shared header, body and footer):
+   * what's cut, fit buttons, box / plane switches, cap colour, clear; the notice above the footer.
+   */
   buildPanel(f: FontAtlas, input: InputState): void {
     if (!this.open) { return; }
-    const session = this.session, ui = session.ui, w = this.w, cut = this.cut;
+    const session = this.session, ui = session.ui, shell = session.shell, w = this.w, cut = this.cut;
     if (!input.leftDown) { w.activeSlider = -1; }
-    const pw = this.s(300), x = session.screenWidth - this.s(20) - pw, y = this.s(20), ph = this.s(372);
-    this.panelRect = [x, y, pw, ph];
-    ui.panel(x, y, pw, ph, UiTheme.PANEL_STRONG, UiTheme.ACCENT);
-    const ix = x + this.s(16), iw = pw - this.s(32);
-    let cy = y + this.s(14);
-    ui.text(f.small, ix, cy, 'SECTION BOX', UiTheme.ACCENT, this.s(1.4));
-    cy += this.s(26);
+    const d = shell.beginDock('SECTION BOX', UiTheme.ACCENT, UiTheme.ACCENT, this.s(UiTheme.DOCK_WIDTH), this.dockScroll, this.notice !== null);
+    this.panelRect = [d.x, d.y, d.w, d.h];
+    const ix = d.ix, iw = d.iw;
+    let cy = shell.beginDockBody(d, this.dockScroll, input);
     ui.textWrapped(f.small, ix, cy, iw, Hints.sectionDrag.text, UiTheme.TEXT_MUTED, 2);
     cy += this.s(38);
 
@@ -438,14 +440,19 @@ export class SectionMode {
     ui.rect(ix, cy, this.s(44), this.s(30), Rgba.fromFloat(this.capColour.x, this.capColour.y, this.capColour.z, 1));
     ui.outline(ix, cy, this.s(44), this.s(30), Math.max(1, ui.scale), UiTheme.CONTROL_BORDER);
     const buttonW = (iw - this.s(60) - this.s(8)) * 0.5;
-    if (w.smallButton(f, ix + this.s(52), cy, buttonW, this.s(30), 'CHANGE…')) { this.pickCapColour(); }
+    const pickColour = w.smallButton(f, ix + this.s(52), cy, buttonW, this.s(30), 'CHANGE…');
     if (w.smallButton(f, ix + this.s(52) + buttonW + this.s(8), cy, buttonW, this.s(30), 'RESET')) { this.setCapColour(DEFAULT_CAP_COLOUR, true); }
     cy += this.s(42);
 
     if (w.smallButton(f, ix, cy, iw, this.s(30), Hints.sectionClear.text, true)) { this.clear(); }
-    cy += this.s(40);
-    if (this.notice) { ui.textWrapped(f.small, ix, cy, iw, this.notice, UiTheme.MEASURE_TEXT, 2); }
-    if (w.smallButton(f, ix, y + ph - this.s(44), iw, this.s(30), Hints.sectionClose.text)) { this.close(); }
+    cy += this.s(30);
+    shell.endDockBody(this.dockScroll, input, cy);
+
+    if (shell.endDock(d, this.notice, Hints.sectionFoot.text) === DOCK_CLOSE) {
+      this.close();
+      return;
+    }
+    if (pickColour) { this.pickCapColour(); } // the colour picker: after the dock is drawn
   }
 
   // #endregion

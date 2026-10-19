@@ -5,7 +5,8 @@ import {
 import { CommentSnapshots, type CommentRecord, type CommentView } from '../core/format/DocumentModels';
 import { vec3 } from '../core/math/Vector';
 import { SectionCut } from '../core/scene/SectionCut';
-import { CharacterController } from '../engine/physics/CharacterController';
+import { ClashGroups } from '../core/clashes/ClashGroups';
+import { elementRefKey, type ClashElementRef } from '../core/clashes/ClashModels';
 import { SoundId } from '../platform/audio';
 import { downloadBlob, pickFile, safeFileName } from '../platform/files';
 import type { GameSession } from './GameSession';
@@ -67,14 +68,29 @@ export class CommentsBcf {
       const topics: BcfTopic[] = [];
       for (const record of records) {
         const topic = BcfMapping.toTopic(record);
-        const viewpoint = BcfMapping.toViewpoint(this.viewForBcf(record), CharacterController.STAND_EYE, frame, session.settings.fieldOfView);
+        const bcfView = this.viewForBcf(record);
+        const viewpoint = BcfMapping.toViewpoint(bcfView, bcfView.eyeHeight ?? session.player.controller.standEye, frame, session.settings.fieldOfView); // P-C: the view's eye height
         if (record.view?.section) { viewpoint.clippingPlanes.push(...BcfMapping.toClippingPlanes(record.view.section, frame)); }
         const clash = record.clashId ? session.clashes.findClash(record.clashId) : null;
+        const group = !clash && record.clashId ? ClashGroups.find(session.clashes.document, record.clashId) : null;
+        const addElement = (element: ClashElementRef) => {
+          if (!element.ifcGuid && element.elementId <= 0) { return; }
+          viewpoint.selection.push({ ifcGuid: element.ifcGuid || null, authoringToolId: element.elementId > 0 ? String(element.elementId) : null, originatingSystem: system });
+        };
         if (clash) {
           // A clash comment: both elements of the pair
-          for (const element of [clash.a, clash.b]) {
-            if (!element.ifcGuid && element.elementId <= 0) { continue; }
-            viewpoint.selection.push({ ifcGuid: element.ifcGuid || null, authoringToolId: element.elementId > 0 ? String(element.elementId) : null, originatingSystem: system });
+          addElement(clash.a);
+          addElement(clash.b);
+        } else if (group) {
+          // A group comment (C-C1): every element of every member, once each
+          const seen = new Set<string>();
+          for (const id of group.clashIds) {
+            const member = session.clashes.findClash(id);
+            if (!member) { continue; }
+            for (const element of [member.a, member.b]) {
+              const key = elementRefKey(element);
+              if (!seen.has(key)) { seen.add(key); addElement(element); }
+            }
           }
         } else {
           const component = this.componentFor(record, system);
@@ -108,7 +124,7 @@ export class CommentsBcf {
     if (record.view) { return record.view; }
     const { feet, yaw, pitch } = this.session.approachMarker(record.local);
     const world = this.session.toRevit(feet);
-    return { x: world.x, y: world.y, z: world.z, yaw, pitch, flying: false, eyeHeight: null, section: null };
+    return { x: world.x, y: world.y, z: world.z, yaw, pitch, flying: false, eyeHeight: this.session.player.controller.standEye, section: null };
   }
 
   /** The commented element as a BCF component (IFC GUID when the file has one, plus the ElementId), or null. */
@@ -188,15 +204,17 @@ export class CommentsBcf {
     const session = this.session, scene = session.scene;
     let element = this.findElement(topic.viewpoint);
     let marker;
-    const view = BcfMapping.toView(topic.viewpoint, CharacterController.STAND_EYE, frame);
+    const importEye = session.player.controller.standEye; // P-C: the eye-height preset (was a fixed 1.62 m)
+    const view = BcfMapping.toView(topic.viewpoint, importEye, frame);
     if (view && topic.viewpoint) {
+      view.eyeHeight = importEye;
       const feet = session.comments.toLocal(view.x, view.y, view.z);
       const floor = session.pick(vec3(feet.x, feet.y, feet.z + 0.5), vec3(0, 0, -1), 0.9);
       view.flying = !(floor && floor.normal.z > 0.7);
       view.section = BcfMapping.toSection(topic.viewpoint.clippingPlanes, frame).cut ?? new SectionCut();
       record.view = view;
 
-      const eye = vec3(feet.x, feet.y, feet.z + CharacterController.STAND_EYE);
+      const eye = vec3(feet.x, feet.y, feet.z + importEye);
       const cp = Math.cos(view.pitch);
       const look = vec3(cp * Math.cos(view.yaw), cp * Math.sin(view.yaw), Math.sin(view.pitch));
       const hit = session.pick(eye, look, 300);

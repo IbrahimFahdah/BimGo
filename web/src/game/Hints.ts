@@ -24,7 +24,6 @@ export const Hints = {
 
   sectionDrag: new KeyHint(() => `Drag a handle along its arrow (${keyOf(InputAction.SectionFreeDrag)}: no snap) · RMB-drag to look`),
   sectionClear: new KeyHint(() => `CLEAR ALL CUTS (${keyOf(InputAction.SectionClear)})`),
-  sectionClose: new KeyHint(() => `CLOSE (${keyOf(InputAction.SectionBox)} / ESC) · cut stays`),
 
   bookmarksTour: new KeyHint(() =>
     `The tour plays the ticked bookmarks in list order · ${keyUpper(InputAction.TourPause)} pause · ${keyUpper(InputAction.TourPrevious)} ${keyUpper(InputAction.TourNext)} stops · ESC ends it`),

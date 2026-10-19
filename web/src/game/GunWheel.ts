@@ -144,7 +144,7 @@ export class GunWheel {
         const r = s(hover ? 10 : 9);
         ui.ring(ix, iy - s(4), r, Math.max(1, s(1.5)), colour, 20);
         ui.line(ix - r * 0.7, iy - s(4) + r * 0.7, ix + r * 0.7, iy - s(4) - r * 0.7, Math.max(1, s(1.5)), colour);
-        ui.textCentred(f.small, ix, iy + s(10), 'UNARMED', colour);
+        ui.textCentred(f.small, ix, iy + s(10), 'NONE', colour);
         continue;
       }
 
@@ -159,12 +159,12 @@ export class GunWheel {
 
     const middle = cy - f.bold.lineHeight * 0.5;
     if (this.hover === WHEEL_UNARMED) {
-      ui.textCentred(f.bold, cx, middle, 'Unarmed', UiTheme.TEXT, s(1));
+      ui.textCentred(f.bold, cx, middle, 'None', UiTheme.TEXT, s(1));
     } else if (this.hover === WHEEL_BAR) {
       ui.textCentred(f.bold, cx, middle, showBar ? 'Hide gun bar' : 'Show gun bar', UiTheme.TEXT, s(1));
     } else {
       const shown = session.guns[this.hover >= 0 ? this.hover : session.activeGun];
-      const name = this.hover < 0 && session.unarmed ? 'Unarmed' : shown.name;
+      const name = this.hover < 0 && session.unarmed ? 'None' : shown.name;
       ui.textCentred(f.bold, cx, middle, name, this.hover >= 0 ? shown.colour : UiTheme.TEXT_MUTED, s(1));
     }
     ui.textCentred(f.small, cx, cy + radius + s(18), this.byPad ? HINT_PAD.text : HINT_MOUSE.text, UiTheme.TEXT_SOFT);

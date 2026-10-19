@@ -1548,6 +1548,7 @@ export class GameSession implements GunHost, EditHost {
     const viewFeet = this.comments.viewFeet(record);
     if (viewFeet && record.view) {
       if (record.view.section) { this.section.apply(record.view.section, false); }
+      if (record.view.eyeHeight !== null) { this.eye.apply(record.view.eyeHeight); } // P-C: seen as it was made (seated, child…)
       if (record.view.flying !== this.player.flying) { this.player.toggleFly(); }
       this.player.teleportTo(viewFeet, record.view.yaw, clamp(record.view.pitch, -1.5, 1.5));
       return;
@@ -1574,7 +1575,7 @@ export class GameSession implements GunHost, EditHost {
       feet = this.floorAt(marker.x, marker.y, floorZ);
     }
 
-    const look = V.sub(marker, vec3(feet.x, feet.y, feet.z + CharacterController.STAND_EYE));
+    const look = V.sub(marker, vec3(feet.x, feet.y, feet.z + this.player.controller.standEye)); // P-C: the eye-height preset
     const yaw = Math.atan2(look.y, look.x);
     const pitch = clamp(Math.atan2(look.z, Math.max(0.01, Math.hypot(look.x, look.y))), -1.2, 1.2);
     return { feet, yaw, pitch };
@@ -1734,6 +1735,7 @@ export class GameSession implements GunHost, EditHost {
     const settings = this.toVisibilitySettings();
     settings.groundOffset = null;
     settings.section = null;
+    settings.appearance = null; // colour round A: profiles belong to the model, not to a bookmark
     return settings;
   }
 

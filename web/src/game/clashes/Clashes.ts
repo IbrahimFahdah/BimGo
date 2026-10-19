@@ -2360,6 +2360,12 @@ export class Clashes {
         changed = true;
       }
     }
+    for (const group of this.document.groups ?? []) {
+      if (group.commentId && ids.has(group.commentId.toLowerCase())) {
+        group.commentId = null; // C-C1: a deleted group comment
+        changed = true;
+      }
+    }
     if (changed) {
       this.changed();
       this.panel.rowsDirty = true;

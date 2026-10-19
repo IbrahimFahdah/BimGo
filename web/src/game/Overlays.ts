@@ -91,6 +91,9 @@ export class Overlays {
   begin(input: InputState): void {
     this.click = false;
     this.wheel = 0;
+
+    // C-C1: a right-click closes an open list and goes through (a right-click menu may open on another row)
+    if (this.dropdown && input.rightPressed) { this.dropdown = null; }
     if (!this.isOpen) { return; }
     this.click = input.leftPressed;
     this.wheel = input.wheel;

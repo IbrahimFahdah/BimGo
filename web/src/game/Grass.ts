@@ -25,6 +25,8 @@ export class Grass {
   private taskFor: string | null = null;
   private abort: AbortController | null = null;
   private field: GrassField = GrassField.EMPTY;
+  /** The grass cells of the built field (polish round P-C: part of the reflection probes' key). */
+  get grassCells(): number { return this.field.grassCells; }
   private error: string | null = null;
   private builtScene = -1;
   private taskScene = -1;

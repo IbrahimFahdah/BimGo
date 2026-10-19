@@ -20,7 +20,7 @@ import { BookmarkStore, shortDate } from './Stores';
 import { UnitFormat } from './UnitFormat';
 import { ColourMode } from './ViewerSettings';
 import { Hints } from './Hints';
-import { PanelSize, ScrollRegion, ShellStyle } from './PanelShell';
+import { FOOTER_LEFT, PanelSize, ScrollRegion, ShellStyle } from './PanelShell';
 import { MediaTab } from './MediaPanel';
 import { InputAction } from '../core/scene/InputCatalog';
 import { keyOf } from '../platform/Hotkeys';
@@ -203,7 +203,7 @@ export class PauseMenu {
   private readonly w: Widgets;
   private commentsOpen = false;
   private commentLevelFilter = -1;
-  private commentScroll = 0;
+  private readonly commentScroll = new ScrollRegion();
   private commentDeleteArmed: CommentRecord | null = null;
   private commentDeleteArmedUntil = 0;
   private commentsNotice: string | null = null;
@@ -214,7 +214,8 @@ export class PauseMenu {
   private commentAnchor: CommentRecord | null = null;
   /** The comment shown in full (null = the list). */
   private commentDetail: CommentRecord | null = null;
-  private replyScroll = 0;
+  /** P-A1: the detail view (picture, issue fields and the thread) scrolls as one. */
+  private readonly commentDetailScroll = new ScrollRegion();
   private replyDeleteArmed: CommentReply | null = null;
   private replyDeleteArmedUntil = 0;
   /** Open right-column tab: 0 display, 1 reflections, 2 debug (per session). */
@@ -230,6 +231,7 @@ export class PauseMenu {
   private bookmarksNotice: string | null = null;
   /** CATEGORIES & LINKS (the category cards and link toggles, out of the pause menu's middle). */
   private geometryOpen = false;
+  private readonly geometryScroll = new ScrollRegion();
 
   /** FIND ROOM (Ctrl+F). */
   readonly rooms: RoomFinder;
@@ -397,7 +399,7 @@ export class PauseMenu {
       if (w.menuButton(f, x, y, stackW, this.library.menuLabel(), false, false, true, buttonH, true)) { this.library.show(); return; }
       y += step;
     }
-    if (w.menuButton(f, x, y, stackW, this.geometryMenuLabel(), false, false, true, buttonH, true)) { this.geometryOpen = true; return; }
+    if (w.menuButton(f, x, y, stackW, this.geometryMenuLabel(), false, false, true, buttonH, true)) { this.geometryOpen = true; this.geometryScroll.reset(); return; }
     y += step;
     if (hiddenThings > 0) {
       if (w.menuButton(f, x, y, stackW, `SHOW ALL (${hiddenThings} HIDDEN)`, false, false, true, buttonH, true)) { session.showAll(); }
@@ -442,28 +444,20 @@ export class PauseMenu {
   }
 
   /**
-   * Pause menu → CATEGORIES & LINKS (review tools round): the category cards and the linked-model toggles full width,
-   * with CLOSE (Esc goes back too). Walkthrough only, saved with the model's visibility.
+   * Pause menu → CATEGORIES & LINKS (review tools round): the category cards and the linked-model toggles in the panel
+   * shell (polish round P-A1: one scroll region). Walkthrough only, saved with the model's visibility.
    */
   private buildGeometryPanel(): void {
-    const session = this.session, ui = session.ui, f = ui.atlas, w = this.w;
-    const width = session.screenWidth, height = session.screenHeight;
-    ui.rect(0, 0, width, height, UiTheme.MENU_BACKGROUND);
-
-    const x = this.s(56), pw = width - this.s(112);
-    let y = this.s(48);
-    ui.text(f.small, x, y, 'BIMGO', UiTheme.TEXT_MUTED, this.s(2.6));
-    y += this.s(20);
-    ui.text(f.title, x, y, 'CATEGORIES & LINKS', UiTheme.TEXT, this.s(2.4));
-    ui.textRight(f.small, x + pw, y + this.s(16), 'Walkthrough only: Revit is never changed · Esc back', UiTheme.TEXT_MUTED, this.s(0.6));
-    y += this.s(64);
-
-    this.buildCategoryCards(f, x, y, pw);
-
-    if (w.menuButton(f, x, height - this.s(48) - this.s(44), this.s(160), 'CLOSE', false, false, true, this.s(44))) { this.geometryOpen = false; }
+    const session = this.session, shell = session.shell, f = session.ui.atlas, input = session.input;
+    const frame = shell.beginPanel(PanelSize.Standard, 'CATEGORIES & LINKS', UiTheme.ACCENT, 'Walkthrough only: Revit is never changed');
+    const top = shell.beginScroll(this.geometryScroll, input, frame.ix, frame.bodyTop, frame.iw, frame.bodyBottom - frame.bodyTop);
+    const bottom = this.buildCategoryCards(f, frame.ix, top, frame.iw - this.s(12));
+    shell.endScroll(this.geometryScroll, input, bottom);
+    shell.endPanel(frame, null, 'Click a category to show or hide it, or a group\'s heading for the whole group');
   }
 
-  private buildCategoryCards(f: FontAtlas, x: number, top: number, width: number): void {
+  /** The three category cards, the note and the linked models. @returns The bottom. */
+  private buildCategoryCards(f: FontAtlas, x: number, top: number, width: number): number {
     const session = this.session, ui = session.ui, w = this.w, input = session.input;
     const scene = session.scene;
     ui.text(f.small, x, top + this.s(2), 'GEOMETRY', UiTheme.TEXT_MUTED, this.s(1.8));
@@ -516,27 +510,35 @@ export class PauseMenu {
       }
     }
 
-    ui.text(f.body, x, cardTop + tallest + this.s(12),
-      'Categories not in this file are greyed out. Export again from Revit with them ticked to include them.', UiTheme.TEXT_MUTED);
-    if (scene.links.length > 0 && this.buildLinkCard(f, x, cardTop + tallest + this.s(48), width)) { changed = true; }
+    let bottom = cardTop + tallest + this.s(12);
+    bottom += ui.textWrapped(f.body, x, bottom, width,
+      session.isFileMode ? 'Categories not in this file are greyed out. Export again from Revit with them ticked to include them.'
+        : 'Categories not loaded are greyed out. Tick them in Revit\'s Options and press Go again to include them.', UiTheme.TEXT_MUTED, 2);
+    if (scene.links.length > 0) {
+      const links = this.buildLinkCard(f, x, bottom + this.s(UiTheme.GAP_LARGE), width);
+      if (links.changed) { changed = true; }
+      bottom = links.bottom;
+    }
 
     if (changed) {
       session.refreshMasks();
       session.sound.play(SoundId.UiClick);
     }
+    return bottom;
   }
 
-  private buildLinkCard(f: FontAtlas, x: number, top: number, width: number): boolean {
+  /** The linked models, each with a show / hide toggle; every row is listed (the panel's body scrolls). */
+  private buildLinkCard(f: FontAtlas, x: number, top: number, width: number): { changed: boolean; bottom: number } {
     const session = this.session, ui = session.ui, w = this.w, input = session.input;
     const links = session.scene.links;
     const row = this.s(22);
-    const fit = Math.max(1, Math.trunc((session.screenHeight - this.s(48) - top - this.s(70)) / row));
-    const rows = Math.min(links.length, fit);
+    const rows = links.length;
     let changed = false;
 
     ui.text(f.small, x, top + this.s(2), 'LINKED MODELS (READ-ONLY)', UiTheme.TEXT_MUTED, this.s(1.8));
     const cardTop = top + this.s(26);
-    ui.panel(x, cardTop, width, this.s(20) + rows * row + (rows < links.length ? row : 0), UiTheme.CARD, UiTheme.CARD_BORDER);
+    const cardH = this.s(20) + rows * row;
+    ui.panel(x, cardTop, width, cardH, UiTheme.CARD, UiTheme.CARD_BORDER);
 
     let ry = cardTop + this.s(10);
     for (let i = 0; i < rows; i++) {
@@ -555,10 +557,7 @@ export class PauseMenu {
       }
       ry += row;
     }
-    if (rows < links.length) {
-      ui.text(f.body, x + this.s(14), ry, `+${links.length - rows} more (make the window taller to list them)`, UiTheme.TEXT_MUTED);
-    }
-    return changed;
+    return { changed, bottom: cardTop + cardH };
   }
 
   /**
@@ -774,7 +773,7 @@ export class PauseMenu {
   private openComments(): void {
     const session = this.session;
     this.commentsOpen = true;
-    this.commentScroll = 0;
+    this.commentScroll.reset();
     this.commentDeleteArmed = null;
     this.commentsNotice = null;
     this.commentDetail = null;
@@ -788,28 +787,20 @@ export class PauseMenu {
   }
 
   private buildCommentsPanel(): void {
-    const session = this.session, ui = session.ui, f = ui.atlas, w = this.w;
-    const width = session.screenWidth, height = session.screenHeight;
-    ui.rect(0, 0, width, height, UiTheme.MENU_BACKGROUND);
-
-    const pw = Math.min(this.s(1000), width - this.s(80)), ph = height - this.s(96);
-    const x = (width - pw) * 0.5, y = this.s(48);
-    ui.panel(x, y, pw, ph, UiTheme.CARD, UiTheme.CARD_BORDER);
-
+    const session = this.session, ui = session.ui, f = ui.atlas, w = this.w, shell = session.shell;
     if (this.commentDetail && !session.comments.comments.includes(this.commentDetail)) { this.commentDetail = null; }
     if (this.commentDetail) {
-      this.buildCommentDetail(f, x, y, pw, ph, this.commentDetail);
+      this.buildCommentDetail(f, this.commentDetail);
       return;
     }
 
     const input = session.input;
     this.overlays.begin(input); // C-B3: the bulk delete confirm takes the click while it is open
-    const ix = x + this.s(24), iw = pw - this.s(48);
-    let cy = y + this.s(20);
     const count = session.comments.comments.length;
-    ui.text(f.small, ix, cy, 'COMMENTS', UiTheme.COMMENT_LABEL, this.s(2));
-    ui.textRight(f.small, ix + iw, cy, `${count.toLocaleString('en')} ${count === 1 ? 'comment' : 'comments'} · kept in ${session.comments.fileName}`, UiTheme.TEXT_MUTED, this.s(0.6));
-    cy += this.s(30);
+    const frame = shell.beginPanel(PanelSize.Standard, 'COMMENTS', UiTheme.COMMENT_LABEL,
+      `${count.toLocaleString('en')} ${count === 1 ? 'comment' : 'comments'} · kept in ${session.comments.fileName}`);
+    const ix = frame.ix, iw = frame.iw;
+    let cy = frame.bodyTop;
 
     // Filters: ← level → and status
     let filterX = ix;
@@ -824,22 +815,21 @@ export class PauseMenu {
     const status = w.segmented(f, filterX, cy, statusW, STATUS_FILTERS, this.commentStatusFilter);
     if (status !== this.commentStatusFilter) {
       this.commentStatusFilter = status;
-      this.commentScroll = 0;
+      this.commentScroll.reset();
       this.commentSelected.clear();
     }
     // C-B3: the type (comments made from clashes are their own type)
     const type = w.segmented(f, filterX + statusW + this.s(12), cy, Math.min(this.s(260), ix + iw - filterX - statusW - this.s(12)), TYPE_FILTERS, this.commentTypeFilter);
     if (type !== this.commentTypeFilter) {
       this.commentTypeFilter = type;
-      this.commentScroll = 0;
+      this.commentScroll.reset();
       this.commentSelected.clear();
     }
-    cy += this.s(46);
+    cy += this.s(UiTheme.CONTROL_HEIGHT + UiTheme.GAP);
 
-    const buttonsY = y + ph - this.s(24) - this.s(48);
-    const selectY = buttonsY - this.s(44);
-    this.buildCommentRows(f, ix, cy, iw, selectY - this.s(14));
-    if (this.commentDetail) { return; }
+    const selectY = frame.bodyBottom - this.s(UiTheme.SMALL_BUTTON_HEIGHT);
+    this.buildCommentRows(f, ix, cy, iw, selectY - this.s(UiTheme.GAP_SMALL));
+    if (this.commentDetail || !this.commentsOpen) { return; }
 
     // C-B3: the ticked comments: select all shown, clear, delete (a confirm)
     let sx = ix;
@@ -851,25 +841,18 @@ export class PauseMenu {
       if (w.smallButton(f, sx, selectY, this.s(90), this.s(30), 'CLEAR')) { this.commentSelected.clear(); }
       sx += this.s(98);
       if (w.smallButton(f, sx, selectY, this.s(220), this.s(30), `DELETE SELECTED (${this.commentSelected.size})…`, true)) { this.confirmDeleteSelected(); }
-      sx += this.s(228);
     }
-    if (this.commentsNotice) { ui.textWrapped(f.body, sx + this.s(6), selectY + this.s(5), ix + iw - sx - this.s(6), this.commentsNotice, UiTheme.MEASURE_TEXT, 1); }
-    // EXPORT BCF (the comments shown) · IMPORT BCF · BCF coordinates · CLOSE
-    const gap = this.s(10);
-    const bw = Math.min(this.s(230), (iw - gap * 3) / 4);
-    let bx = ix;
-    if (w.menuButton(f, bx, buttonsY, bw, 'EXPORT BCF…', false, false, count > 0)) {
-      void session.bcf.exportShown(session.comments.comments.filter(r => this.matchesCommentFilter(r)));
-    }
-    bx += bw + gap;
-    if (w.menuButton(f, bx, buttonsY, bw, 'IMPORT BCF…', false, false)) { void session.bcf.importFile(); }
-    bx += bw + gap;
-    if (w.menuButton(f, bx, buttonsY, bw, session.bcf.coordinateLabel, false, false)) { session.bcf.cycleCoordinates(); }
-    bx += bw + gap;
-    if (w.menuButton(f, bx, buttonsY, bw, 'CLOSE', false, false)) { this.closePanels(); }
 
-    // The open confirm, on top
-    this.overlays.draw(f, input, x, y, pw, ph);
+    // EXPORT BCF (the comments shown) · IMPORT BCF · BCF coordinates; the open confirm is drawn on top
+    const exportBcf = shell.footerAction('EXPORT BCF…', ShellStyle.Normal, count > 0);
+    const importBcf = shell.footerAction('IMPORT BCF…');
+    const coordinates = shell.footerAction(session.bcf.coordinateLabel);
+    const pressed = shell.endPanel(frame, this.commentsNotice, 'GO stands where the comment was made · OPEN shows it in full · Ctrl / Shift+click ticks rows');
+    if (pressed === FOOTER_LEFT) { return; }
+    this.overlays.draw(f, input, frame.x, frame.y, frame.w, frame.h);
+    if (pressed === exportBcf) { void session.bcf.exportShown(session.comments.comments.filter(r => this.matchesCommentFilter(r))); }
+    else if (pressed === importBcf) { void session.bcf.importFile(); }
+    else if (pressed === coordinates) { session.bcf.cycleCoordinates(); }
   }
 
   /** Ticks or unticks a comment (C-B3); run: ticks every shown comment from the last one ticked to this one. */
@@ -912,11 +895,10 @@ export class PauseMenu {
       });
   }
 
-  /** The scrolling rows: status bar, thumbnail, header, text, issue line and GO / OPEN / DELETE. */
+  /** The rows (a clipped scroll region): status bar, thumbnail, header, text, issue line and GO / OPEN / DELETE. */
   private buildCommentRows(f: FontAtlas, x: number, y: number, width: number, bottom: number): void {
-    const session = this.session, ui = session.ui, w = this.w, input = session.input;
+    const session = this.session, ui = session.ui, w = this.w, input = session.input, shell = session.shell;
     const rowH = this.s(84);
-    const visible = Math.max(1, Math.trunc((bottom - y) / rowH));
     const list = session.comments.comments.filter(r => this.matchesCommentFilter(r));
 
     if (list.length === 0) {
@@ -926,10 +908,14 @@ export class PauseMenu {
       return;
     }
 
-    const maxScroll = Math.max(0, list.length - visible);
-    if (input.wheel !== 0) { this.commentScroll -= input.wheel * 2; }
-    this.commentScroll = Math.min(Math.max(this.commentScroll, 0), maxScroll);
     if (this.commentDeleteArmed && session.clock > this.commentDeleteArmedUntil) { this.commentDeleteArmed = null; }
+
+    // Polish round P-A1: a clipped, pixel-scrolled list (only the rows in view are drawn)
+    const top = shell.beginScroll(this.commentScroll, input, x, y, width, bottom - y);
+    const cw = width - this.s(UiTheme.SCROLL_GUTTER);
+    const [first, last] = this.commentScroll.visibleRows(rowH, list.length);
+    x += this.s(8);
+    width = cw - this.s(16);
 
     let go: CommentRecord | null = null, open: CommentRecord | null = null, remove: CommentRecord | null = null, tick: CommentRecord | null = null;
     let tickRun = false;
@@ -938,11 +924,10 @@ export class PauseMenu {
     const thumbW = this.s(120), thumbH = this.s(68);
     const tickW = this.s(30); // C-B3: the tick column
     const ctrl = input.isDown(Vk.CONTROL), shift = input.isDown(Vk.SHIFT);
-    const last = Math.min(list.length, this.commentScroll + visible);
-    for (let i = this.commentScroll; i < last; i++) {
+    for (let i = first; i < last; i++) {
       const record = list[i];
-      const ry = y + (i - this.commentScroll) * rowH;
-      if (((i - this.commentScroll) & 1) === 0) { ui.rect(x - this.s(8), ry - this.s(4), width + this.s(16), rowH - this.s(4), Rgba.hex(0xffffff, 0.03)); }
+      const ry = top + i * rowH + this.s(4);
+      if ((i & 1) === 0) { ui.rect(x - this.s(8), ry - this.s(4), width + this.s(16), rowH - this.s(4), UiTheme.ROW_STRIPE); }
 
       // Status bar on the left edge, the tick (C-B3), then the thumbnail
       ui.rect(x - this.s(8), ry - this.s(4), this.s(3), rowH - this.s(4), statusColour(record.status));
@@ -982,16 +967,14 @@ export class PauseMenu {
         tickRun = shift;
       }
     }
-    if (maxScroll > 0) {
-      ui.textRight(f.small, x + width, bottom + this.s(2), `${this.commentScroll + 1}–${last} of ${list.length} · wheel to scroll`, UiTheme.TEXT_FAINT);
-    }
+    shell.endScroll(this.commentScroll, input, top + list.length * rowH);
 
     // Act after drawing (the list must not change while it is being walked)
     if (tick) { this.tickComment(tick, tickRun); }
     else if (go) { this.goToComment(go); }
     else if (open) {
       this.commentDetail = open;
-      this.replyScroll = 0;
+      this.commentDetailScroll.reset();
       this.replyDeleteArmed = null;
       this.commentsNotice = null;
     } else if (remove) { this.deleteComment(remove); }
@@ -1027,13 +1010,17 @@ export class PauseMenu {
   }
 
   /** One comment in full: picture, text, status / priority / assignee, the reply thread and its actions. */
-  private buildCommentDetail(f: FontAtlas, x: number, y: number, pw: number, ph: number, record: CommentRecord): void {
-    const session = this.session, ui = session.ui, w = this.w, comments = session.comments;
-    const ix = x + this.s(24), iw = pw - this.s(48);
-    let cy = y + this.s(20);
-    ui.text(f.small, ix, cy, 'COMMENT', UiTheme.COMMENT_LABEL, this.s(2));
-    ui.textRight(f.small, ix + iw, cy, record.level ? `${record.header} · ${record.level}` : record.header, UiTheme.TEXT_MUTED, this.s(0.6));
-    cy += this.s(32);
+  private buildCommentDetail(f: FontAtlas, record: CommentRecord): void {
+    const session = this.session, ui = session.ui, w = this.w, comments = session.comments, shell = session.shell, input = session.input;
+    const REPLY = 'REPLY…';
+    const frame = shell.beginPanel(PanelSize.Standard, 'COMMENT', UiTheme.COMMENT_LABEL, record.level ? `${record.header} · ${record.level}` : record.header,
+      shell.buttonWidth(f, REPLY));
+    if (shell.headerButton(frame, REPLY, ShellStyle.Primary)) { session.editor.replyToComment(record); }
+    const ix = frame.ix;
+
+    // Polish round P-A1: the picture, the issue fields and the whole thread scroll as one
+    let cy = shell.beginScroll(this.commentDetailScroll, input, frame.ix, frame.bodyTop, frame.iw, frame.bodyBottom - frame.bodyTop);
+    const iw = frame.iw - this.s(UiTheme.SCROLL_GUTTER);
 
     // Picture (left) and the issue fields (right)
     const picW = Math.min(this.s(384), iw * 0.42), picH = picW * 9 / 16;
@@ -1043,6 +1030,7 @@ export class PauseMenu {
     if (record.snapshotData) {
       const mw = this.s(96), mh = this.s(26);
       if (w.smallButton(f, ix + picW - mw - this.s(6), cy + picH - mh - this.s(6), mw, mh, 'MARKUP…')) {
+        ui.popClip(); // the scroll region ends here: the markup editor takes over
         session.markup.show(record, false);
         return;
       }
@@ -1088,20 +1076,19 @@ export class PauseMenu {
     ui.text(f.small, ix, cy, `REPLIES (${record.replies?.length ?? 0})`, UiTheme.COMMENT_LABEL, this.s(1));
     cy += this.s(24);
 
-    const buttonsY = y + ph - this.s(24) - this.s(44);
-    this.buildReplies(f, record, ix, cy, iw, buttonsY - this.s(40));
+    cy = this.buildReplies(f, record, ix, cy, iw);
+    shell.endScroll(this.commentDetailScroll, input, cy);
 
-    if (this.commentsNotice) { ui.textWrapped(f.body, ix, buttonsY - this.s(28), iw, this.commentsNotice, UiTheme.MEASURE_TEXT, 1); }
-
-    const bh = this.s(44), bw = this.s(150), bg = this.s(10);
-    let bx = ix;
-    if (w.menuButton(f, bx, buttonsY, this.s(110), 'BACK', false, false, true, bh)) { this.commentDetail = null; return; }
-    bx += this.s(110) + bg;
-    if (w.menuButton(f, bx, buttonsY, this.s(130), 'REPLY…', true, false, true, bh)) { session.editor.replyToComment(record); }
-    bx += this.s(130) + bg;
-    if (w.menuButton(f, bx, buttonsY, bw, 'GO TO VIEW', false, false, true, bh)) { this.goToComment(record); return; }
-    bx += bw + bg;
-    if (w.menuButton(f, bx, buttonsY, bw, 'SET VIEW HERE', false, false, true, bh)) {
+    // GO TO VIEW · SET VIEW HERE · EDIT TEXT · DELETE (← LIST returns to the list, as Esc)
+    const goTo = shell.footerAction('GO TO VIEW');
+    const setView = shell.footerAction('SET VIEW HERE');
+    const edit = shell.footerAction('EDIT TEXT');
+    const armed = this.commentDeleteArmed === record && session.clock <= this.commentDeleteArmedUntil;
+    const del = shell.footerAction(armed ? 'SURE?' : 'DELETE', ShellStyle.Danger);
+    const pressed = shell.endPanel(frame, this.commentsNotice, 'REPLY… adds to the thread · ← LIST (or Esc) returns to the list', '← LIST');
+    if (pressed === FOOTER_LEFT) { return; }
+    if (pressed === goTo) { this.goToComment(record); return; }
+    if (pressed === setView) {
       // Where the player stands now (the picture is taken from the 3D view behind the menu, next frame)
       const p = session.player;
       comments.setView(record, p.feet, p.yaw, p.pitch, p.flying, session.section.current);
@@ -1109,49 +1096,40 @@ export class PauseMenu {
       session.markup.afterCapture = record; // then the markup editor (SKIP keeps the clean picture)
       this.commentsNotice = 'View and picture set to where you stand';
       session.sound.play(SoundId.Commit);
-    }
-    bx += bw + bg;
-    if (w.menuButton(f, bx, buttonsY, this.s(130), 'EDIT TEXT', false, false, true, bh)) { session.editor.editCommentText(record); }
-    bx += this.s(130) + bg;
-    const armed = this.commentDeleteArmed === record && session.clock <= this.commentDeleteArmedUntil;
-    if (w.menuButton(f, bx, buttonsY, this.s(120), armed ? 'SURE?' : 'DELETE', false, true, true, bh)) {
+    } else if (pressed === edit) {
+      session.editor.editCommentText(record);
+    } else if (pressed === del) {
       this.deleteComment(record);
       if (!comments.comments.includes(record)) { this.commentDetail = null; }
     }
   }
 
-  /** The reply thread (oldest first, wheel scrolls), each with its author, date and DELETE. */
-  private buildReplies(f: FontAtlas, record: CommentRecord, x: number, y: number, width: number, bottom: number): void {
-    const session = this.session, ui = session.ui, w = this.w, input = session.input;
+  /** The reply thread (oldest first, inside the detail view's scroll region), each with its author, date and DELETE. Returns its bottom. */
+  private buildReplies(f: FontAtlas, record: CommentRecord, x: number, y: number, width: number): number {
+    const session = this.session, ui = session.ui, w = this.w;
     const replies = record.replies ?? [];
     if (replies.length === 0) {
       ui.text(f.body, x, y + this.s(4), 'No replies yet: REPLY… adds one.', UiTheme.TEXT_MUTED);
-      return;
+      return y + this.s(32);
     }
 
     const rowH = this.s(58);
-    const visible = Math.max(1, Math.trunc((bottom - y) / rowH));
-    const maxScroll = Math.max(0, replies.length - visible);
-    if (input.wheel !== 0 && w.hover(x, y, width, bottom - y)) { this.replyScroll -= input.wheel; }
-    this.replyScroll = Math.min(Math.max(this.replyScroll, 0), maxScroll);
     if (this.replyDeleteArmed && session.clock > this.replyDeleteArmedUntil) { this.replyDeleteArmed = null; }
 
     let remove: CommentReply | null = null;
-    const last = Math.min(replies.length, this.replyScroll + visible);
-    for (let i = this.replyScroll; i < last; i++) {
+    for (let i = 0; i < replies.length; i++) {
       const reply = replies[i];
-      const ry = y + (i - this.replyScroll) * rowH;
+      const ry = y + i * rowH;
+      if (!this.commentDetailScroll.inView(ry, rowH)) { continue; }
       ui.rect(x, ry, this.s(2), rowH - this.s(10), UiTheme.COMMENT);
       ui.text(f.small, x + this.s(12), ry, `${reply.author.toUpperCase()} · ${shortDate(reply.created)}`, UiTheme.COMMENT_LABEL, this.s(0.6));
       ui.textWrapped(f.body, x + this.s(12), ry + this.s(18), width - this.s(110), reply.text, UiTheme.TEXT, 2);
       const armed = this.replyDeleteArmed === reply;
       if (w.smallButton(f, x + width - this.s(84), ry + this.s(4), this.s(84), this.s(28), armed ? 'SURE?' : 'DELETE', true)) { remove = reply; }
     }
-    if (maxScroll > 0) {
-      ui.textRight(f.small, x + width, bottom + this.s(2), `${this.replyScroll + 1}–${last} of ${replies.length} · wheel to scroll`, UiTheme.TEXT_FAINT);
-    }
+    const bottom = y + replies.length * rowH;
 
-    if (!remove) { return; }
+    if (!remove) { return bottom; }
     if (this.replyDeleteArmed === remove) {
       session.comments.removeReply(record, remove);
       this.replyDeleteArmed = null;
@@ -1161,6 +1139,7 @@ export class PauseMenu {
       this.replyDeleteArmed = remove;
       this.replyDeleteArmedUntil = session.clock + 3;
     }
+    return bottom;
   }
 
   /** Leaves the menu and goes to a comment's view (its text as a note). */
@@ -1194,7 +1173,7 @@ export class PauseMenu {
     const count = this.session.scene.levels.length + 1; // + "all"
     const current = this.commentLevelFilter + 1;
     this.commentLevelFilter = ((current + direction) % count + count) % count - 1;
-    this.commentScroll = 0;
+    this.commentScroll.reset();
     this.commentDeleteArmed = null;
   }
 
