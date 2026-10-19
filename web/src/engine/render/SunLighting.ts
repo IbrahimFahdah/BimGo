@@ -104,6 +104,49 @@ export function createSunLighting(sunDirection: Vec3, sunIntensity: number, skyI
   };
 }
 
+/**
+ * Round W-B: the light under rain or snow clouds: the direct light (sun or moon) dims and its shadows soften, the sky
+ * greys over (lighter for snow), the sun and moon discs fade behind the cloud. Unchanged when off.
+ * @param overcast 0 = none, 1 = a heavy storm.
+ * @param snow Snow clouds: a lighter, whiter grey.
+ */
+export function withWeather(lighting: SunLighting, overcast: number, snow: boolean): SunLighting {
+  const o = Number.isFinite(overcast) ? Math.min(Math.max(overcast, 0), 1) : 0;
+  if (!lighting.enabled || o <= 0) { return lighting; }
+  const grey = (c: Vec3, k: number): Vec3 => {
+    const y = Math.min(Math.max(c.x * 0.30 + c.y * 0.59 + c.z * 0.11, 0), 1) * k;
+    return vec3(y * 0.97, y, y * 1.03);
+  };
+  return {
+    ...lighting,
+    sunColour: V.scale(lighting.sunColour, 1 - 0.6 * o),
+    shadowStrength: lighting.shadowStrength * (1 - 0.5 * o),
+    skyColour: V.scale(lighting.skyColour, 1 - (snow ? 0.02 : 0.12) * o),
+    zenith: V.lerp(lighting.zenith, grey(lighting.zenith, snow ? 1.25 : 0.95), 0.75 * o),
+    horizon: V.lerp(lighting.horizon, grey(lighting.horizon, snow ? 1.08 : 0.9), 0.7 * o),
+    sunDisc: V.scale(lighting.sunDisc, 1 - 0.95 * o),
+    moonDisc: V.scale(lighting.moonDisc, 1 - 0.9 * o),
+    moonGlow: V.scale(lighting.moonGlow, 1 - 0.6 * o)
+  };
+}
+
+/**
+ * Round W-C: a lightning flash: the sky light (ambient) and the sky's colours lifted by a cool white, up to a capped
+ * amount (so the scene brightens softly, never to white). Unchanged when off.
+ * @param amount 0 = none, 1 = the strongest flash allowed.
+ */
+export function withLightning(lighting: SunLighting, amount: number): SunLighting {
+  const a = Number.isFinite(amount) ? Math.min(Math.max(amount, 0), 1) : 0;
+  if (!lighting.enabled || a <= 0.001) { return lighting; }
+  const flash = vec3(0.72, 0.77, 0.95);
+  return {
+    ...lighting,
+    skyColour: V.add(lighting.skyColour, V.scale(flash, 0.5 * a)),
+    zenith: V.add(lighting.zenith, V.scale(flash, 0.22 * a)),
+    horizon: V.add(lighting.horizon, V.scale(flash, 0.18 * a))
+  };
+}
+
 export function smoothStep(edge0: number, edge1: number, x: number): number {
   if (edge1 <= edge0) { return x >= edge1 ? 1 : 0; }
   const t = Math.min(Math.max((x - edge0) / (edge1 - edge0), 0), 1);
@@ -128,6 +171,10 @@ export interface SkyLook {
   celestialX: Vec3;
   celestialY: Vec3;
   celestialZ: Vec3;
+  /** Round W-C: lightning: towards the strike (scene axes) and its brightness (w, 0 = none). */
+  lightning: [number, number, number, number];
+  /** Round W-C: the bolt: shape seed, 1 = visible, the lit zone's radius (rad), unused. */
+  bolt: [number, number, number, number];
 }
 
 export const SkyLooks = {
@@ -136,6 +183,7 @@ export const SkyLooks = {
   DISC_INNER: 0.0224,
   defaults: (): SkyLook => ({
     cloudCover: 0, cloudOffsetX: 0, cloudOffsetY: 0, sunSize: 1, sunGlare: 1, stars: [0, 0, 0, 0], time: 0,
-    celestialX: vec3(1, 0, 0), celestialY: vec3(0, 1, 0), celestialZ: vec3(0, 0, 1)
+    celestialX: vec3(1, 0, 0), celestialY: vec3(0, 1, 0), celestialZ: vec3(0, 0, 1),
+    lightning: [0, 0, 0, 0], bolt: [0, 0, 0, 0]
   })
 };

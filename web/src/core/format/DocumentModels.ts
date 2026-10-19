@@ -267,6 +267,15 @@ export interface SunTime {
   daylightSaving: boolean;
 }
 
+/** Round W-B: the weather kinds in sun.json. */
+export type WeatherKind = 'off' | 'rain' | 'snow';
+
+/** Round W-B: reads a weather string (anything unknown is off). */
+export function readWeather(v: unknown): WeatherKind {
+  const w = typeof v === 'string' ? v.trim().toLowerCase() : '';
+  return w === 'rain' || w === 'snow' ? w : 'off';
+}
+
 export interface SunSettings {
   version: number;
   enabled: boolean;
@@ -296,6 +305,29 @@ export interface SunSettings {
   starTwinkle: number;
   /** Round W-A: the Milky Way band's strength (0–2). */
   milkyWay: number;
+  /**
+   * Round W-B: the weather: "off" (the default), "rain" or "snow" (a string, so a later kind never fails an older
+   * reader; anything unknown reads as off). Shows in the classic light and with shadows on.
+   */
+  weather: WeatherKind;
+  /** Round W-B: how hard it rains or snows (0.05–1; 0.5 = steady). */
+  weatherIntensity: number;
+  /** Round W-B: how wet open surfaces look while it rains (0 = dry, 1 = soaked with puddles). */
+  wetness: number;
+  /** Round W-B: how much snow has settled on open, up-facing surfaces while it snows (0 = none, 1 = deep). */
+  snowCover: number;
+  /** Round W-C: lightning while it rains (off by default). */
+  lightning: boolean;
+  /** Round W-C: how often it strikes: 0 rare, 1 sometimes (the default), 2 often. */
+  lightningFrequency: number;
+  /** Round W-C: how much a strike brightens the scene (0 = sky only, 1 = strongest; 0.35 = the default). */
+  lightningFlash: number;
+  /** Round W-C: photosensitive comfort: each strike is one slow glow instead of flickers. */
+  reduceFlashing: boolean;
+  /** Round W-C: drops (rain) and melting flakes (snow) on the lens now and then, outdoors (never in photos or videos). */
+  lensDrops: boolean;
+  /** Round W-C: the rain's hiss (quieter under a roof) and thunder. */
+  weatherSound: boolean;
   /**
    * A location chosen in BimGo instead of the model's (location override), or null to use the Revit site's. Older
    * readers ignore it; Revit is never changed.
@@ -438,6 +470,16 @@ export function readSunSettings(j: Json): SunSettings {
     starBrightness: clampOr(j.starBrightness, 0, 2, 1),
     starTwinkle: clampOr(j.starTwinkle, 0, 2, 1),
     milkyWay: clampOr(j.milkyWay, 0, 2, 1),
+    weather: readWeather(j.weather),
+    weatherIntensity: clampOr(j.weatherIntensity, 0.05, 1, 0.5),
+    wetness: clampOr(j.wetness, 0, 1, 1),
+    snowCover: clampOr(j.snowCover, 0, 1, 0.6),
+    lightning: bool(j.lightning),
+    lightningFrequency: clamp(int(j.lightningFrequency, 1), 0, 2),
+    lightningFlash: clampOr(j.lightningFlash, 0, 1, 0.35),
+    reduceFlashing: bool(j.reduceFlashing),
+    lensDrops: bool(j.lensDrops, true),
+    weatherSound: bool(j.weatherSound, true),
     location: readLocation(objOrNull(j.location))
   };
 }
@@ -446,7 +488,16 @@ export function sunDefaultsFor(site: SiteInfo | null): SunSettings {
   return {
     version: 1, enabled: false, time: sunStartFor(site), sunIntensity: 1, skyIntensity: 1, shadowIntensity: 1, glassTransmission: 1,
     cloudCover: 0, cloudSpeed: 1, sunSize: 1, sunGlare: 1, moon: true, moonPhase: null, moonLight: 1, stars: true, starDensity: 1,
-    starBrightness: 1, starTwinkle: 1, milkyWay: 1, location: null
+    starBrightness: 1, starTwinkle: 1, milkyWay: 1, ...weatherDefaults(), location: null
+  };
+}
+
+/** Round W-B / W-C: the weather fields' defaults (RESET WEATHER). */
+export function weatherDefaults(): Pick<SunSettings, 'weather' | 'weatherIntensity' | 'wetness' | 'snowCover' | 'lightning'
+  | 'lightningFrequency' | 'lightningFlash' | 'reduceFlashing' | 'lensDrops' | 'weatherSound'> {
+  return {
+    weather: 'off', weatherIntensity: 0.5, wetness: 1, snowCover: 0.6, lightning: false, lightningFrequency: 1, lightningFlash: 0.35,
+    reduceFlashing: false, lensDrops: true, weatherSound: true
   };
 }
 

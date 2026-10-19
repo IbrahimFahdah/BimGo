@@ -76,6 +76,12 @@ export class VideoMode {
     return this.recording !== null;
   }
 
+  /** Round W-B: the frame being rendered as seconds of video (the weather clock while recording), or null. */
+  get frameTime(): number | null {
+    const r = this.recording;
+    return r ? r.frame / r.fps : null;
+  }
+
   /** True when this browser can encode H.264 video (WebCodecs). */
   static get supported(): boolean {
     return typeof VideoEncoder !== 'undefined' && typeof VideoFrame !== 'undefined';

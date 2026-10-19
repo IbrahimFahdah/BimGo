@@ -67,6 +67,7 @@ import { Textures } from './Textures';
 import { Appearance } from './Appearance';
 import { ColourProfiles } from './ColourProfiles';
 import { Grass } from './Grass';
+import { Weather } from './Weather';
 import { Grids } from './Grids';
 import { KeyPhotos } from './KeyPhotos';
 import { MediaPanel } from './MediaPanel';
@@ -209,6 +210,8 @@ export class GameSession implements GunHost, EditHost {
   readonly appearance: Appearance;
   /** Grass round: grass blades on the grass materials. */
   readonly grass: Grass;
+  /** Round W-B / W-C: rain, snow, lightning, lens drops and the rain's sound. */
+  readonly weather: Weather;
   /** Grids rounds A / B: grid lines, nodes and the GRIDS panel (Shift+G, C). */
   readonly grids: Grids;
   /** Round K-A: the MEDIA panel (Shift+M): photo, tour, paths, video. */
@@ -385,6 +388,7 @@ export class GameSession implements GunHost, EditHost {
     this.profiles = new ColourProfiles(this);
     this.appearance = new Appearance(this);
     this.grass = new Grass(this);
+    this.weather = new Weather(this);
     this.grids = new Grids(this);
     this.media = new MediaPanel(this);
     this.pathEditor = new PathEditor(this);
@@ -635,6 +639,7 @@ export class GameSession implements GunHost, EditHost {
     this.sun.update(dt);
     this.renderer.sky = this.sun.advanceSky(dt, this.clock); // sky round: cloud drift and the sky look (W-A: the stars)
     this.appearance.advanceWater(dt); // water round W: the ripples' clock runs at the ripple speed
+    this.weather.advance(dt); // Round W-B: the rain and snow's clock (W-C: the rain's sound, lens drops)
     this.sunHours.update();
     this.render();
     this.updateFps(dt);
@@ -1958,7 +1963,7 @@ export class GameSession implements GunHost, EditHost {
       plan: false,
       clipZMin: -1e7,
       clipZMax: 1e7,
-      fogDensity: 0.0022,
+      fogDensity: 0.0022 * this.weather.fog, // W-B: thicker in the rain / snow
       sun: true,
       section: true
     };
@@ -2044,15 +2049,18 @@ export class GameSession implements GunHost, EditHost {
     // ---- Colour round A: the active colour profile (evaluated again only when something changed)
     this.profiles.update();
 
+    // ---- Round W-B / W-C: the cover map, this frame's rain / snow and lightning (before the lighting: a flash lifts it)
+    this.weather.update();
+
     // ---- Sun lighting and shadow maps (only changed cascades re-render). Clash pictures (C-B2) other than the real
     // model view draw without the sun, so they leave the cascades as the main view needs them
-    renderer.lighting = this.sun.lighting();
+    renderer.lighting = this.weather.frameLighting();
     const clashes = this.clashes, clashShotUnlit = clashes.shot && clashes.view !== ClashViewMode.REAL;
     const shadowError = clashShotUnlit ? null : renderer.updateShadows(this.camera, this.scene.bounds, this.shadowSceneKey, this.groupVisible, settings.whitecard,
       shadowPresetFor(settings.shadowQuality));
     if (shadowError) {
       this.onShadowFailure(shadowError);
-      renderer.lighting = this.sun.lighting();
+      renderer.lighting = this.weather.frameLighting();
     }
 
     // ---- Artificial lights for this frame (after the sun: daylight dims them), and their cached shadow maps (unlit
@@ -2098,10 +2106,17 @@ export class GameSession implements GunHost, EditHost {
       clashes.drawView(p, this.groupVisible, () => this.drawSceneSolids(p, true));
     } else {
       this.drawSceneSolids(p, photo);
+      this.weather.draw(p); // Round W-B: falling rain / snow (in photos and videos too)
     }
 
     // Bloom from glowing surfaces over everything (glass included)
     this.renderer.compositeGlow();
+
+    // Round W-C: a lightning flash in the classic light (with sun lighting it lifted the sky light instead); drops on the
+    // lens (the main view only: never photos, videos, thumbnails or screenshots)
+    if (!clashView) { this.weather.drawLightningFlash(); }
+    if (!photo && !clashView && framebuffer === null && !this.photo.open && !this.video.active && !this.thumbnailFor && !this.commentThumbnailFor
+      && !this.screenshotRequested && !this.sunHours.shotRequested) { this.weather.drawLensDrops(width, height); }
     this.finishScene(photo);
   }
 
@@ -3508,6 +3523,7 @@ export class GameSession implements GunHost, EditHost {
     this.settings.save();
     for (const { texture } of this.thumbnailTextures.values()) { if (texture) { gl.deleteTexture(texture); } }
     this.thumbnailTextures.clear();
+    this.weather.dispose(); // Round W-C
     this.sound.dispose();
     this.overlay.dispose();
     this.sunHours.dispose();

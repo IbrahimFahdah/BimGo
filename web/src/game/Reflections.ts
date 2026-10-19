@@ -60,11 +60,13 @@ export class Reflections {
     }
 
     // Stale after a change, once things have settled for a moment
-    const l = renderer.lighting;
+    const l = session.weather.probeLighting ?? renderer.lighting; // W-C: without a lightning flash (a flash never re-bakes the probes)
+    const w = renderer.weather;
     const key = [sceneKey, l.enabled, l.sunDirection.x, l.sunDirection.y, l.sunDirection.z, l.sunColour.x, l.skyColour.x, l.zenith.x, l.horizon.x,
       l.shadowStrength, l.glass, session.sun?.settings.cloudCover ?? 0, // sky round: probes re-bake when the cover changes
       s.lightMode, s.lightIntensity, s.colour, s.revitTint,
-      renderer.probeGrass, session.grass.grassCells, s.grassHeightMm].join('|'); // P-C: blades came (or went), or the field was rebuilt
+      renderer.probeGrass, session.grass.grassCells, s.grassHeightMm, // P-C: blades came (or went), or the field was rebuilt
+      w.kind, w.wet, w.snow, renderer.hasCoverMap].join('|'); // Round W-B: wet / snowy surfaces in the probes (not the falling drops)
     if (this.probeKey === '') { this.probeKey = key; }
     else if (key !== this.probeKey) {
       this.probeKey = key;

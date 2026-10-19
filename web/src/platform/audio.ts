@@ -52,6 +52,9 @@ export class SoundSystem {
     }
   }
 
+  /** The audio context (null when audio is off), for streams of their own (Round W-C: the weather's sound). */
+  get audioContext(): AudioContext | null { return this.context; }
+
   play(sound: SoundId): void {
     const context = this.context;
     if (!context || context.state !== 'running' || this.volume <= 0 || this.playing >= 4) { return; }
@@ -177,7 +180,7 @@ const DURATIONS: Record<number, number> = {
   [SoundId.Commit]: 0.2
 };
 
-function mulberry32(seed: number): () => number {
+export function mulberry32(seed: number): () => number {
   let a = seed >>> 0;
   return () => {
     a = (a + 0x6d2b79f5) >>> 0;

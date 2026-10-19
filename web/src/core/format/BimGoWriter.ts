@@ -320,6 +320,9 @@ function sunSettings(s: SunSettings): Json {
     shadowIntensity: f(s.shadowIntensity), glassTransmission: f(s.glassTransmission), cloudCover: f(s.cloudCover), cloudSpeed: f(s.cloudSpeed),
     sunSize: f(s.sunSize), sunGlare: f(s.sunGlare), moon: s.moon, moonPhase: s.moonPhase === null ? null : f(s.moonPhase), moonLight: f(s.moonLight),
     stars: s.stars, starDensity: f(s.starDensity), starBrightness: f(s.starBrightness), starTwinkle: f(s.starTwinkle), milkyWay: f(s.milkyWay),
+    weather: s.weather, weatherIntensity: f(s.weatherIntensity), wetness: f(s.wetness), snowCover: f(s.snowCover), lightning: s.lightning,
+    lightningFrequency: s.lightningFrequency, lightningFlash: f(s.lightningFlash), reduceFlashing: s.reduceFlashing, lensDrops: s.lensDrops,
+    weatherSound: s.weatherSound,
     location: s.location ? location(s.location) : null
   };
 }

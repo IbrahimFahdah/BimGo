@@ -6,9 +6,10 @@ import { gl } from '../gl/Gl';
 import { ShaderProgram } from '../gl/ShaderProgram';
 import {
   CAP_FS, CAP_STENCIL_FS, CAP_VS, EXPOSURE_FS, FULLSCREEN_VS, GEOMETRY_FS, GEOMETRY_GROUND_FS, GRASS_FS, GRASS_VS, GROUND_FS, GROUND_VS, PROFILE_WIDTH_TEXT,
-  SCENE_FS, SCENE_VS, SHADOW_DEPTH_FS, SHADOW_TRANSMIT_FS, SHADOW_VS, SKY_FS
+  LENS_FS, LENS_VS, PRECIP_FS, PRECIP_VS, SCENE_FS, SCENE_VS, SHADOW_DEPTH_FS, SHADOW_TRANSMIT_FS, SHADOW_VS, SKY_FS
 } from '../gl/Shaders';
 import { AppearanceProfiler } from '../../core/scene/AppearanceProfiles';
+import type { CoverMap } from '../../core/scene/CoverMap';
 import { GrassField } from '../../core/scene/GrassField';
 import type { LocalPlane } from '../../core/scene/SectionCut';
 import { FpsCamera } from './FpsCamera';
@@ -69,7 +70,9 @@ const UNIT = {
   /** Grass round: the grass map (vertex shader). */
   grassMap: 14,
   /** Colour round A: the per-element profile colours (vertex shader). */
-  profile: 15
+  profile: 15,
+  /** Round W-B: the cover map (what keeps the rain off, seen from above). */
+  cover: 16
 } as const;
 
 /** Elements per row of the profile texture (Shaders.PROFILE_WIDTH). */
@@ -83,11 +86,14 @@ const AO_UNIFORMS = ['uAoOn', 'uAoForward', 'uAoScale'];
 const ARTIFICIAL_UNIFORMS = ['uLightCount', 'uLightPos', 'uLightColor', 'uLightShadow', 'uLightShadowTexel', 'uEmissive', 'uShoulder'];
 const GEOMETRY_UNIFORMS = ['uViewProj', 'uModel', 'uEye', 'uRight', 'uUp', 'uForward'];
 const CLIP_UNIFORMS = ['uClipCount', 'uClipPlanes'];
+const WEATHER_UNIFORMS = ['uCoverArea', 'uCoverSize', 'uWeather'];
 const SKY_UNIFORMS = ['uInvViewProj', 'uEye', 'uSun', 'uSunDir', 'uZenith', 'uHorizon', 'uSunDisc', 'uSunShape', 'uCloudCover', 'uCloudOffset',
-  'uMoonDir', 'uMoonSun', 'uMoonDisc', 'uMoonGlow', 'uNight', 'uStars', 'uTime', 'uCelestialX', 'uCelestialY', 'uCelestialZ'];
-const SCENE_EXTRA_UNIFORMS = ['uCloudCover', 'uCloudOffset', 'uWaterTint', 'uWaterReflect', 'uWaterWaves', 'uWaveScale', 'uProfilePass', 'uProfileDetail'];
+  'uMoonDir', 'uMoonSun', 'uMoonDisc', 'uMoonGlow', 'uNight', 'uStars', 'uTime', 'uCelestialX', 'uCelestialY', 'uCelestialZ',
+  'uLightning', 'uBolt'];
+const SCENE_EXTRA_UNIFORMS = ['uCloudCover', 'uCloudOffset', 'uWaterTint', 'uWaterReflect', 'uWaterWaves', 'uWaveScale', 'uProfilePass', 'uProfileDetail',
+  ...WEATHER_UNIFORMS];
 const GRASS_UNIFORMS = ['uViewProj', 'uEye', 'uGrassArea', 'uGrassSize', 'uSpacing', 'uSide', 'uInner', 'uFadeIn', 'uFadeOut', 'uRadius', 'uBladeHeight',
-  'uBladeWidth', 'uSway', 'uTime', 'uFogColor', 'uFogDensity', 'uGrassPalette', ...LIGHT_UNIFORMS, ...AO_UNIFORMS, ...ARTIFICIAL_UNIFORMS, ...CLIP_UNIFORMS];
+  'uBladeWidth', 'uSway', 'uTime', 'uFogColor', 'uFogDensity', 'uGrassPalette', 'uSnowShrink', ...LIGHT_UNIFORMS, ...AO_UNIFORMS, ...ARTIFICIAL_UNIFORMS, ...CLIP_UNIFORMS, ...WEATHER_UNIFORMS];
 
 /** Near-grid blade spacing (m) per density, the near grid's radius (m) and the far ring's spacing factor (grass round). */
 const GRASS_SPACING = [0.13, 0.1, 0.075];
@@ -98,6 +104,35 @@ const PROBE_GRASS_RADIUS = 20;
 const PROFILE_GHOST_ALPHA = 0.12;
 /** How light a profile-coloured cap is against the element's colour (P-C). */
 const PROFILE_CAP_SHADE = 0.8;
+
+/** The weather this frame (Round W-B, port of WeatherLook), set by the session. */
+export interface WeatherLook {
+  /** 0 = none, 1 = rain, 2 = snow. */
+  kind: number;
+  /** How hard it falls (0–1): how many drops or flakes. */
+  intensity: number;
+  /** How wet open surfaces look (0–1; 0 while it snows). */
+  wet: number;
+  /** How much snow lies on open surfaces (0–1; 0 while it rains). */
+  snow: number;
+  /** The wind (m/s, scene axes): the rain slants and the snow drifts with the clouds. */
+  windX: number;
+  windY: number;
+  /** The clock (seconds). */
+  time: number;
+  /** The ground plane's height (nothing falls below it). */
+  groundZ: number;
+}
+
+export const noWeather = (): WeatherLook => ({ kind: 0, intensity: 0, wet: 0, snow: 0, windX: 0, windY: 0, time: 0, groundZ: 0 });
+
+/** Round W-B: the box the drops fill round the eye (m) and how many fill it at full intensity (a floor at none). */
+const RAIN_BOX = [36, 36, 20], SNOW_BOX = [30, 30, 16];
+const RAIN_MIN = 5000, RAIN_MAX = 35000, SNOW_MIN = 3000, SNOW_MAX = 25000;
+/** Fall speeds (m/s), the streak's width and length (m), the flake's radius (m). */
+const RAIN_SPEED = 9, SNOW_SPEED = 1.1, RAIN_WIDTH = 0.012, RAIN_LENGTH = 0.8, FLAKE_RADIUS = 0.022;
+/** The clock wraps after this long (s): keeps the drops' positions precise (one unseen reshuffle). */
+const PRECIP_PERIOD = 1000;
 
 /** How the grass blades look this frame (grass round, port of GrassLook). */
 export interface GrassLook {
@@ -116,6 +151,8 @@ export interface GrassLook {
  * BimGo.App/Rendering/SceneRenderer.cs; Realistic materials and moved / cloned elements join with their phases).
  */
 export class SceneRenderer {
+  /** Round W-C: most lens drops at once (keep in step with LENS_VS). */
+  static readonly MAX_LENS_DROPS = 32;
   static readonly FOG_COLOUR = vec3(0.80, 0.85, 0.89);
   private static readonly LIGHT_DIR = V.normalize(vec3(0.35, 0.22, 0.91));
   private static readonly SKY_ZENITH = vec3(0.34, 0.50, 0.70);
@@ -289,7 +326,8 @@ export class SceneRenderer {
       'uPlan', 'uClipZ', 'uOverride', 'uGhost', 'uRealistic', 'uReflections', 'uTintMode', 'uSkyZenith', 'uSkyHorizon', ...PROBE_UNIFORMS, ...LIGHT_UNIFORMS,
       ...AO_UNIFORMS, ...ARTIFICIAL_UNIFORMS, ...CLIP_UNIFORMS, ...SCENE_EXTRA_UNIFORMS]);
     this.skyU = locations(this.skyProgram, SKY_UNIFORMS);
-    this.ground = locations(this.groundProgram, ['uViewProj', 'uCenter', 'uHalf', 'uEye', 'uFogColor', ...LIGHT_UNIFORMS, ...AO_UNIFORMS, ...ARTIFICIAL_UNIFORMS]);
+    this.ground = locations(this.groundProgram, ['uViewProj', 'uCenter', 'uHalf', 'uEye', 'uFogColor', ...LIGHT_UNIFORMS, ...AO_UNIFORMS, ...ARTIFICIAL_UNIFORMS,
+      ...WEATHER_UNIFORMS]);
     this.depthU = locations(this.shadowDepthProgram, ['uViewProj', 'uModel']);
     this.transmitU = locations(this.shadowTransmitProgram, ['uViewProj', 'uModel', 'uGlass', 'uWhitecard']);
     this.geometryU = locations(this.geometryProgram, [...GEOMETRY_UNIFORMS, 'uGlow', ...CLIP_UNIFORMS, 'uProfilePass']);
@@ -368,6 +406,7 @@ export class SceneRenderer {
     bind(UNIT.probeData, gl.TEXTURE_2D, colour2d);
     bind(UNIT.grassMap, gl.TEXTURE_2D, colour2d);
     bind(UNIT.profile, gl.TEXTURE_2D, colour2d);
+    bind(UNIT.cover, gl.TEXTURE_2D, colour2d);
     gl.activeTexture(gl.TEXTURE0);
     this.placeholders = [depthArray, colourArray, colour2d];
     this.colourArrayPlaceholder = colourArray;
@@ -994,6 +1033,9 @@ export class SceneRenderer {
     gl.uniform3f(u.uCelestialX, sky.celestialX.x, sky.celestialX.y, sky.celestialX.z);
     gl.uniform3f(u.uCelestialY, sky.celestialY.x, sky.celestialY.y, sky.celestialY.z);
     gl.uniform3f(u.uCelestialZ, sky.celestialZ.x, sky.celestialZ.y, sky.celestialZ.z);
+    const lightning = sky.lightning, bolt = sky.bolt;
+    gl.uniform4f(u.uLightning, lightning[0], lightning[1], lightning[2], stars ? lightning[3] : 0); // W-C: not in probe faces
+    gl.uniform4f(u.uBolt, bolt[0], bolt[1], bolt[2], bolt[3]);
     gl.bindVertexArray(this.emptyVao);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     gl.depthMask(true);
@@ -1018,6 +1060,7 @@ export class SceneRenderer {
     this.applyLight(u, true, true);
     this.applyAo(u, true);
     this.applyArtificial(u, true);
+    this.applyWeather(u, true); // Round W-B
     gl.bindVertexArray(this.emptyVao);
     gl.drawArrays(gl.TRIANGLES, 0, 6);
   }
@@ -1154,6 +1197,7 @@ export class SceneRenderer {
     // AO follows "transmit": on for opaque surfaces and highlights, off for glass (it isn't in the pre-pass)
     this.applyAo(u, transmit && !p.plan);
     this.applyArtificial(u, !p.plan);
+    this.applyWeather(u, !p.plan); // Round W-B
     gl.uniform1f(u.uFogDensity, p.fogDensity);
     gl.uniform1i(u.uWhitecard, p.whitecard ? 1 : 0);
     gl.uniform1i(u.uPlan, p.plan ? 1 : 0);
@@ -1168,6 +1212,14 @@ export class SceneRenderer {
     if (profilePass > 0) { gl.uniform1f(u.uProfileDetail, this.profileDetail); }
     gl.uniform1f(u.uGhost, a > 0 ? 0 : profilePass === 2 ? PROFILE_GHOST_ALPHA : this.ghostAlpha);
 
+    // The sky in reflections (Round W-B: wet surfaces reflect it in every colour mode)
+    const l = this.lighting;
+    const zenith = l.enabled ? l.zenith : SceneRenderer.SKY_ZENITH, horizon = l.enabled ? l.horizon : SceneRenderer.FOG_COLOUR;
+    gl.uniform3f(u.uSkyZenith, zenith.x, zenith.y, zenith.z);
+    gl.uniform3f(u.uSkyHorizon, horizon.x, horizon.y, horizon.z);
+    gl.uniform1f(u.uCloudCover, this.sky.cloudCover);
+    gl.uniform2f(u.uCloudOffset, this.sky.cloudOffsetX, this.sky.cloudOffsetY);
+
     const realistic = p.realistic && !p.whitecard && this.hasMaterials;
     gl.uniform1i(u.uRealistic, realistic ? 1 : 0);
     if (!realistic) { return; }
@@ -1177,8 +1229,6 @@ export class SceneRenderer {
     gl.uniform1f(u.uReflectGain, p.reflectGain && p.reflectGain > 0 ? p.reflectGain : 1);
     gl.uniform1i(u.uReflectDebug, p.reflectDebug ?? 0);
     gl.uniform1f(u.uTime, this.waterClock); // uTime only moves the water here (water round W)
-    gl.uniform1f(u.uCloudCover, this.sky.cloudCover);
-    gl.uniform2f(u.uCloudOffset, this.sky.cloudOffsetX, this.sky.cloudOffsetY);
     gl.uniform4f(u.uWaterTint, this.waterTint[0], this.waterTint[1], this.waterTint[2], this.waterTint[3]);
     gl.uniform1f(u.uWaterReflect, this.waterReflect);
     gl.uniform1f(u.uWaterWaves, this.waterWaves);
@@ -1193,10 +1243,6 @@ export class SceneRenderer {
       gl.uniform1f(u.uProbeMaxLod, this.probes.maxLod);
     }
     gl.uniform1i(u.uTintMode, p.tintMode ?? 1);
-    const l = this.lighting;
-    const zenith = l.enabled ? l.zenith : SceneRenderer.SKY_ZENITH, horizon = l.enabled ? l.horizon : SceneRenderer.FOG_COLOUR;
-    gl.uniform3f(u.uSkyZenith, zenith.x, zenith.y, zenith.z);
-    gl.uniform3f(u.uSkyHorizon, horizon.x, horizon.y, horizon.z);
   }
 
   /** The classic sky's zenith (matches SKY_FS with the sun off). */
@@ -1416,6 +1462,8 @@ export class SceneRenderer {
     this.applyAo(u, false);
     this.applyArtificial(u, true);
     this.applyClip(u, p.section === true);
+    this.applyWeather(u, true); // Round W-B: wet / snowy blades, snow burying them
+    gl.uniform1f(u.uSnowShrink, this.weatherAny ? Math.min(Math.max(this.weather.snow, 0), 1) * 0.75 : 0);
     gl.activeTexture(gl.TEXTURE0 + UNIT.grassMap);
     gl.bindTexture(gl.TEXTURE_2D, this.grassMap);
     gl.activeTexture(gl.TEXTURE0);
@@ -1633,6 +1681,245 @@ export class SceneRenderer {
 
   // #endregion
 
+  // #region Weather (Round W-B / W-C; port of SceneRenderer.Weather.cs)
+
+  /** The weather this frame (set by the session). */
+  weather: WeatherLook = noWeather();
+  private coverMap: WebGLTexture | null = null;
+  private coverArea: [number, number, number] = [0, 0, 0];
+  private coverSize: [number, number] = [0, 0];
+  private precipProgram: ShaderProgram | null = null;
+  private precipFailed = false;
+  private precipU: Uniforms = {};
+  private lensProgram: ShaderProgram | null = null;
+  private lensFailed = false;
+  private lensU: Uniforms = {};
+  private lensTexture: WebGLTexture | null = null;
+  private lensWidth = 0;
+  private lensHeight = 0;
+  /** Drops or flakes drawn last frame. */
+  precipInstances = 0;
+
+  /** True when a cover map is uploaded. */
+  get hasCoverMap(): boolean { return this.coverMap !== null; }
+
+  /** True when any weather shows this frame. */
+  get weatherAny(): boolean {
+    const w = this.weather;
+    return w.kind !== 0 && (w.intensity > 0 || w.wet > 0 || w.snow > 0);
+  }
+
+  /** Uploads a cover map (null or empty frees it: then everything counts as open to the sky). Returns null, or why not. */
+  setCoverMap(map: CoverMap | null): string | null {
+    this.releaseCoverMap();
+    if (!map || map.isEmpty) { return null; }
+    while (gl.getError() !== gl.NO_ERROR) { /* clear stale errors */ }
+    this.coverMap = gl.createTexture();
+    gl.activeTexture(gl.TEXTURE0 + UNIT.cover);
+    gl.bindTexture(gl.TEXTURE_2D, this.coverMap);
+    setNearest(gl.TEXTURE_2D);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAX_LEVEL, 0);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, map.width, map.height, 0, gl.RED, gl.FLOAT, map.tops);
+    gl.activeTexture(gl.TEXTURE0);
+    if (gl.getError() === gl.OUT_OF_MEMORY) {
+      this.releaseCoverMap();
+      return 'Not enough graphics memory for the rain\'s cover map: rain and snow show indoors too.';
+    }
+    this.coverArea = [map.minX, map.minY, map.cell];
+    this.coverSize = [map.width, map.height];
+    console.info(`Weather: cover map ${map.width} × ${map.height} cells of ${map.cell.toFixed(2)} m, ${map.coveredCells} covered, ${map.triangles} triangles.`);
+    return null;
+  }
+
+  private releaseCoverMap(): void {
+    if (this.coverMap) {
+      gl.deleteTexture(this.coverMap);
+      // The unit keeps a valid (placeholder) texture
+      gl.activeTexture(gl.TEXTURE0 + UNIT.cover);
+      gl.bindTexture(gl.TEXTURE_2D, this.colour2dPlaceholder);
+      gl.activeTexture(gl.TEXTURE0);
+    }
+    this.coverMap = null;
+    this.coverArea = [0, 0, 0];
+  }
+
+  private ensurePrecipProgram(): boolean {
+    if (this.precipProgram) { return true; }
+    if (this.precipFailed) { return false; }
+    try {
+      this.precipProgram = ShaderProgram.create('rain and snow', PRECIP_VS, PRECIP_FS);
+    } catch (e) {
+      this.precipFailed = true;
+      console.warn('Rain and snow shader failed:', e);
+      return false;
+    }
+    assignSamplerUnits(this.precipProgram);
+    this.precipU = locations(this.precipProgram, ['uViewProj', 'uEye', 'uBox', 'uFall', 'uTime', 'uSnow', 'uSize', 'uRight', 'uUp', 'uColour', 'uAlpha',
+      'uGround', ...WEATHER_UNIFORMS]);
+    gl.useProgram(null);
+    return true;
+  }
+
+  private disposeWeather(): void {
+    this.releaseCoverMap();
+    this.precipProgram?.dispose();
+    this.precipProgram = null;
+    this.lensProgram?.dispose();
+    this.lensProgram = null;
+    if (this.lensTexture) { gl.deleteTexture(this.lensTexture); }
+    this.lensTexture = null;
+  }
+
+  private ensureLens(width: number, height: number): boolean {
+    if (this.lensFailed) { return false; }
+    if (!this.lensProgram) {
+      try {
+        this.lensProgram = ShaderProgram.create('lens drops', LENS_VS, LENS_FS);
+      } catch (e) {
+        this.lensFailed = true;
+        console.warn('Lens drop shader failed:', e);
+        return false;
+      }
+      this.lensProgram.use();
+      gl.uniform1i(this.lensProgram.uniform('uScene'), 0);
+      this.lensU = locations(this.lensProgram, ['uDrops', 'uDropShapes', 'uAspect']);
+      gl.useProgram(null);
+    }
+    if (this.lensTexture && this.lensWidth === width && this.lensHeight === height) { return true; }
+    if (!this.lensTexture) { this.lensTexture = gl.createTexture(); }
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.lensTexture);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAX_LEVEL, 0);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB8, width, height, 0, gl.RGB, gl.UNSIGNED_BYTE, null);
+    gl.bindTexture(gl.TEXTURE_2D, null);
+    this.lensWidth = width;
+    this.lensHeight = height;
+    return true;
+  }
+
+  /**
+   * Round W-C: a lightning flash in the classic light (with sun lighting the flash lifts the sky light instead):
+   * brightens the whole frame by amount (0–0.35, capped), multiplying what is there.
+   */
+  applyFlash(amount: number): void {
+    amount = Number.isFinite(amount) ? Math.min(Math.max(amount, 0), 0.35) : 0;
+    if (amount < 0.002 || !this.exposureProgram) { return; }
+    gl.disable(gl.DEPTH_TEST);
+    gl.depthMask(false);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.DST_COLOR, gl.ONE);
+    this.exposureProgram.use();
+    gl.uniform3f(this.exposureColour, amount * 0.9, amount * 0.94, amount);
+    gl.bindVertexArray(this.emptyVao);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.bindVertexArray(null);
+    gl.disable(gl.BLEND);
+    gl.depthMask(true);
+    gl.enable(gl.DEPTH_TEST);
+  }
+
+  /**
+   * Round W-C: draws drops (and melting flakes) on the lens over the finished frame in the bound framebuffer: copies the
+   * frame into a texture (the canvas has no MSAA, so a plain copy), then draws each drop refracting it.
+   * @param drops Per drop (4 floats): centre u, v (0–1), radius (fraction of the height), opacity.
+   * @param shapes Per drop: seed, 1 = snowflake, melted 0–1, trail (radii).
+   */
+  drawLensDrops(width: number, height: number, drops: Float32Array, shapes: Float32Array, count: number): void {
+    count = Math.min(count, SceneRenderer.MAX_LENS_DROPS);
+    if (count <= 0 || width <= 0 || height <= 0 || !this.ensureLens(width, height) || !this.lensProgram) { return; }
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.lensTexture);
+    gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, width, height);
+
+    gl.disable(gl.DEPTH_TEST);
+    gl.depthMask(false);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    this.lensProgram.use();
+    gl.uniform4fv(this.lensU.uDrops, drops, 0, count * 4);
+    gl.uniform4fv(this.lensU.uDropShapes, shapes, 0, count * 4);
+    gl.uniform1f(this.lensU.uAspect, width / Math.max(height, 1));
+    gl.bindVertexArray(this.emptyVao);
+    gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, count);
+    gl.bindVertexArray(null);
+    gl.bindTexture(gl.TEXTURE_2D, null);
+    gl.disable(gl.BLEND);
+    gl.depthMask(true);
+    gl.enable(gl.DEPTH_TEST);
+  }
+
+  /** Sets a program's weather block for one draw (the cover map stays bound on its unit). on: false for the plan minimap. */
+  private applyWeather(u: Uniforms, on: boolean): void {
+    const w = this.weather;
+    if (!on || !this.weatherAny) {
+      gl.uniform4f(u.uWeather, 0, 0, 0, 0);
+      return;
+    }
+    gl.uniform4f(u.uWeather, Math.min(Math.max(w.wet, 0), 1), Math.min(Math.max(w.snow, 0), 1), w.time % PRECIP_PERIOD, 0);
+    gl.uniform4f(u.uCoverArea, this.coverArea[0], this.coverArea[1], this.coverArea[2], this.coverMap ? 1 : 0);
+    gl.uniform2f(u.uCoverSize, this.coverSize[0], this.coverSize[1]);
+  }
+
+  /**
+   * Draws the falling rain or snow (after the glass, depth test on). Nothing without weather.
+   * @param right The camera's right (flakes face the eye); up its up.
+   */
+  drawPrecipitation(p: SceneDrawParams, right: Vec3, up: Vec3): void {
+    this.precipInstances = 0;
+    const w = this.weather;
+    if (w.kind === 0 || w.intensity <= 0 || !this.ensurePrecipProgram() || !this.precipProgram) { return; }
+    const snow = w.kind === 2;
+    const intensity = Math.min(Math.max(w.intensity, 0), 1);
+    const box = snow ? SNOW_BOX : RAIN_BOX;
+    const count = snow ? SNOW_MIN + Math.trunc((SNOW_MAX - SNOW_MIN) * intensity) : RAIN_MIN + Math.trunc((RAIN_MAX - RAIN_MIN) * intensity);
+    const fx = snow ? w.windX * 0.45 : w.windX, fy = snow ? w.windY * 0.45 : w.windY, fz = snow ? -SNOW_SPEED : -RAIN_SPEED;
+
+    // Colour: the sky's light (dim at night), else the classic light's grey
+    const l = this.lighting;
+    let colour: Vec3;
+    if (l.enabled) {
+      const light = V.add(l.skyColour, V.scale(l.sunColour, 0.5));
+      const clamp3 = (c: Vec3, lo: number, hi: number) => vec3(Math.min(Math.max(c.x, lo), hi), Math.min(Math.max(c.y, lo), hi), Math.min(Math.max(c.z, lo), hi));
+      colour = snow ? clamp3(V.scale(light, 1.7), 0.04, 0.95) : clamp3(V.lerp(l.horizon, V.scale(light, 1.4), 0.5), 0.03, 0.9);
+    } else {
+      colour = snow ? vec3(0.92, 0.93, 0.95) : vec3(0.74, 0.78, 0.84);
+    }
+    const alpha = snow ? 0.9 : 0.16 + 0.12 * intensity;
+
+    const u = this.precipU;
+    this.precipProgram.use();
+    gl.uniformMatrix4fv(u.uViewProj, false, p.viewProjection);
+    gl.uniform3f(u.uEye, p.eye.x, p.eye.y, p.eye.z);
+    gl.uniform3f(u.uBox, box[0], box[1], box[2]);
+    gl.uniform3f(u.uFall, fx, fy, fz);
+    gl.uniform1f(u.uTime, w.time % PRECIP_PERIOD);
+    gl.uniform1i(u.uSnow, snow ? 1 : 0);
+    gl.uniform2f(u.uSize, snow ? FLAKE_RADIUS : RAIN_WIDTH, RAIN_LENGTH);
+    gl.uniform3f(u.uRight, right.x, right.y, right.z);
+    gl.uniform3f(u.uUp, up.x, up.y, up.z);
+    gl.uniform3f(u.uColour, colour.x, colour.y, colour.z);
+    gl.uniform1f(u.uAlpha, alpha);
+    gl.uniform1f(u.uGround, w.groundZ);
+    this.applyWeather(u, true);
+
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    gl.depthMask(false);
+    gl.bindVertexArray(this.emptyVao);
+    gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, count);
+    gl.bindVertexArray(null);
+    gl.depthMask(true);
+    gl.disable(gl.BLEND);
+    this.precipInstances = count;
+  }
+
+  // #endregion
+
   // #region Photo exposure (port of SceneRenderer.Photo.cs)
 
   private initialisePhoto(): void {
@@ -1694,6 +1981,7 @@ export class SceneRenderer {
     gl.deleteVertexArray(this.emptyVao);
     gl.deleteVertexArray(this.dynamicVao);
     gl.deleteBuffer(this.dynamicIbo);
+    this.disposeWeather();
     this.releaseGrassMap();
     this.grassProgram?.dispose();
     this.grassProgram = null;
@@ -1729,6 +2017,7 @@ function assignSamplerUnits(program: ShaderProgram): void {
   set('uProbeData', UNIT.probeData);
   set('uGrassMap', UNIT.grassMap);
   set('uProfileTex', UNIT.profile);
+  set('uCoverMap', UNIT.cover);
 }
 
 function setNearest(target: GLenum): void {

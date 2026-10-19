@@ -13,7 +13,7 @@ import { MONTHS, TIME_STEP, two } from './SunState';
 import { UnitFormat } from './UnitFormat';
 import { Hints } from './Hints';
 import { DOCK_CLOSE, ScrollRegion } from './PanelShell';
-import type { SunSettings } from '../core/format/DocumentModels';
+import { type SunSettings, weatherDefaults } from '../core/format/DocumentModels';
 
 const QUALITY_OPTIONS = ['Low', 'Medium', 'High'];
 const LIGHT_MODE_OPTIONS = ['Off', 'Glow', 'Glow + light'];
@@ -21,11 +21,17 @@ const MONTHS_UPPER = MONTHS.map(m => m.toUpperCase());
 const SLIDER = {
   time: 10, sun: 11, sky: 12, shadow: 13, glass: 14, lights: 15, bloom: 16,
   clouds: 20, cloudSpeed: 21, sunSize: 22, sunGlare: 23,                                          // sky round
-  moonLight: 32, starDensity: 33, starBrightness: 34, starTwinkle: 35, milkyWay: 36                 // W-A
+  moonLight: 32, starDensity: 33, starBrightness: 34, starTwinkle: 35, milkyWay: 36,                // W-A
+  weather: 37, wetness: 38, snowCover: 39, flash: 31                                              // W-B / W-C
 } as const;
 
 /** Sky round / W-A: the sun dock's lower tabs. */
-const SUN_TABS = ['LIGHTING', 'SKY', 'NIGHT'];
+const SUN_TABS = ['LIGHTING', 'SKY', 'NIGHT', 'WEATHER']; // W-B: WEATHER
+
+/** Round W-B / W-C: the WEATHER tab's choices. */
+const WEATHER_OPTIONS = ['Off', 'Rain', 'Snow'];
+const WEATHER_KINDS = ['off', 'rain', 'snow'] as const;
+const LIGHTNING_OPTIONS = ['Rare', 'Sometimes', 'Often'];
 
 /** Round W-A: the moon's phase: real, or a chosen lit fraction (the four chosen phases are drawn as moons). */
 const MOON_PHASE_OPTIONS = ['Actual', '', '', '', ''];
@@ -33,7 +39,7 @@ const MOON_PHASE_NAMES = ['Actual phase for the date', 'Full', 'Gibbous', 'Half'
 const MOON_PHASE_VALUES = [0, 1, 0.8, 0.5, 0.2];
 
 type SunSlider = 'sunIntensity' | 'skyIntensity' | 'shadowIntensity' | 'glassTransmission' | 'cloudCover' | 'cloudSpeed' | 'sunSize' | 'sunGlare'
-  | 'moonLight' | 'starDensity' | 'starBrightness' | 'starTwinkle' | 'milkyWay';
+  | 'moonLight' | 'starDensity' | 'starBrightness' | 'starTwinkle' | 'milkyWay' | 'weatherIntensity' | 'wetness' | 'snowCover' | 'lightningFlash';
 
 /**
  * The sun icon and the SUN, SHADOWS & LIGHTS panel (port of the panel half of BimGo.App/Game/GameSession.Sun.cs and
@@ -47,7 +53,7 @@ export class SunPanel {
   /** Month / day text boxes: 0 = none focused, 1 = month, 2 = day. */
   private field = 0;
   private fieldText = '';
-  /** The open lower tab (0 lighting, 1 sky, 2 night; per session). */
+  /** The open lower tab (0 lighting, 1 sky, 2 night, 3 weather; per session). */
   private tab = 0;
   /** P-A2: the dock's body. */
   private readonly scroll = new ScrollRegion();
@@ -307,6 +313,7 @@ export class SunPanel {
     cy += this.s(34);
     if (this.tab === 1) { return { stay: true, bottom: this.buildSkyTab(f, ix, cy, iw) }; }
     if (this.tab === 2) { return { stay: true, bottom: this.buildNightTab(f, ix, cy, iw) }; }
+    if (this.tab === 3) { return { stay: true, bottom: this.buildWeatherTab(f, ix, cy, iw) }; } // W-B
 
     // Intensities
     this.intensity(f, SLIDER.sun, ix, cy, iw, 'Sunlight', 'sunIntensity', 2);
@@ -406,6 +413,73 @@ export class SunPanel {
       settings.moon = settings.stars = true;
       settings.moonPhase = null;
       settings.moonLight = settings.starDensity = settings.starBrightness = settings.starTwinkle = settings.milkyWay = 1;
+      sun.changed();
+    }
+    return cy + this.s(28);
+  }
+
+  /**
+   * Round W-B / W-C: the WEATHER tab: off / rain / snow, how hard, the wet look or the settled snow, where the cover map
+   * is up to, the lens, the sound and lightning (rain only), RESET WEATHER.
+   */
+  private buildWeatherTab(f: FontAtlas, ix: number, cy: number, iw: number): number {
+    const session = this.session, ui = session.ui, w = this.w, sun = session.sun, settings = sun.settings;
+    const kind = WEATHER_KINDS.indexOf(settings.weather);
+    const chosen = w.segmented(f, ix, cy, iw, WEATHER_OPTIONS, kind);
+    if (chosen !== kind) {
+      settings.weather = WEATHER_KINDS[chosen];
+      w.activeSlider = -1;
+      sun.changed();
+    }
+    cy += this.s(42);
+
+    if (sun.weatherOn) {
+      const raining = settings.weather === 'rain';
+      this.intensity(f, SLIDER.weather, ix, cy, iw, raining ? 'Rainfall' : 'Snowfall', 'weatherIntensity', 1);
+      cy += this.s(54);
+      if (raining) { this.intensity(f, SLIDER.wetness, ix, cy, iw, 'Wet look', 'wetness', 1); }
+      else { this.intensity(f, SLIDER.snowCover, ix, cy, iw, 'Settled snow', 'snowCover', 1); }
+      cy += this.s(54);
+      const weather = session.weather;
+      ui.textWrapped(f.small, ix, cy, iw, weather.status(), weather.error !== null ? UiTheme.MEASURE_LABEL : UiTheme.TEXT_MUTED, 2);
+      cy += this.s(40);
+
+      // W-C: the lens, the sound, lightning (rain only)
+      const drops = w.checkbox(f, ix, cy, iw, raining ? 'Drops on the lens (outdoors)' : 'Flakes on the lens (outdoors)', settings.lensDrops);
+      if (drops !== settings.lensDrops) { settings.lensDrops = drops; sun.changed(); }
+      cy += this.s(30);
+      if (raining) {
+        const sound = w.checkbox(f, ix, cy, iw, 'Rain sound and thunder', settings.weatherSound);
+        if (sound !== settings.weatherSound) { settings.weatherSound = sound; sun.changed(); }
+        cy += this.s(30);
+        const lightning = w.checkbox(f, ix, cy, iw, 'Lightning', settings.lightning);
+        if (lightning !== settings.lightning) {
+          settings.lightning = lightning;
+          sun.changed();
+          if (lightning) { session.toast('Lightning on · at most three flashes a second; Reduce flashing turns them into slow glows', 5); }
+        }
+        cy += this.s(32);
+        if (settings.lightning) {
+          const frequency = w.segmented(f, ix, cy, iw, LIGHTNING_OPTIONS, Math.min(Math.max(settings.lightningFrequency, 0), 2));
+          if (frequency !== settings.lightningFrequency) { settings.lightningFrequency = frequency; sun.changed(); }
+          cy += this.s(42);
+          this.intensity(f, SLIDER.flash, ix, cy, iw, 'Flash on the scene', 'lightningFlash', 1);
+          cy += this.s(54);
+          const reduce = w.checkbox(f, ix, cy, iw, 'Reduce flashing (slow glows only)', settings.reduceFlashing);
+          if (reduce !== settings.reduceFlashing) { settings.reduceFlashing = reduce; sun.changed(); }
+          cy += this.s(30);
+          ui.textWrapped(f.small, ix, cy, iw,
+            'Flickers are kept to three a second at most and fade in and out. If flashing lights bother you, tick Reduce flashing.', UiTheme.TEXT_FAINT, 3);
+          cy += this.s(52);
+        }
+      }
+    }
+    ui.textWrapped(f.small, ix, cy, iw,
+      'Shows in the classic light too; with shadows on the clouds thicken and the light dims. The wind follows the cloud drift (SKY). Saved with the model.',
+      UiTheme.TEXT_FAINT, 4);
+    cy += this.s(66);
+    if (w.smallButton(f, ix, cy, this.s(150), this.s(28), 'RESET WEATHER')) {
+      Object.assign(settings, weatherDefaults());
       sun.changed();
     }
     return cy + this.s(28);

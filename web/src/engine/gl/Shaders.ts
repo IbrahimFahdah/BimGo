@@ -570,7 +570,69 @@ vec3 shoulder(vec3 c)
 }
 `;
 
-export const SCENE_FS = HEADER + CLIP_GLSL + SUN_GLSL + AO_GLSL + LIGHTS_GLSL + CLOUD_GLSL + MATERIALS_GLSL + `
+export const WEATHER_GLSL = `
+uniform sampler2D uCoverMap;
+uniform vec4 uCoverArea;
+uniform vec2 uCoverSize;
+uniform vec4 uWeather;
+const vec3 SNOW_COLOUR = vec3(0.90, 0.92, 0.95);
+float weatherHash(vec2 p)
+{
+    vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.x + p3.y) * p3.z);
+}
+float weatherNoise(vec2 p)
+{
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    vec2 u = f * f * (3.0 - 2.0 * f);
+    return mix(mix(weatherHash(i), weatherHash(i + vec2(1.0, 0.0)), u.x),
+               mix(weatherHash(i + vec2(0.0, 1.0)), weatherHash(i + vec2(1.0, 1.0)), u.x), u.y);
+}
+// The highest surface over a point, or -1e9 off the map / without one
+float coverTop(vec2 p)
+{
+    if (uCoverArea.w < 0.5) return -1e9;
+    ivec2 c = ivec2(floor((p - uCoverArea.xy) / uCoverArea.z));
+    if (c.x < 0 || c.y < 0 || c.x >= int(uCoverSize.x) || c.y >= int(uCoverSize.y)) return -1e9;
+    return texelFetch(uCoverMap, c, 0).r;
+}
+// 1 = open to the sky, 0 = under cover
+float skyOpen(vec3 world, vec3 n)
+{
+    if (uCoverArea.w < 0.5) return 1.0;
+    float cell = uCoverArea.z;
+    float top = coverTop(world.xy + n.xy * cell);
+    float slope = length(n.xy) / max(abs(n.z), 0.2);
+    float tolerance = 0.06 + cell * min(slope, 2.0);
+    return 1.0 - smoothstep(tolerance, tolerance + 0.15, top - world.z);
+}
+// How much snow lies on a surface (0–1): flat open faces first, patchy while the cover is light, slopes last
+float snowAmount(vec3 world, vec3 n, float open)
+{
+    if (uWeather.y <= 0.001 || n.z < 0.2 || open <= 0.0) return 0.0;
+    float up = smoothstep(0.3, 0.9, n.z);
+    vec2 p = world.xy;
+    vec2 q = vec2(p.x * 0.8 - p.y * 0.6, p.x * 0.6 + p.y * 0.8);
+    float drift = weatherNoise(p * 0.45) * 0.45 + weatherNoise(q * 1.7 + 11.0) * 0.35 + weatherNoise(p * 5.3 + 3.0) * 0.2;
+    float need = drift * 0.55 + (1.0 - up) * 0.6;
+    return smoothstep(need - 0.1, need + 0.1, uWeather.y * 1.2) * open;
+}
+// How wet a surface is (0–1): open faces, walls less than floors and roofs
+float wetAmount(vec3 n, float open)
+{
+    return uWeather.x * open * mix(0.35, 1.0, smoothstep(0.0, 0.7, n.z));
+}
+// Puddles on flat wet ground (0–1); the fine edge detail fades out with distance (no shimmer far off)
+float puddleAmount(vec3 world, vec3 n, float wet, float dist)
+{
+    float fine = mix(weatherNoise(world.xy * 2.1), 0.5, smoothstep(15.0, 45.0, dist));
+    return wet * smoothstep(0.93, 0.99, n.z) * smoothstep(0.56, 0.76, weatherNoise(world.xy * 0.45) * 0.75 + fine * 0.25);
+}
+`;
+
+export const SCENE_FS = HEADER + CLIP_GLSL + SUN_GLSL + AO_GLSL + LIGHTS_GLSL + CLOUD_GLSL + MATERIALS_GLSL + WEATHER_GLSL + `
 in vec3 vWorld;
 in vec3 vNormal;
 in vec4 vColor;
@@ -654,6 +716,19 @@ void main()
     float dist = length(vWorld - uEye);
     bool reflecting = uRealistic == 1 && uReflections == 1 && uReflectDebug == 0;
     if (reflecting && (shineFlags & 2) != 0 && n.z > 0.3 && uWaterWaves > 0.001) n = waterNormal(vWorld, n, shine.w, dist);
+
+    // Round W-B: rain and snow on surfaces open to the sky (not water, highlights or colour-profile colours)
+    float wet = 0.0, snow = 0.0;
+    if (uWeather.x + uWeather.y > 0.001 && (shineFlags & 2) == 0 && uOverride.a <= 0.0 && profileCode < 128 && !profileGhost)
+    {
+        float open = skyOpen(vWorld, n);
+        snow = snowAmount(vWorld, n, open);
+        wet = wetAmount(n, open) * (1.0 - snow);
+        base.rgb = mix(base.rgb * mix(1.0, 0.6, wet), SNOW_COLOUR, snow);
+        base.a = mix(base.a, 1.0, snow);
+        reflectivity *= 1.0 - snow;
+        shine.x *= 1.0 - snow;
+    }
     float ao = ambientOcclusion(vWorld, uEye);
     vec3 lit;
     if (uSun == 1)
@@ -720,6 +795,31 @@ void main()
             }
         }
         alpha = alpha + (1.0 - alpha) * fresnel;
+    }
+
+    // Round W-B: wet surfaces take a sheen of the sky (or the room's probe); puddles on flat ground mirror it, the
+    // rain rippling them
+    if (wet > 0.01)
+    {
+        vec3 view = normalize(vWorld - uEye);
+        float puddle = puddleAmount(vWorld, n, wet, dist);
+        vec3 wn = n;
+        if (puddle > 0.0 && dist < 40.0)
+        {
+            vec2 wobble = vec2(weatherNoise(vWorld.xy * 9.0 + uWeather.z * 3.0), weatherNoise(vWorld.yx * 9.0 - uWeather.z * 3.0)) - 0.5;
+            wn = normalize(n + vec3(wobble * (0.06 * puddle * (1.0 - smoothstep(20.0, 40.0, dist))), 0.0));
+        }
+        float cosine = clamp(dot(-view, wn), 0.0, 1.0);
+        float r0 = mix(0.03, 0.2, puddle);
+        float sheen = min((r0 + (1.0 - r0) * pow(1.0 - cosine, 5.0) * mix(0.3, 0.85, puddle)) * mix(wet, 1.0, puddle), 0.85);
+        vec3 dir = reflect(view, wn);
+        float rough = mix(0.35, 0.05, puddle);
+        bool have;
+        float weight;
+        vec3 env = probeEnvironment(vWorld, wn, dir, rough, have, weight);
+        if (!have) env = blurredSky(dir, rough) * mix(0.55, 1.0, ao);
+        else sheen *= weight;
+        lit = mix(lit, env, sheen);
     }
 
     float fog = clamp(1.0 - exp(-dist * uFogDensity), 0.0, 0.65);
@@ -802,9 +902,89 @@ uniform float uTime;
 uniform vec3 uCelestialX;
 uniform vec3 uCelestialY;
 uniform vec3 uCelestialZ;
+// Round W-C: lightning. uLightning = (towards the strike, brightness 0–1); uBolt = (shape seed, 1 = a visible bolt,
+// the lit zone's radius (rad), 0)
+uniform vec4 uLightning;
+uniform vec4 uBolt;
 out vec4 oColor;
 
 const float MOON_RADIUS = 0.0085;
+
+// Round W-C: the bolt, in the zone's frame (units of the zone's radius; y up): a zigzag channel from inside the cloud
+// down to the horizon and one fork. Returns the distance to the nearest segment.
+float boltHash(float n)
+{
+    return fract(sin(n * 12.9898 + 4.1414) * 43758.5453);
+}
+float segmentDistance(vec2 p, vec2 a, vec2 b)
+{
+    vec2 ab = b - a;
+    float t = clamp(dot(p - a, ab) / max(dot(ab, ab), 1e-6), 0.0, 1.0);
+    return length(p - a - ab * t);
+}
+vec2 boltPoint(int i, float top, float step, float seed)
+{
+    if (i <= 0) return vec2(0.0, top);
+    float x = (boltHash(seed * 91.0 + float(i)) - 0.5) * 0.22 + (boltHash(seed * 37.0 + float(i) * 0.5) - 0.5) * 0.08 * float(i);
+    return vec2(x, top - float(i) * step);
+}
+float boltDistance(vec2 q, float seed, float bottom)
+{
+    const int SEGMENTS = 12;
+    float top = 0.45;
+    float step = (top - bottom) / float(SEGMENTS);
+    int i = int(clamp(floor((top - q.y) / step), 0.0, float(SEGMENTS - 1)));
+    float d = 1e3;
+    for (int k = -1; k <= 1; k++)
+    {
+        int j = clamp(i + k, 0, SEGMENTS - 1);
+        d = min(d, segmentDistance(q, boltPoint(j, top, step, seed), boltPoint(j + 1, top, step, seed)));
+    }
+    // One fork from a third of the way down, leaning out to one side, five shorter segments
+    int forkAt = 3 + int(boltHash(seed * 13.0) * 3.0);
+    vec2 a = boltPoint(forkAt, top, step, seed);
+    float side = boltHash(seed * 5.0) < 0.5 ? -1.0 : 1.0;
+    for (int f = 0; f < 5; f++)
+    {
+        vec2 b = a + vec2(side * (0.05 + 0.06 * boltHash(seed * 17.0 + float(f))), -step * (0.8 + 0.4 * boltHash(seed * 23.0 + float(f))));
+        d = min(d, segmentDistance(q, a, b) + 0.004 * float(f)); // thinner towards its tip
+        a = b;
+    }
+    return d;
+}
+// The sky lit by a strike: the zone's clouds lit from inside (a faint wash on clear sky), the whole cloud deck a
+// little, and the bolt (thin core, soft halo; the part inside the cloud dimmed)
+vec3 lightningSky(vec3 dir, vec3 c, float cloudA)
+{
+    vec3 l = normalize(uLightning.xyz);
+    float b = uLightning.w;
+    float zone = max(uBolt.z, 0.05);
+    vec3 right = normalize(cross(l, vec3(0.0, 0.0, 1.0)));
+    vec3 up = cross(right, l);
+    float facing = dot(dir, l);
+    vec2 q = vec2(dot(dir, right), dot(dir, up)) / zone;
+    // The lit patch: wider than tall (the cloud deck), broken up by the clouds' own billows
+    float spread = facing > 0.0 ? exp(-(q.x * q.x * 0.55 + q.y * q.y * 1.4)) : 0.0;
+    vec2 billow = dir.xy / (max(dir.z, 0.0) + 0.06) * 2.6 + uBolt.x * 17.0;
+    float patches = smoothstep(0.25, 0.85, cloudFbm(billow));
+    float glow = spread * (0.25 + 0.75 * patches);
+    // Weaker against a bright day sky (the same flash reads far stronger at night)
+    float dark = 1.0 - clamp(dot(c, vec3(0.3, 0.59, 0.11)), 0.0, 1.0);
+    vec3 tint = vec3(0.78, 0.82, 1.0);
+    c += tint * b * glow * (0.12 + 0.75 * cloudA) * (0.3 + 0.7 * dark);
+    c += tint * b * 0.04 * cloudA * (0.3 + 0.7 * dark);
+    if (uBolt.y > 0.5 && facing > 0.0 && abs(q.x) < 1.2 && dir.z > 0.0)
+    {
+        float bottom = -asin(clamp(l.z, 0.0, 1.0)) / zone;
+        float d = boltDistance(q, uBolt.x, bottom);
+        float px = max(length(fwidth(dir)) / zone, 1e-4);
+        float core = 1.0 - smoothstep(px * 0.5, px * 1.6, d);
+        float halo = exp(-d / max(px * 5.0, 0.004)) * 0.25;
+        float inCloud = smoothstep(0.15, 0.4, q.y) * cloudA;
+        c += vec3(0.86, 0.89, 1.0) * b * (core * 0.5 + halo) * (1.0 - 0.6 * inCloud) * (0.5 + 0.5 * dark);
+    }
+    return c;
+}
 const vec3 GALACTIC_POLE = vec3(-0.86766, -0.19807, 0.45599);
 const vec3 GALACTIC_CENTRE = vec3(-0.05488, -0.87341, -0.48386);
 
@@ -919,6 +1099,7 @@ void main()
     }
     vec4 cloud = cloudLayer(dir, uSunDir, uSun == 1 ? uSunDisc * 0.9 + uMoonGlow * 1.6 : vec3(0.6), horizon);
     c = mix(c, cloud.rgb, cloud.a);
+    if (uLightning.w > 0.001 && h > -0.05) c = lightningSky(dir, c, cloud.a); // Round W-C
     oColor = vec4(c, 1.0);
 }`;
 
@@ -934,7 +1115,7 @@ void main()
     gl_Position = uViewProj * vec4(w, 1.0);
 }`;
 
-export const GROUND_FS = HEADER + SUN_GLSL + AO_GLSL + LIGHTS_GLSL + `
+export const GROUND_FS = HEADER + SUN_GLSL + AO_GLSL + LIGHTS_GLSL + WEATHER_GLSL + `
 in vec3 vWorld;
 uniform vec3 uEye;
 uniform vec3 uFogColor;
@@ -951,11 +1132,31 @@ void main()
     float minor = gridLine(vWorld.xy, 1.0) * (1.0 - smoothstep(25.0, 90.0, d));
     float major = gridLine(vWorld.xy, 10.0) * (1.0 - smoothstep(150.0, 600.0, d));
     vec3 albedo = vec3(0.57, 0.59, 0.61) * (1.0 - 0.10 * minor - 0.20 * major);
+
+    // Round W-B: wet or snowy where open to the sky (the grid lines show faintly through the snow)
+    vec3 up = vec3(0.0, 0.0, 1.0);
+    float wet = 0.0;
+    if (uWeather.x + uWeather.y > 0.001)
+    {
+        float open = skyOpen(vWorld, up);
+        float snow = snowAmount(vWorld, up, open);
+        wet = wetAmount(up, open) * (1.0 - snow);
+        albedo = mix(albedo * mix(1.0, 0.6, wet), SNOW_COLOUR * (1.0 - 0.03 * minor - 0.06 * major), snow);
+    }
     vec3 c = albedo;
     float ao = ambientOcclusion(vWorld, uEye);
-    if (uSun == 1) { c *= sunLight(vec3(0.0, 0.0, 1.0), vWorld, uEye, ao); }
+    if (uSun == 1) { c *= sunLight(up, vWorld, uEye, ao); }
     else { c *= mix(1.0, ao, 0.6); }
-    if (uLightCount > 0) { c += albedo * artificialLight(vWorld, vec3(0.0, 0.0, 1.0), ao); }
+    if (uLightCount > 0) { c += albedo * artificialLight(vWorld, up, ao); }
+    if (wet > 0.01)
+    {
+        // A sheen of the horizon, stronger at grazing angles and in the puddles
+        float puddle = puddleAmount(vWorld, up, wet, length(uEye - vWorld));
+        float cosine = clamp((uEye.z - vWorld.z) / max(length(uEye - vWorld), 1e-3), 0.0, 1.0);
+        float r0 = mix(0.03, 0.2, puddle);
+        float sheen = min((r0 + (1.0 - r0) * pow(1.0 - cosine, 5.0) * mix(0.3, 0.85, puddle)) * mix(wet, 1.0, puddle), 0.85);
+        c = mix(c, uFogColor * mix(0.75, 1.0, ao), sheen);
+    }
     c = mix(c, uFogColor, clamp(d / 1200.0, 0.0, 1.0));
     oColor = vec4(shoulder(c), 1.0);
 }`;
@@ -976,6 +1177,7 @@ uniform float uBladeHeight;
 uniform float uBladeWidth;
 uniform float uSway;
 uniform float uTime;
+uniform float uSnowShrink;
 out vec3 vWorld;
 out vec3 vNormal;
 out vec3 vColour;
@@ -1025,7 +1227,7 @@ void main()
     // blends into the textured ground), varied per blade
     float fade = smoothstep(uInner, uFadeIn, d) * (1.0 - smoothstep(uFadeOut, uRadius, d));
     if (uFadeIn <= uInner) fade = 1.0 - smoothstep(uFadeOut, uRadius, d);
-    float height = uBladeHeight * (0.55 + 0.9 * h2 * h2) * fade;
+    float height = uBladeHeight * (0.55 + 0.9 * h2 * h2) * fade * (1.0 - uSnowShrink); // W-B: snow buries the blades
     if (height < 0.004) { collapse(); return; }
     float width = uBladeWidth * (0.7 + 0.6 * h3);
     float yaw = h0 * 6.2831853;
@@ -1052,7 +1254,7 @@ void main()
     gl_Position = uViewProj * vec4(world, 1.0);
 }`;
 
-export const GRASS_FS = HEADER + CLIP_GLSL + SUN_GLSL + AO_GLSL + LIGHTS_GLSL + `
+export const GRASS_FS = HEADER + CLIP_GLSL + SUN_GLSL + AO_GLSL + LIGHTS_GLSL + WEATHER_GLSL + `
 in vec3 vWorld;
 in vec3 vNormal;
 in vec3 vColour;
@@ -1068,6 +1270,14 @@ void main()
     float ao = mix(0.35, 1.0, vT);
     // Darker at the root, lighter and a little yellower at the tip
     vec3 albedo = mix(vColour * 0.55, vColour * 1.15 + vec3(0.05, 0.05, -0.01), vT);
+    // Round W-B: darker when wet, snow on the blades (more towards the tips) where open to the sky
+    if (uWeather.x + uWeather.y > 0.001)
+    {
+        vec3 up = vec3(0.0, 0.0, 1.0);
+        float open = skyOpen(vWorld, up);
+        float snow = snowAmount(vWorld, up, open);
+        albedo = mix(albedo * mix(1.0, 0.75, wetAmount(up, open)), SNOW_COLOUR, snow * (0.45 + 0.55 * vT));
+    }
     vec3 c;
     if (uSun == 1)
     {
@@ -1083,6 +1293,165 @@ void main()
     float dist = length(vWorld - uEye);
     float fog = clamp(1.0 - exp(-dist * uFogDensity), 0.0, 0.65);
     oColor = vec4(shoulder(mix(c, uFogColor, fog)), 1.0);
+}`;
+
+export const PRECIP_VS = HEADER + `uniform mat4 uViewProj;
+uniform vec3 uEye;
+uniform vec3 uBox;
+uniform vec3 uFall;
+uniform float uTime;
+uniform int uSnow;
+uniform vec2 uSize;
+uniform vec3 uRight;
+uniform vec3 uUp;
+out vec3 vWorld;
+out vec2 vQuad;
+out float vFade;
+uint dropHash(uint x)
+{
+    x ^= x >> 16;
+    x *= 0x7feb352du;
+    x ^= x >> 15;
+    x *= 0x846ca68bu;
+    x ^= x >> 16;
+    return x;
+}
+float dropRandom(uint id, uint k)
+{
+    return float(dropHash(id * 5u + k) & 0xFFFFFFu) / 16777216.0;
+}
+void main()
+{
+    uint id = uint(gl_InstanceID);
+    vec3 seed = vec3(dropRandom(id, 0u), dropRandom(id, 1u), dropRandom(id, 2u));
+    float speed = 0.85 + 0.3 * dropRandom(id, 3u);
+    float size = 0.7 + 0.6 * dropRandom(id, 4u);
+    vec3 velocity = uFall * speed;
+    vec3 p = seed * uBox + velocity * uTime;
+    if (uSnow == 1)
+    {
+        float phase = seed.x * 40.0 + seed.y * 17.0;
+        p.xy += vec2(sin(uTime * 1.3 + phase), cos(uTime * 1.1 + phase * 1.7)) * 0.3;
+    }
+    vec3 low = uEye - uBox * 0.5;
+    p = low + mod(p - low, uBox);
+
+    vec3 offset = p - uEye;
+    float d = length(offset);
+    vec3 edge = abs(offset) / (uBox * 0.5);
+    vFade = (1.0 - smoothstep(0.65, 1.0, max(edge.x, edge.y))) * (1.0 - smoothstep(0.75, 1.0, edge.z))
+          * smoothstep(0.35, 1.2, d);
+
+    int corner = gl_VertexID;
+    vec2 q = vec2(corner == 1 || corner == 3 ? 1.0 : -1.0, corner >= 2 ? 1.0 : 0.0);
+    vec3 world;
+    if (uSnow == 1)
+    {
+        vec2 c = vec2(q.x, q.y * 2.0 - 1.0);
+        float r = uSize.x * size;
+        world = p + (uRight * c.x + uUp * c.y) * r;
+        vQuad = c;
+    }
+    else
+    {
+        vec3 axis = normalize(uFall);
+        vec3 side = cross(axis, normalize(uEye - p));
+        side = length(side) > 1e-4 ? normalize(side) : uRight;
+        float width = uSize.x * (1.0 + d * 0.06);
+        world = p + side * (q.x * width * 0.5) - axis * (q.y * uSize.y * size);
+        vQuad = q;
+    }
+    vWorld = world;
+    gl_Position = uViewProj * vec4(world, 1.0);
+}`;
+
+export const PRECIP_FS = HEADER + WEATHER_GLSL + `
+in vec3 vWorld;
+in vec2 vQuad;
+in float vFade;
+uniform int uSnow;
+uniform vec3 uColour;
+uniform float uAlpha;
+uniform float uGround;
+out vec4 oColor;
+void main()
+{
+    if (vFade <= 0.003 || vWorld.z < uGround) discard;
+    if (vWorld.z < coverTop(vWorld.xy)) discard;
+    float a;
+    if (uSnow == 1) a = 1.0 - smoothstep(0.3, 1.0, length(vQuad));
+    else a = (1.0 - abs(vQuad.x)) * smoothstep(0.0, 0.3, vQuad.y) * (1.0 - smoothstep(0.75, 1.0, vQuad.y));
+    a *= uAlpha * vFade;
+    if (a <= 0.003) discard;
+    oColor = vec4(uColour, a);
+}`;
+
+export const LENS_VS = HEADER + `uniform vec4 uDrops[32];
+uniform vec4 uDropShapes[32];
+uniform float uAspect;
+out vec2 vLocal;
+out vec2 vUv;
+flat out vec4 vDrop;
+flat out vec4 vShape;
+void main()
+{
+    vec4 d = uDrops[gl_InstanceID];
+    vec4 s = uDropShapes[gl_InstanceID];
+    int corner = gl_VertexID;
+    vec2 q = vec2(corner == 1 || corner == 3 ? 1.3 : -1.3, corner >= 2 ? 1.3 + s.w : -1.3);
+    vec2 uv = d.xy + q * vec2(d.z / uAspect, d.z);
+    vLocal = q;
+    vUv = uv;
+    vDrop = d;
+    vShape = s;
+    gl_Position = vec4(uv * 2.0 - 1.0, 0.0, 1.0);
+}`;
+
+export const LENS_FS = HEADER + `in vec2 vLocal;
+in vec2 vUv;
+flat in vec4 vDrop;
+flat in vec4 vShape;
+uniform sampler2D uScene;
+uniform float uAspect;
+out vec4 oColor;
+void main()
+{
+    float seed = vShape.x * 40.0;
+    vec2 p = vLocal;
+    float angle = atan(p.y, p.x);
+    float melt = vShape.y > 0.5 ? clamp(vShape.z, 0.0, 1.0) : 1.0;
+    float radius = 1.0 + 0.07 * sin(angle * 3.0 + seed) + 0.04 * sin(angle * 5.0 + seed * 1.7);
+    radius *= vShape.y > 0.5 ? mix(1.0, 0.7, melt) : 1.0;
+    // The trail: a capsule up from the centre, narrowing
+    float trail = vShape.w;
+    float along = clamp(p.y, 0.0, trail);
+    float taper = trail > 0.0 ? 1.0 - 0.6 * along / max(trail, 1e-3) : 1.0;
+    float d = length(vec2(p.x, p.y - along)) / taper;
+    float inside = 1.0 - smoothstep(radius - 0.12, radius, d);
+    if (inside <= 0.002) discard;
+
+    // Refraction: the view behind, flipped through the drop's centre and magnified (softened by a few taps)
+    float r = vDrop.z;
+    vec2 flipped = vDrop.xy - vec2(p.x, min(p.y, 1.0)) * vec2(r / uAspect, r) * 1.25;
+    vec2 texel = vec2(r / uAspect, r) * 0.18;
+    vec3 c = texture(uScene, flipped).rgb * 0.4
+           + texture(uScene, flipped + vec2(texel.x, 0.0)).rgb * 0.15 + texture(uScene, flipped - vec2(texel.x, 0.0)).rgb * 0.15
+           + texture(uScene, flipped + vec2(0.0, texel.y)).rgb * 0.15 + texture(uScene, flipped - vec2(0.0, texel.y)).rgb * 0.15;
+    float edge = clamp(d / radius, 0.0, 1.0);
+    float h = sqrt(max(1.0 - edge * edge, 0.0));
+    c *= mix(1.04, 0.62, smoothstep(0.55, 1.0, edge));
+    vec3 n = normalize(vec3(p / max(radius, 0.1) * 0.9, h + 0.15));
+    float spec = pow(max(dot(n, normalize(vec3(-0.35, 0.55, 1.0))), 0.0), 40.0);
+    c += vec3(0.9) * spec * 0.6;
+
+    // A snowflake: frosted and white with six arms, giving way to the drop as it melts
+    if (vShape.y > 0.5)
+    {
+        float arms = pow(abs(cos(angle * 3.0 + seed)), 6.0);
+        float frost = (0.55 + 0.45 * arms) * (1.0 - smoothstep(0.0, 0.7, melt));
+        c = mix(c, vec3(0.93, 0.95, 0.98), frost);
+    }
+    oColor = vec4(c, inside * vDrop.w);
 }`;
 
 export const GEOMETRY_GLSL = HEADER + CLIP_GLSL + `

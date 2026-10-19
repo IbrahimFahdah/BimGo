@@ -4,7 +4,7 @@ import type { SiteInfo } from '../core/scene/ModelInfo';
 import { TimeZones } from '../core/scene/Places';
 import { type GeoLocation, isLocationValid, SolarPosition } from '../core/scene/SolarPosition';
 import { LunarPosition } from '../core/scene/LunarPosition';
-import { createSunLighting, NO_SUN, type SkyLook, SkyLooks, type SunLighting } from '../engine/render/SunLighting';
+import { createSunLighting, NO_SUN, type SkyLook, SkyLooks, type SunLighting, withWeather } from '../engine/render/SunLighting';
 
 export const TIME_STEP = 5;           // minutes per slider / [ ] step
 const PLAY_SPEED = 60;                // clock minutes per real second while playing
@@ -12,7 +12,7 @@ export const COMPASS = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
 
 /** Cloud drift at speed 1 (noise units per second) and its direction (from the west-south-west). */
 const CLOUD_DRIFT = 0.012;
-const CLOUD_WIND_X = 0.92 / Math.hypot(0.92, 0.38), CLOUD_WIND_Y = 0.38 / Math.hypot(0.92, 0.38);
+export const CLOUD_WIND_X = 0.92 / Math.hypot(0.92, 0.38), CLOUD_WIND_Y = 0.38 / Math.hypot(0.92, 0.38);
 export const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
 /**
@@ -64,6 +64,12 @@ export class SunState {
   }
 
   get enabled(): boolean { return this.settings.enabled; }
+
+  /** Round W-B: true when it rains or snows. */
+  get weatherOn(): boolean { return this.settings.weather !== 'off'; }
+
+  /** Round W-B: how overcast the weather makes the sky (0 = none, up to 1 in a heavy storm). */
+  get weatherOvercast(): number { return this.weatherOn ? 0.55 + 0.45 * this.settings.weatherIntensity : 0; }
 
   /** True when a BimGo location replaces the model's. */
   get hasOverride(): boolean { return this.settings.location !== null; }
@@ -165,12 +171,13 @@ export class SunState {
     this.cloudY += CLOUD_WIND_Y * step;
     if (this.cloudX * this.cloudX + this.cloudY * this.cloudY > 1e8) { this.cloudX = this.cloudY = 0; } // keep the noise precise
     const look = SkyLooks.defaults();
-    look.cloudCover = s.cloudCover;
+    look.cloudCover = this.weatherOn ? Math.max(s.cloudCover, 0.65 + 0.35 * s.weatherIntensity) : s.cloudCover; // W-B: rain clouds
     look.cloudOffsetX = this.cloudX;
     look.cloudOffsetY = this.cloudY;
     look.sunSize = s.sunSize;
     look.sunGlare = s.sunGlare;
-    look.stars = s.stars ? [s.starDensity, s.starBrightness, s.starTwinkle, s.milkyWay] : [0, 0, 0, 0];
+    const clear = 1 - this.weatherOvercast; // W-B: the storm hides the stars
+    look.stars = s.stars ? [s.starDensity, s.starBrightness * clear, s.starTwinkle, s.milkyWay * clear] : [0, 0, 0, 0];
     look.time = clock % 3600;
     look.celestialX = this.celestialX;
     look.celestialY = this.celestialY;
@@ -197,6 +204,11 @@ export class SunState {
     s.starBrightness = c(s.starBrightness, 0, 2, 1);
     s.starTwinkle = c(s.starTwinkle, 0, 2, 1);
     s.milkyWay = c(s.milkyWay, 0, 2, 1);
+    s.weatherIntensity = c(s.weatherIntensity, 0.05, 1, 0.5); // W-B / W-C
+    s.wetness = c(s.wetness, 0, 1, 1);
+    s.snowCover = c(s.snowCover, 0, 1, 0.6);
+    s.lightningFrequency = Math.trunc(c(s.lightningFrequency, 0, 2, 1));
+    s.lightningFlash = c(s.lightningFlash, 0, 1, 0.35);
     this.revision++;
     this.recompute();
   }
@@ -281,7 +293,7 @@ export class SunState {
       lighting.moonSunDirection = vec3(moon.x * cosElongation + side.x * sinElongation, moon.y * cosElongation + side.y * sinElongation,
         moon.z * cosElongation + side.z * sinElongation);
     }
-    return lighting;
+    return withWeather(lighting, this.weatherOvercast, s.weather === 'snow'); // W-B: dimmer, greyer under rain or snow
   }
 
   /** Round W-A: the moon line of the NIGHT tab ("62 % lit, waxing · 34° up, NE"). */
