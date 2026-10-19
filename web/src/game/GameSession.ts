@@ -1115,7 +1115,7 @@ export class GameSession implements GunHost, EditHost {
     if (unarmed) { this.guns[this.activeGun].onDeselect(); }
     this.unarmed = unarmed;
     this.sound.play(SoundId.UiClick);
-    this.toast(unarmed ? `Unarmed (${keyOf(InputAction.Unarmed)} or a gun key takes a gun out)` : this.guns[this.activeGun].name, 1.6);
+    this.toast(unarmed ? `No gun (${keyOf(InputAction.Unarmed)} or a gun key takes a gun out)` : this.guns[this.activeGun].name, 1.6);
   }
 
   /** Gives each gun its selection key's label (the gun bar's corner number). */

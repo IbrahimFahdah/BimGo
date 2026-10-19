@@ -11,6 +11,9 @@ import { LastLive, type LastLiveSession, type RecentFile, type RecentFiles } fro
 /** What the home screen asks the shell to do this frame. */
 export type HomeAction = { kind: 'browse' } | { kind: 'sample' } | null;
 
+/** Sky round: the trademark line (bottom left; the version is bottom right). */
+const TRADEMARK_LINE = 'Revit® is a trademark of Autodesk, Inc. BimGo is not affiliated with Autodesk.';
+
 /**
  * The start screen, drawn on the canvas with the same immediate-mode UI as the HUD (port of
  * BimGo.App/Shell/HomeScreen.cs). Differences from the desktop: no QUIT (a page can't close itself), and live
@@ -126,6 +129,7 @@ export class HomeScreen {
 
     // Footer
     ui.textRight(f.small, width - pad, height - this.s(30), `BimGo Web ${this.version} · Ctrl+O open · drop a .bimgo here`, UiTheme.TEXT_FAINT, this.s(0.5));
+    ui.text(f.small, pad, height - this.s(30), TRADEMARK_LINE, UiTheme.TEXT_FAINT, this.s(0.3)); // sky round: bottom left
     ui.flush(width, height);
     return action;
   }
