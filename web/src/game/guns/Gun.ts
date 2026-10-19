@@ -56,6 +56,8 @@ export interface GunHost {
   beginCommentEdit(point: Vec3, elementId: number, level: string): void;
   editComment(record: CommentRecord): void;
   showInRevit(element: number, dynamicId: number): void;
+  /** Grids round B: a standing spot at the aimed grid node (or null). */
+  gridNodeTeleportTarget(): { feet: Vec3; distance: number } | null;
 }
 
 /**

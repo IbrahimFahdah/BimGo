@@ -6,7 +6,6 @@ import type { UiBatch } from '../../engine/ui/UiBatch';
 import { statusColour, UiTheme } from '../../engine/ui/UiTheme';
 import { SoundId } from '../../platform/audio';
 import { InputAction } from '../../core/scene/InputCatalog';
-import { keyOf } from '../../platform/Hotkeys';
 import type { InputState } from '../../platform/input';
 import { type AimInfo, Gun } from './Gun';
 import { GunIcons } from './GunIcons';
@@ -27,7 +26,6 @@ export class CommentGun extends Gun {
   private static readonly MAX_HOVER_DISTANCE = 60;
 
   private hoveredRecord: CommentRecord | null = null;
-  private clearConfirmUntil = 0;
   private clock = 0;
 
   get name(): string { return 'COMMENT'; }
@@ -70,20 +68,13 @@ export class CommentGun extends Gun {
     this.session.sound.play(SoundId.Remove);
   }
 
+  /**
+   * Round W-A: comments are issues (status, replies, BCF), so the clear key no longer deletes them all: it says where
+   * to manage them.
+   */
   clearMarkers(): void {
-    const comments = this.session.comments.comments;
-    if (comments.length === 0) { return; }
-
-    if (this.clock < this.clearConfirmUntil) {
-      const count = comments.length;
-      this.session.comments.clear();
-      this.session.toast(`Deleted ${count} comment${count === 1 ? '' : 's'}`);
-      this.session.sound.play(SoundId.Remove);
-      this.clearConfirmUntil = 0;
-    } else {
-      this.clearConfirmUntil = this.clock + 2.5;
-      this.session.toast(`Press ${keyOf(InputAction.ClearMarkers)} again to delete all ${comments.length} comments`);
-    }
+    if (this.session.comments.comments.length === 0) { return; }
+    this.session.toast('Comments are kept: delete or close them one at a time in Esc → COMMENTS');
   }
 
   private findHovered(): CommentRecord | null {

@@ -24,6 +24,7 @@ export const Vec3 = {
   length: (a: Vec3): number => Math.sqrt(a.x * a.x + a.y * a.y + a.z * a.z),
   lengthSquared: (a: Vec3): number => a.x * a.x + a.y * a.y + a.z * a.z,
   distance: (a: Vec3, b: Vec3): number => Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z),
+  distanceSquared: (a: Vec3, b: Vec3): number => (a.x - b.x) ** 2 + (a.y - b.y) ** 2 + (a.z - b.z) ** 2,
   normalize(a: Vec3): Vec3 {
     const l = Math.sqrt(a.x * a.x + a.y * a.y + a.z * a.z);
     return l > 0 ? vec3(a.x / l, a.y / l, a.z / l) : vec3(0, 0, 0);

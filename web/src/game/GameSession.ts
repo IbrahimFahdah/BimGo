@@ -67,6 +67,7 @@ import { Textures } from './Textures';
 import { Appearance } from './Appearance';
 import { ColourProfiles } from './ColourProfiles';
 import { Grass } from './Grass';
+import { Grids } from './Grids';
 import { Clashes, ClashViewMode } from './clashes/Clashes';
 import { TourPlayer } from './Tour';
 import { UnitFormat } from './UnitFormat';
@@ -234,6 +235,8 @@ export class GameSession implements GunHost, EditHost {
   readonly appearance: Appearance;
   /** Grass round: grass blades on the grass materials. */
   readonly grass: Grass;
+  /** Grids rounds A / B: grid lines, nodes and the GRIDS panel (Shift+G, C). */
+  readonly grids: Grids;
   aim: AimInfo = { hasHit: false, hit: null, origin: vec3(), direction: vec3(1, 0, 0) };
 
   // #endregion
@@ -398,6 +401,7 @@ export class GameSession implements GunHost, EditHost {
     this.profiles = new ColourProfiles(this);
     this.appearance = new Appearance(this);
     this.grass = new Grass(this);
+    this.grids = new Grids(this);
     Hotkeys.read(settings);
     PadInput.read(settings);
     UnitFormat.set(settings.displayUnits, settings.decimalFeet);
@@ -630,6 +634,7 @@ export class GameSession implements GunHost, EditHost {
 
     this.updateCamera(this.paused ? 1 : this.accumulator / GameSession.TICK, dt);
     this.updateAim();
+    this.grids.updateHover(); // grids round B: the hovered grid node (and the Measure gun's snap to it)
     this.updateGuns(dt);
     this.sun.update(dt);
     this.renderer.sky = this.sun.advanceSky(dt, this.clock); // sky round: cloud drift and the sky look (W-A: the stars)
@@ -733,6 +738,12 @@ export class GameSession implements GunHost, EditHost {
     if (this.sunPanel.open && !this.paused) {
       if (input.pressed(InputAction.Fullscreen)) { toggleFullscreen(); }
       this.sunPanel.updateKeys(input);
+      return;
+    }
+
+    // Grids round A: the grids panel (walking) has the cursor; the player stands still (clash mode keeps its own)
+    if (this.grids.hasKeys && !this.paused) {
+      this.grids.updateKeys(input);
       return;
     }
 
@@ -868,6 +879,11 @@ export class GameSession implements GunHost, EditHost {
       this.sunPanel.show();
       return;
     }
+    if (input.pressed(InputAction.GridsPanel)) {
+      this.grids.show();
+      return;
+    }
+    if (input.pressed(InputAction.GridsCycle)) { this.grids.cycle(); }
     if (input.pressed(InputAction.ColourProfile)) { this.profiles.toggle(); } // colour round A
     if (this.sun.enabled) { this.stepSunTimeKeys(input); }
     if (input.pressed(InputAction.Jump) && !this.player.flying) { this.player.queueJump(); }
@@ -1297,7 +1313,7 @@ export class GameSession implements GunHost, EditHost {
 
   /** True while a mode that frees the cursor is open (sun panel, study, section editor, photo mode). */
   get cursorModeOpen(): boolean {
-    return this.sunPanel.open || this.sunHours.open || this.section.open || this.photo.open || this.clashModeOn;
+    return this.sunPanel.open || this.sunHours.open || this.section.open || this.photo.open || this.clashModeOn || this.grids.panelOpen;
   }
 
   /** Closes the cursor modes other than the one opening (one panel at a time). */
@@ -1306,6 +1322,7 @@ export class GameSession implements GunHost, EditHost {
     if (except !== this.sunHours) { this.sunHours.close(); }
     if (except !== this.section) { this.section.close(); }
     if (except !== this.photo) { this.photo.close(); }
+    if (except !== this.grids) { this.grids.close(); } // grids round A: one panel at a time
   }
 
   /** The host element index for a UniqueId (preferred) or ElementId, or −1. */
@@ -1646,6 +1663,7 @@ export class GameSession implements GunHost, EditHost {
     if (saved.groundOffset !== null) { this.groundZ = this.groundDefault + saved.groundOffset; }
     this.section.restore(saved.section);
     this.profiles.restore(saved.appearance);
+    this.grids.restore(saved.grids);
     this.applyHiddenLists(saved);
     this.refreshMasks();
   }
@@ -1788,6 +1806,25 @@ export class GameSession implements GunHost, EditHost {
         : next === CoordinateReadout.Internal ? 'Coordinates: Revit internal' : 'Coordinates off';
     this.toast(message, 3);
   }
+
+  /**
+   * Internal coordinates (scene origin added) in the readout's system (off or unavailable: shared when known, else
+   * project, else internal), and the system used.
+   */
+  coordinatesOf(ix: number, iy: number, iz: number): [CoordinateReadout, [number, number, number]] {
+    let readout = this.settings.coordinateReadout;
+    if (readout === CoordinateReadout.Off || !this.isReadoutAvailable(readout)) {
+      readout = this.shared ? CoordinateReadout.Shared : this.projectBase ? CoordinateReadout.Project : CoordinateReadout.Internal;
+    }
+    if (readout === CoordinateReadout.Shared && this.shared) { return [readout, this.shared.apply(ix, iy, iz)]; }
+    if (readout === CoordinateReadout.Project && this.projectBase) {
+      return [readout, [ix - this.projectBase[0], iy - this.projectBase[1], iz - this.projectBase[2]]];
+    }
+    return [CoordinateReadout.Internal, [ix, iy, iz]];
+  }
+
+  /** Grids round B: the Teleport gun's target when it aims at a grid node (or null). */
+  gridNodeTeleportTarget(): { feet: Vec3; distance: number } | null { return this.grids.teleportTarget(); }
 
   private buildCoordinatePanel(f: FontAtlas, x: number, y: number): void {
     const readout = this.settings.coordinateReadout;
@@ -2091,6 +2128,7 @@ export class GameSession implements GunHost, EditHost {
     // Markers: depth-tested, then a faint x-ray copy so markers behind walls stay discoverable (none while the UI is
     // hidden or in photo mode: clean views)
     if (!this.uiHidden && !photo && !this.photo.open) {
+      this.grids.draw(); // grids round A: the lines under the markers
       this.overlay.begin(this.camera);
       this.guns.forEach((gun, i) => gun.drawWorld(this.overlay, i === this.activeGun));
       this.clashes.drawMarkers(this.overlay);
@@ -2211,6 +2249,8 @@ export class GameSession implements GunHost, EditHost {
     for (const bookmark of this.bookmarks.bookmarks) {
       if (this.levelIndexAt(bookmark.local.z) === levelIndex) { mapDot(bookmark.local, UiTheme.BOOKMARK, this.s(3)); }
     }
+
+    this.grids.drawMinimap(f, mapX, mapY, mapW, mapH, cx, cy, metresPerPixel); // grids round B: under the markers
 
     // View cone and player arrow (north up, screen Y down)
     const angle = -this.player.yaw;
@@ -2374,7 +2414,10 @@ export class GameSession implements GunHost, EditHost {
     if (this.clashModeOn) {
       this.buildStatusPanel(f);
       this.buildCoordinatePanel(f, this.s(20), this.s(20) + this.s(146) + this.s(10));
+      this.grids.drawLabels(f);
+      this.grids.drawHoverLabel(f);
       this.clashes.buildDock(f);
+      this.grids.buildPanel(f, this.window.input);
       this.buildProfileLegend(f, height, false);
       this.buildHelp(f, height);
       this.buildRoomBanner(f, width);
@@ -2389,7 +2432,9 @@ export class GameSession implements GunHost, EditHost {
     }
 
     // World-anchored labels
+    this.grids.drawLabels(f);
     if (!this.unarmed) { this.guns.forEach((gun, i) => gun.drawLabels(ui, i === this.activeGun)); }
+    this.grids.drawHoverLabel(f); // grids round B: the hovered node, over the other labels
 
     // Crosshair
     const cx = roundEven(width * 0.5), cy = roundEven(height * 0.5);
@@ -2413,7 +2458,7 @@ export class GameSession implements GunHost, EditHost {
     // Minimap and the gun's context panel beneath it
     if (this.showMap) { this.drawMinimapOverlay(mapX, mapY); }
     // (hidden while the sun panel is open: the two would overlap on smaller screens)
-    if (!this.sunPanel.open && !this.sunHours.open && !this.section.open && !this.unarmed) {
+    if (!this.sunPanel.open && !this.sunHours.open && !this.section.open && !this.grids.panelOpen && !this.unarmed) {
       const panelTop = this.showMap ? mapY + this.s(208) + this.s(12) : this.s(20);
       const panelWidth = this.s(260), panelX = width - this.s(20) - panelWidth;
       ui.panel(panelX, panelTop, panelWidth, this.s(active.panelHeight) + this.s(24), UiTheme.PANEL, UiTheme.PANEL_BORDER);
@@ -2422,6 +2467,7 @@ export class GameSession implements GunHost, EditHost {
 
     this.sunPanel.buildIcon(f, this.window.input);
     if (this.sunPanel.open) { this.sunPanel.build(f, this.window.input); }
+    this.grids.buildPanel(f, this.window.input); // grids round A
     if (this.sunHours.open) { this.sunHours.buildPanel(f, this.window.input); }
     this.section.buildPanel(f, this.window.input);
     this.sunHours.buildLegend(f, this.s(20), height - this.s(52) - this.s(78));
@@ -3181,7 +3227,7 @@ export class GameSession implements GunHost, EditHost {
   toVisibilitySettings(): VisibilitySettings {
     const settings: VisibilitySettings = {
       hiddenCategories: [], hiddenLinks: [], hiddenElements: [], groundOffset: cleanGroundOffset(this.groundZ - this.groundDefault),
-      section: this.section.current.isActive ? this.section.current.clone() : null, grids: null, appearance: this.profiles.forSave()
+      section: this.section.current.isActive ? this.section.current.clone() : null, grids: this.grids.forSave(), appearance: this.profiles.forSave()
     };
     for (const def of CATEGORIES) {
       if (this.scene.categoryLoaded[def.index] && !this.categoryVisible[def.index]) { settings.hiddenCategories.push(def.key); }

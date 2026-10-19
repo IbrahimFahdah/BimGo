@@ -491,7 +491,15 @@ export class Clashes {
       this.advanceFlight(dt);
       return;
     }
+    // Grids round A: the grids keys stay live in clash mode (Esc closes an open grids panel first)
+    if (input.pressed(InputAction.GridsPanel)) { session.grids.toggle(); }
+    if (input.pressed(InputAction.GridsCycle)) { session.grids.cycle(); }
     if (input.pressed(InputAction.ColourProfile)) { session.profiles.toggle(); } // colour round A: shows in the real model view
+    if (session.grids.panelOpen && !session.menu.overlays.isOpen && input.pressed(InputAction.Back)) {
+      session.grids.close();
+      return;
+    }
+    if (session.grids.clickNode(input)) { return; } // grids round B: a click on a node flies there
     // Esc closes an open dropdown first, then stops making comments
     if (input.pressed(InputAction.Back) && session.menu.closeOverlay()) { return; }
     if (input.pressed(InputAction.Back) && this.batch) {
@@ -574,6 +582,11 @@ export class Clashes {
     if (room < 0) { return null; }
     const r = session.scene.rooms[room];
     return !r.number.trim() || r.number === '—' ? r.name : `${r.number} · ${r.name}`;
+  }
+
+  /** Grids round B: flies (or jumps) to look from an eye point (a grid node clicked in clash mode). */
+  flyToPoint(eye: Vec3, yaw: number, pitch: number): void {
+    this.flyToView({ section: Aabb.empty(), eye, yaw, pitch }, !this.session.settings.clashInstantFly);
   }
 
   /** Flies (or jumps) the camera to a clash view. */

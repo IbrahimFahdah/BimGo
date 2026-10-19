@@ -42,6 +42,16 @@ export class TeleportGun extends Gun {
     this.valid = false;
     this.reason = null;
 
+    // Grids round B: an aimed grid node: stand at (or just beside) it on its level
+    const node = this.session.gridNodeTeleportTarget();
+    if (node) {
+      this.hasTarget = true;
+      this.distance = node.distance;
+      this.feet = node.feet;
+      this.valid = true;
+      return;
+    }
+
     const hit = aim.hit;
     if (!hit || hit.distance > TeleportGun.MAX_RANGE) {
       this.reason = hit ? 'Too far (80 m max)' : 'Aim at a surface';
