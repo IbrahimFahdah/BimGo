@@ -34,7 +34,7 @@ import { UiTheme } from '../engine/ui/UiTheme';
 import { SoundId, SoundSystem } from '../platform/audio';
 import { downloadBlob, safeFileName } from '../platform/files';
 import { IfcGuid } from '../core/format/IfcGuid';
-import { InputAction, InputCatalog } from '../core/scene/InputCatalog';
+import { InputAction, InputCatalog, Situations } from '../core/scene/InputCatalog';
 import type { KeyMap } from '../core/scene/KeyMap';
 import { PadCursorMode, PadInput } from '../platform/gamepad';
 import { Hotkeys, KeyHint, keyOf } from '../platform/Hotkeys';
@@ -97,53 +97,23 @@ export interface SessionPose {
 }
 
 /**
- * The F1 help rows with the keys currently bound (the descriptions are fixed; the keys come from the map; port of
- * GameSession.Render.HelpRows). The browser adds nothing of its own except the version line.
+ * The F1 sheet for a situation (polish round P-B; port of GameSession.Render.HelpRows): the situation's title, its rows
+ * from InputSituation.help with the keys bound now (a gamepad column while one is connected; rows with nothing bound
+ * are left out), then "Esc → CONTROLS" and the F1 row. Row 0 is the title; the last row always shows.
  */
-function helpRows(m: KeyMap, pad: boolean): [string, string][] {
-  const j = (separator: string, ...actions: InputAction[]) => m.describeJoined(separator, false, ...actions).toUpperCase();
-  const rows: [string, string][] = [
-    [m.describeJoined(' ', true, InputAction.MoveForward, InputAction.MoveLeft, InputAction.MoveBack, InputAction.MoveRight).toUpperCase(), 'Move'],
-    [j(' / ', InputAction.Jump, InputAction.Crouch), 'Jump / Crouch'],
-    [j(' ', InputAction.Run), 'Run'],
-    [j(' ', InputAction.Fly), 'Fly / walk (no-clip)'],
-    [j(' / ', InputAction.LevelUp, InputAction.LevelDown), 'Level up / down'],
-    [j(' · ', InputAction.GoHome, InputAction.SetHome), 'Go home · Set home here'],
-    [(m.describeRange(InputAction.Gun1, 9) + ' · ' + m.describeJoined(' · ', false, InputAction.PreviousGun, InputAction.NextGun)).toUpperCase(), 'Select gun (9 Place: family library)'],
-    [j(' / ', InputAction.GunModePrevious, InputAction.GunModeNext), 'Gun mode (Measure, Demolish)'],
-    [j(' ', InputAction.GunWheel), 'Gun wheel (hold, steer, let go)'],
-    [j(' ', InputAction.Unarmed), 'Unarmed: no gun, no gun panel or hints (again takes it out)'],
-    [m.label(InputAction.Gun2).toUpperCase() + ' AGAIN', 'Measure: distance / area / angle / clearance'],
-    [j(' ', InputAction.GizmoDrop), 'Gizmo / Clone / Place: drop onto the surface below'],
-    [j(' · ', InputAction.ScanHide, InputAction.ScanIsolate), 'Scan gun: hide target · isolate its category'],
-    [j(' ', InputAction.ClearMarkers), "Clear this gun's markers"],
-    [(m.label(InputAction.AddBookmark) + ' · ' + m.describeRange(InputAction.Bookmark1, 9)).toUpperCase(), 'Bookmark this view · Go to bookmark'],
-    ['ESC → BOOKMARKS', 'Play the bookmark tour (eye height: pause menu)'],
-    [j(' ', InputAction.Coordinates), 'Coordinate readout'],
-    [j(' ', InputAction.Lights), 'Artificial lights: off / glow / light'],
-    [j(' · ', InputAction.Shadows, InputAction.SunPanel), 'Shadows on/off · Sun panel'],
-    [j(' ', InputAction.SunStudy), 'Sun / daylight study (click surfaces, RMB-drag looks)'],
-    [j(' · ', InputAction.SectionBox, InputAction.SectionPlane, InputAction.SectionClear), 'Section box · cut at aimed surface · clear'],
-    [j(' ', InputAction.SunEarlier, InputAction.SunLater), `Sun time −/+ 5 min (${m.describeModifierVariant(InputAction.SunEarlier, InputAction.SunEarlierFine)}: 1 min)`],
-    [j(' · ', InputAction.Save, InputAction.Undo, InputAction.Redo), 'Save · Undo · Redo (files)'],
-    [j(' ', InputAction.FindRoom), 'Find a room and go there'],
-    [j(' ', InputAction.ClashMode), 'Clash mode: review clashes (Esc → CLASHES: tests and sets)'],
-    [j(' ', InputAction.Refresh) + ' · ' + j(' ', InputAction.ScanSelectInRevit) + ' (SCAN)', 'Live: refresh · Show in Revit'],
-    [j(' ', InputAction.Minimap) + ' · ESC', 'Minimap · Pause menu'],
-    [j(' ', InputAction.HideUi), `Hide the UI (Esc or ${m.label(InputAction.HideUi)} shows it)`],
-    [j(' ', InputAction.PhotoMode), 'Photo mode: hi-res stills and 360° panoramas'],
-    [j(' · ', InputAction.Fullscreen, InputAction.Screenshot), 'Fullscreen · Screenshot'],
-    ['ESC → CONTROLS', 'Every key, and changing them'],
-    [j(' ', InputAction.Help), 'Hide help · BimGo Web ' + __BIMGO_VERSION__]
-  ];
-  if (pad) {
-    // A gamepad is connected: two rows of its main buttons, before the last row
-    const p = (action: InputAction) => m.padLabel(action) || '—';
-    const stickOf = (label: string) => (label.startsWith('LS ') || label.startsWith('RS ') ? label.slice(0, 2) : label);
-    rows.splice(rows.length - 1, 0,
-      ['GAMEPAD', `${stickOf(p(InputAction.LookUp))} look · ${stickOf(p(InputAction.MoveForward))} move · ${p(InputAction.Jump)} jump · ${p(InputAction.Crouch)} crouch · ${p(InputAction.Fly)} fly · ${p(InputAction.Run)} sprint`],
-      ['', `${p(InputAction.GunPrimary)} / ${p(InputAction.GunSecondary)} gun · ${p(InputAction.GunWheel)} gun wheel · LB / RB + D-pad: views and tools · ${p(InputAction.Back)} menu`]);
+function helpRows(m: KeyMap, pad: boolean, name: string): [string, string, string][] {
+  const situation = InputCatalog.situation(name) ?? InputCatalog.situation(Situations.WALKING)!;
+  const rows: [string, string, string][] = [['', '', situation.name.toUpperCase()]];
+  for (const entry of situation.help) {
+    const keys = m.helpKeys(entry);
+    const padText = pad ? m.helpPad(entry) : '';
+    if (keys.length === 0 && padText.length === 0) { continue; } // nothing bound
+    rows.push([keys, padText, entry.label]);
   }
+  rows.push(['ESC → CONTROLS', pad && m.padLabel(InputAction.Back).length > 0 ? m.padLabel(InputAction.Back) + ' → CONTROLS' : '',
+    'Every key and gamepad button, and changing them']);
+  rows.push([m.label(InputAction.Help).toUpperCase(), pad ? m.padLabel(InputAction.Help) : '',
+    'Hide help · BimGo Web ' + __BIMGO_VERSION__ + ' · Revit® is a trademark of Autodesk, Inc.']);
   return rows;
 }
 
@@ -336,8 +306,10 @@ export class GameSession implements GunHost, EditHost {
   private readonly highlights: Highlight[] = [];
   private helpScale = -1;
   private helpKeyWidth = 0;
+  private helpPadWidth = 0;
   private helpActionWidth = 0;
-  private helpRowsCache: [string, string][] = [];
+  private helpRowsCache: [string, string, string][] = [];
+  private helpRowsSituation = '';
   private helpRowsVersion = Number.MIN_SAFE_INTEGER;
   private helpRowsPad = false;
   private gunKeysVersion = Number.MIN_SAFE_INTEGER;
@@ -2056,6 +2028,7 @@ export class GameSession implements GunHost, EditHost {
       this.buildHud(mapX, mapY);
       if (this.editor.active) { this.editor.build(); }
     }
+    this.ui.resetClip(); // polish round P-A1: a scroll region left open by an early return never outlives the frame
     this.ui.flush(width, height);
   }
 
@@ -2247,8 +2220,7 @@ export class GameSession implements GunHost, EditHost {
   /** The tour's HUD subset (UI on): status, coordinates, minimap and the room banner. */
   buildTourHud(mapX: number, mapY: number): void {
     const f = this.ui.atlas;
-    this.buildStatusPanel(f);
-    this.buildCoordinatePanel(f, this.s(20), this.s(20) + this.s(146) + this.s(10));
+    this.buildInfoColumn(f, this.window.height, false, false, false); // P-A2: the left column
     if (this.showMap) { this.drawMinimapOverlay(mapX, mapY); }
     this.buildRoomBanner(f, this.window.width);
   }
@@ -2265,8 +2237,7 @@ export class GameSession implements GunHost, EditHost {
       const f = this.ui.atlas;
       const mapX = w - this.s(20) - this.s(220), mapY = this.s(20);
       if (this.showMap) { this.drawMinimapPlan(mapX + this.s(8), mapY + this.s(30), this.s(204), this.s(170), w, h); }
-      this.buildStatusPanel(f);
-      this.buildCoordinatePanel(f, this.s(20), this.s(20) + this.s(146) + this.s(10));
+      this.buildInfoColumn(f, h, false, false, false); // P-A2: the left column
       if (this.showMap) { this.drawMinimapOverlay(mapX, mapY); }
       this.tour.buildBar(f, w, h);
       this.ui.flush(w, h);
@@ -2476,13 +2447,10 @@ export class GameSession implements GunHost, EditHost {
 
     // Round K-B: the path editor's HUD (dock, scrubber; no crosshair or guns)
     if (this.pathEditor.on) {
-      this.buildStatusPanel(f);
-      this.buildCoordinatePanel(f, this.s(20), this.s(20) + this.s(146) + this.s(10));
       this.grids.drawLabels(f);
       if (this.showMap && !this.shell.dockOverMap) { this.drawMinimapOverlay(mapX, mapY); }
       this.pathEditor.buildHud(f, width, height);
-      this.buildProfileLegend(f, height, false);
-      this.buildHelp(f, height);
+      this.buildInfoColumn(f, height, false, true, true);
       this.buildRoomBanner(f, width);
       this.buildToast(f, width);
       return;
@@ -2490,14 +2458,11 @@ export class GameSession implements GunHost, EditHost {
 
     // Clash mode (Round C-B): its own HUD (docked list, no crosshair or guns)
     if (this.clashModeOn) {
-      this.buildStatusPanel(f);
-      this.buildCoordinatePanel(f, this.s(20), this.s(20) + this.s(146) + this.s(10));
       this.grids.drawLabels(f);
       this.grids.drawHoverLabel(f);
       this.clashes.buildDock(f);
       this.grids.buildPanel(f, this.window.input);
-      this.buildProfileLegend(f, height, false);
-      this.buildHelp(f, height);
+      this.buildInfoColumn(f, height, false, true, true);
       this.buildRoomBanner(f, width);
       this.buildToast(f, width);
       return;
@@ -2530,15 +2495,12 @@ export class GameSession implements GunHost, EditHost {
       ui.textCentred(f.body, cx, cy + this.s(34), hint, UiTheme.TEXT);
     }
 
-    this.buildStatusPanel(f);
-    this.buildCoordinatePanel(f, this.s(20), this.s(20) + this.s(146) + this.s(10));
-
-    // Minimap and the gun's context panel beneath it
-    if (this.showMap) { this.drawMinimapOverlay(mapX, mapY); }
-    // (hidden while the sun panel is open: the two would overlap on smaller screens)
-    if (!this.sunPanel.open && !this.sunHours.open && !this.section.open && !this.grids.panelOpen && !this.unarmed) {
-      const panelTop = this.showMap ? mapY + this.s(208) + this.s(12) : this.s(20);
-      const panelWidth = this.s(260), panelX = width - this.s(20) - panelWidth;
+    // Polish round P-A2: the right-hand column (tools): the minimap (hidden while a dock sits over it on a short window),
+    // then the gun's context panel or the open dock beneath it
+    if (this.showMap && !this.shell.dockOverMap) { this.drawMinimapOverlay(mapX, mapY); }
+    if (!this.anyDockOpen && !this.unarmed) {
+      const panelTop = this.showMap ? mapY + this.s(UiTheme.MINIMAP_HEIGHT) + this.s(UiTheme.COLUMN_GAP) : this.s(UiTheme.COLUMN_MARGIN);
+      const panelWidth = this.s(260), panelX = width - this.s(UiTheme.COLUMN_MARGIN) - panelWidth;
       ui.panel(panelX, panelTop, panelWidth, this.s(active.panelHeight) + this.s(24), UiTheme.PANEL, UiTheme.PANEL_BORDER);
       active.drawPanel(ui, panelX + this.s(14), panelTop + this.s(12), panelWidth - this.s(28));
     }
@@ -2548,24 +2510,18 @@ export class GameSession implements GunHost, EditHost {
     this.grids.buildPanel(f, this.window.input); // grids round A
     if (this.sunHours.open) { this.sunHours.buildPanel(f, this.window.input); }
     this.section.buildPanel(f, this.window.input);
-    this.sunHours.buildLegend(f, this.s(20), height - this.s(52) - this.s(78));
-    this.buildProfileLegend(f, height, this.sunHours.hasLegend);
 
-    this.buildHelp(f, height);
+    // P-A2: the left-hand column (information): status, coordinates, the legends and the F1 sheet
+    this.buildInfoColumn(f, height, true, true, true);
     this.buildGunBar(f, width, height, active);
     this.buildRoomBanner(f, width);
     this.wheel.build(f, width, height);
     this.buildToast(f, width);
   }
 
-  /** Colour round A: the colour profile's legend in the left-hand column, between the status panels and the help / sun legend. */
-  private buildProfileLegend(f: FontAtlas, height: number, sunLegend: boolean): void {
-    const gap = this.s(10);
-    let top = this.s(20) + this.s(146) + gap;
-    if (this.settings.coordinateReadout !== CoordinateReadout.Off) { top += this.s(100) + gap; }
-    let bottom = height - this.s(52);
-    if (sunLegend) { bottom -= this.s(78) + this.s(12); }
-    this.profiles.buildLegend(f, top, bottom, this.showHelp);
+  /** True while one of the docks (sun, study, section box, grids) is open. */
+  private get anyDockOpen(): boolean {
+    return this.sunPanel.open || this.sunHours.open || this.section.open || this.grids.panelOpen;
   }
 
   private buildStatusPanel(f: FontAtlas): void {
@@ -2628,45 +2584,136 @@ export class GameSession implements GunHost, EditHost {
     }
   }
 
-  /** The F1 help rows for the current bindings (rebuilt when a binding changes or a gamepad comes or goes). */
-  private helpRows(): [string, string][] {
+  /**
+   * Polish round P-B: the situation the app is in (its name in InputCatalog.situations), for the generated F1 sheet.
+   * Follows update()'s order (what has the keys first): change the two together.
+   */
+  private currentSituation(): string {
+    const S = Situations;
+    if (this.tour.active) { return S.TOUR; }
+    if (this.video.active) { return S.VIDEO; }
+    if (this.paused) { return S.PAUSE; }
+    if (this.markup.open) { return S.MARKUP; }
+    if (this.sunHours.open) { return S.STUDY; }
+    if (this.photo.open) { return S.PHOTO; }
+    if (this.section.open) { return S.SECTION; }
+    if (this.sunPanel.open) { return S.SUN_PANEL; }
+    if (this.grids.panelOpen && !this.clashModeOn) { return S.GRIDS; }
+    if (this.pathEditor.on) { return S.PATH; } // Round K-B
+    if (this.clashModeOn) { return S.CLASHES; }
+    const gun = this.guns[this.activeGun];
+    if (gun.capturesInput) { return S.HOLDING; }
+    if (this.unarmed) { return S.WALKING; }
+    if (gun instanceof ScanGun) { return S.SCAN; }
+    if (gun instanceof MeasureGun) { return S.MEASURE; }
+    if (gun instanceof CommentGun) { return S.COMMENT; }
+    if (gun instanceof HammerGun) { return S.DEMOLISH; }
+    if (gun instanceof GizmoGun || gun instanceof CloneGun || gun instanceof PlaceGun) { return S.GIZMO; }
+    return S.WALKING;
+  }
+
+  /** The F1 rows for the current situation and bindings (rebuilt when a binding, the situation or the gamepad changes). */
+  private helpRows(): [string, string, string][] {
     const pad = PadInput.connected;
-    if (this.helpRowsVersion !== Hotkeys.version || this.helpRowsPad !== pad || this.helpRowsCache.length === 0) {
-      this.helpRowsCache = helpRows(Hotkeys.map, pad);
+    const name = this.currentSituation();
+    if (this.helpRowsVersion !== Hotkeys.version || this.helpRowsPad !== pad || this.helpRowsSituation !== name || this.helpRowsCache.length === 0) {
+      this.helpRowsCache = helpRows(Hotkeys.map, pad, name);
       this.helpRowsVersion = Hotkeys.version;
       this.helpRowsPad = pad;
+      this.helpRowsSituation = name;
       this.helpScale = -1; // re-measure the columns
     }
     return this.helpRowsCache;
   }
 
-  private buildHelp(f: FontAtlas, height: number): void {
+  /**
+   * Polish round P-A2: the left-hand column (information), stacked from the top: the status panel and the coordinates;
+   * from the bottom: the F1 note or sheet, then the sun legend; the colour legend fills what is left. While the F1
+   * sheet is open, or when the column runs out of room, the legends collapse to their title rows.
+   */
+  private buildInfoColumn(f: FontAtlas, height: number, sunLegend: boolean, profileLegend: boolean, help: boolean): void {
+    const x = this.s(UiTheme.COLUMN_MARGIN), gap = this.s(10);
+    this.buildStatusPanel(f);
+    let top = this.s(UiTheme.COLUMN_MARGIN) + this.s(UiTheme.STATUS_HEIGHT) + gap;
+    if (this.settings.coordinateReadout !== CoordinateReadout.Off) {
+      this.buildCoordinatePanel(f, x, top);
+      top += this.s(UiTheme.COORDS_HEIGHT) + gap;
+    }
+    if (!sunLegend && !profileLegend && !help) { return; }
+
+    let bottom = height - this.s(UiTheme.COLUMN_MARGIN);
+    if (help) { bottom = this.buildHelp(f, height, top) - gap; }
+    const collapse = help && this.showHelp;
+
+    if (sunLegend && this.sunHours.hasLegend) {
+      const full = this.s(78), small = this.s(UiTheme.LEGEND_COLLAPSED_HEIGHT);
+      const profileWanted = profileLegend && this.profiles.legendWanted;
+      const open = !collapse && bottom - top >= full + (profileWanted ? small + this.s(12) : 0);
+      const lh = open ? full : small;
+      if (bottom - lh >= top) {
+        this.sunHours.buildLegend(f, x, bottom - lh, !open);
+        bottom -= lh + this.s(12);
+      }
+    }
+    if (profileLegend) { this.profiles.buildLegend(f, top, bottom, collapse); }
+  }
+
+  /**
+   * Bottom-left controls hint (F1 toggles): a one-line note, or the sheet stacked up from the bottom no higher than
+   * minTop (P-A2: rows that don't fit are left out, the last "F1 hides" row stays). Returns the top of what was drawn.
+   */
+  private buildHelp(f: FontAtlas, height: number, minTop: number): number {
     const ui = this.ui;
     const x = this.s(20);
     if (!this.showHelp) {
       ui.text(f.small, x, height - this.s(30), HINT_HELP.text, UiTheme.TEXT_MUTED); // help is off by default: a small note
-      return;
+      return height - this.s(42);
     }
+    // Columns sized to the widest key, gamepad button and action (measured again when the UI scale or the rows change)
     const rows = this.helpRows();
     if (this.helpScale !== ui.scale) {
       this.helpScale = ui.scale;
-      this.helpKeyWidth = Math.max(...rows.map(([key]) => UiBatch.measure(f.mono, key)));
-      this.helpActionWidth = Math.max(...rows.map(([, action]) => UiBatch.measure(f.body, action)));
+      this.helpKeyWidth = this.helpPadWidth = this.helpActionWidth = 0;
+      rows.forEach(([key, pad, action], i) => {
+        if (i === 0) {
+          this.helpActionWidth = Math.max(this.helpActionWidth, UiBatch.measure(f.small, action, this.s(1.2)) - this.s(16)); // the title spans the columns
+          return;
+        }
+        this.helpKeyWidth = Math.max(this.helpKeyWidth, UiBatch.measure(f.mono, key));
+        this.helpPadWidth = Math.max(this.helpPadWidth, UiBatch.measure(f.mono, pad));
+        this.helpActionWidth = Math.max(this.helpActionWidth, UiBatch.measure(f.body, action));
+      });
     }
 
     const row = this.s(17);
-    const h = rows.length * row + this.s(20);
+    const fit = Math.max(0, Math.trunc((height - this.s(20) - minTop - this.s(20)) / row));
+    const shown = Math.min(rows.length, fit);
+    if (shown < 3) {
+      ui.text(f.small, x, height - this.s(30), HINT_HELP.text, UiTheme.TEXT_MUTED); // no room for the sheet
+      return height - this.s(42);
+    }
+    const h = shown * row + this.s(20);
     const y = height - this.s(20) - h;
     const keyWidth = this.helpKeyWidth + this.s(16);
-    ui.panel(x, y, this.s(12) + keyWidth + this.helpActionWidth + this.s(14), h, Rgba.hex(0x0c0e12, 0.66), Rgba.hex(0xffffff, 0.1));
+    const padWidth = this.helpPadWidth > 0 ? this.helpPadWidth + this.s(16) : 0;
+    ui.panel(x, y, this.s(12) + keyWidth + padWidth + this.helpActionWidth + this.s(14), h, Rgba.hex(0x0c0e12, 0.66), Rgba.hex(0xffffff, 0.1));
 
     let rowY = y + this.s(10);
-    rows.forEach(([key, action], i) => {
-      const last = i === rows.length - 1;
+    for (let n = 0; n < shown; n++) {
+      const i = n === shown - 1 ? rows.length - 1 : n; // the last row ("F1 hides") always shows
+      const [key, pad, action] = rows[i];
+      if (i === 0) {
+        ui.text(f.small, x + this.s(12), rowY + this.s(2), action, UiTheme.ACCENT, this.s(1.2)); // the situation
+        rowY += row;
+        continue;
+      }
+      const last = i >= rows.length - 2;
       ui.text(f.mono, x + this.s(12), rowY, key, last ? UiTheme.TEXT_MUTED : UiTheme.TEXT);
-      ui.text(f.body, x + this.s(12) + keyWidth, rowY - this.s(1), action, last ? UiTheme.TEXT_MUTED : UiTheme.TEXT_SOFT);
+      if (padWidth > 0 && pad.length > 0) { ui.text(f.mono, x + this.s(12) + keyWidth, rowY, pad, last ? UiTheme.TEXT_MUTED : UiTheme.GOOD); }
+      ui.text(f.body, x + this.s(12) + keyWidth + padWidth, rowY - this.s(1), action, last ? UiTheme.TEXT_MUTED : UiTheme.TEXT_SOFT);
       rowY += row;
-    });
+    }
+    return y;
   }
 
   /**

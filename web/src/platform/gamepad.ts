@@ -34,6 +34,8 @@ let last = 0;
 let dt = 0;
 let hatAxis = -1;
 let clickHeld = false;
+// Polish round P-B: A went down with a shoulder held (a chord): no click until it is released
+let clickChord = false;
 let scrollWait = 0;
 let loggedMissing = false;
 
@@ -190,13 +192,20 @@ export const PadInput = {
     }
     if (input.lastInputWasPad) { PadInput.cursorVisible = true; }
 
-    // A clicks (held: drags), B goes back
+    // A clicks (held: drags), B goes back. Polish round P-B: A pressed with LB / RB held is a chord (clash mode's RB+A
+    // group, LB+A next status), not a click: it waits for A to come up
     const click = Hotkeys.map.down(InputAction.PadClick, input);
-    if (click && !clickHeld) {
-      clickHeld = true;
-      input.injectLeft(true);
-      PadInput.cursorVisible = true;
-    } else if (!click) { releaseClick(input); }
+    if (click && !clickHeld && !clickChord) {
+      if (input.isDown(KeyCodes.PAD_LB) || input.isDown(KeyCodes.PAD_RB)) { clickChord = true; }
+      else {
+        clickHeld = true;
+        input.injectLeft(true);
+        PadInput.cursorVisible = true;
+      }
+    } else if (!click) {
+      clickChord = false;
+      releaseClick(input);
+    }
     if (Hotkeys.map.pressed(InputAction.PadMenuBack, input)) { input.injectEscape(); }
 
     // Menus: the move stick scrolls (a notch at a rate that grows with the tilt)
