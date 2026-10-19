@@ -663,7 +663,7 @@ BimGo Web (fork) has **no run-time packages**: the built site is the app's own c
 
 ## 11. BimGo Web
 
-The browser viewer lives in `web/` and deploys to GitHub Pages from the `web` branch (`.github/workflows/pages.yml`: lint, test, build, deploy). Phase notes and the plan: `ai/261007_Web/`. It follows upstream `develop` up to `afda33c` (grids, colour profiles, sky / water / grass, clash groups and reports, the panel shell and docks, the generated F1 sheet, camera paths and the 3D path editor, the night sky): `ai/261007_Web/11_build notes upstream afda33c.md` (earlier: `10_build notes upstream f19fbf2.md`, `9_build notes upstream 24c57c4.md`, `8_build notes upstream eaea8bc.md`, `7_build notes upstream 803c1ff.md`).
+The browser viewer lives in `web/` and deploys to GitHub Pages from the `web` branch (`.github/workflows/pages.yml`: lint, test, build, deploy). Phase notes and the plan: `ai/261007_Web/`. It follows upstream `develop` up to `71367cb` (grids, colour profiles, sky / water / grass, clash groups and reports, the panel shell and docks, the generated F1 sheet, camera paths and the 3D path editor, the night sky, rain and snow, lightning, lens drops and the rain sound): `ai/261007_Web/12_build notes upstream 71367cb.md` (earlier: `11_build notes upstream afda33c.md`, `10_build notes upstream f19fbf2.md`, `9_build notes upstream 24c57c4.md`, `8_build notes upstream eaea8bc.md`, `7_build notes upstream 803c1ff.md`).
 
 ```
 cd web
