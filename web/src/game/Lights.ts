@@ -50,7 +50,8 @@ export class Lights {
 
   /** Fills the light list for this frame. */
   update(a: ArtificialLighting, mode: LightMode, intensity: number, bloomIntensity: number, bloomFailed: boolean,
-    sun: SunLighting, camera: FpsCamera, groupVisible: boolean[], userHidden: boolean[], hidden: boolean[], dynamics: DynamicSet): void {
+    sun: SunLighting, camera: FpsCamera, groupVisible: boolean[], userHidden: boolean[], hidden: boolean[], dynamics: DynamicSet,
+    profileHides: (element: number) => boolean = () => false): void {
     a.clear();
     if (mode === LightMode.Off || !this.hasAny) { return; }
 
@@ -64,7 +65,7 @@ export class Lights {
 
     const scale = brightness * lerp(1, 0.35, day);
     if (scale <= 0) { return; }
-    this.pick(camera, groupVisible, userHidden, hidden, dynamics);
+    this.pick(camera, groupVisible, userHidden, hidden, dynamics, profileHides);
 
     // Fade the farthest picked lights when some were left out
     let fadeFrom = Number.MAX_VALUE, fadeTo = Number.MAX_VALUE;
@@ -86,7 +87,7 @@ export class Lights {
     a.count = this.pickCount;
   }
 
-  private pick(camera: FpsCamera, groupVisible: boolean[], userHidden: boolean[], hidden: boolean[], dynamics: DynamicSet): void {
+  private pick(camera: FpsCamera, groupVisible: boolean[], userHidden: boolean[], hidden: boolean[], dynamics: DynamicSet, profileHides: (element: number) => boolean): void {
     this.pickCount = 0;
     this.candidateCount = 0;
 
@@ -99,7 +100,7 @@ export class Lights {
     const lights = this.scene.lighting.lights, elements = this.scene.elements;
     for (let i = 0; i < lights.length; i++) {
       const e = lights[i].element;
-      if (userHidden[e] || !groupVisible[SceneBatches.groupOf(elements[e])]) { continue; }
+      if (userHidden[e] || profileHides(e) || !groupVisible[SceneBatches.groupOf(elements[e])]) { continue; }
       if (!hidden[e]) {
         this.consider(i, lights[i].position, camera.position, i);
         continue;

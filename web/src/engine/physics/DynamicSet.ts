@@ -95,8 +95,15 @@ export class DynamicSet {
   }
 
   isActive(instance: DynamicInstance): boolean {
-    return !instance.hidden && this.groupVisible[SceneBatches.groupOf(this.elements[instance.element])];
+    return !instance.hidden && this.groupVisible[SceneBatches.groupOf(this.elements[instance.element])]
+      && (this.sourceHidden === null || instance.element >= this.sourceHidden.length || !this.sourceHidden[instance.element]);
   }
+
+  /**
+   * Polish round P-C: per source element, true when its copies are hidden too (a colour profile's hidden rows): no
+   * drawing, shadows, picking or collision. Shared with the session (null: none).
+   */
+  sourceHidden: boolean[] | null = null;
 
   /**
    * The nearest hit on a moved / cloned element, within maxDistance.

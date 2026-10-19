@@ -107,7 +107,7 @@ export class Overlays {
   }
 
   private hover(input: InputState, x: number, y: number, w: number, h: number): boolean {
-    return input.mouseX >= x && input.mouseX < x + w && input.mouseY >= y && input.mouseY < y + h;
+    return input.mouseX >= x && input.mouseX < x + w && input.mouseY >= y && input.mouseY < y + h && this.session.ui.clipContains(input.mouseX, input.mouseY);
   }
 
   /** A dropdown's button: the current choice and a drawn chevron. True when clicked (open the list then). */

@@ -64,6 +64,9 @@ import { SunHoursMode } from './SunHoursMode';
 import { SunPanel } from './SunPanel';
 import { SunState } from './SunState';
 import { Textures } from './Textures';
+import { Appearance } from './Appearance';
+import { ColourProfiles } from './ColourProfiles';
+import { Grass } from './Grass';
 import { Clashes, ClashViewMode } from './clashes/Clashes';
 import { TourPlayer } from './Tour';
 import { UnitFormat } from './UnitFormat';
@@ -225,6 +228,12 @@ export class GameSession implements GunHost, EditHost {
   /** Polish round P-A1 / P-A2: the panel and dock shell (scroll regions, footers, the dock column). */
   readonly shell: PanelShell;
   readonly reflections: Reflections;
+  /** Colour rounds A / B: colour profiles (Shift+C). */
+  readonly profiles: ColourProfiles;
+  /** QOL / water / grass rounds: the Appearance tab (water look, grass). */
+  readonly appearance: Appearance;
+  /** Grass round: grass blades on the grass materials. */
+  readonly grass: Grass;
   aim: AimInfo = { hasHit: false, hit: null, origin: vec3(), direction: vec3(1, 0, 0) };
 
   // #endregion
@@ -386,6 +395,9 @@ export class GameSession implements GunHost, EditHost {
     this.markup = new MarkupEditor(this);
     this.wheel = new GunWheel(this);
     this.clashes = new Clashes(this);
+    this.profiles = new ColourProfiles(this);
+    this.appearance = new Appearance(this);
+    this.grass = new Grass(this);
     Hotkeys.read(settings);
     PadInput.read(settings);
     UnitFormat.set(settings.displayUnits, settings.decimalFeet);
@@ -468,6 +480,7 @@ export class GameSession implements GunHost, EditHost {
     this.lights = new Lights(this.scene);
     this.textures = new Textures(this);
     this.textures.applyRendererOptions();
+    this.appearance.applyWaterOverride(); // QOL round: the water rule for the material table
     void this.textures.load().then(() => {
       const missing = this.textures.missingCount;
       if (missing > 0 && this.settings.colour === ColourMode.Realistic && !this.renderer.materialWarning) {
@@ -559,7 +572,7 @@ export class GameSession implements GunHost, EditHost {
     this.updateGroupVisibility();
     const elements = this.scene.elements;
     for (let e = 0; e < elements.length; e++) {
-      const visible = this.groupVisible[SceneBatches.groupOf(elements[e])] && !this.userHidden[e] && !this.hidden[e];
+      const visible = this.groupVisible[SceneBatches.groupOf(elements[e])] && !this.userHidden[e] && !this.hidden[e] && !this.profiles.hides(e);
       this.pickMask[e] = visible;
       // Doors render as modelled but are always no-clip, so openings stay walkable
       this.collisionMask[e] = visible && elements[e].categoryIndex !== this.doorCategory;
@@ -620,6 +633,7 @@ export class GameSession implements GunHost, EditHost {
     this.updateGuns(dt);
     this.sun.update(dt);
     this.renderer.sky = this.sun.advanceSky(dt, this.clock); // sky round: cloud drift and the sky look (W-A: the stars)
+    this.appearance.advanceWater(dt); // water round W: the ripples' clock runs at the ripple speed
     this.sunHours.update();
     this.render();
     this.updateFps(dt);
@@ -854,6 +868,7 @@ export class GameSession implements GunHost, EditHost {
       this.sunPanel.show();
       return;
     }
+    if (input.pressed(InputAction.ColourProfile)) { this.profiles.toggle(); } // colour round A
     if (this.sun.enabled) { this.stepSunTimeKeys(input); }
     if (input.pressed(InputAction.Jump) && !this.player.flying) { this.player.queueJump(); }
 
@@ -1349,7 +1364,30 @@ export class GameSession implements GunHost, EditHost {
       const instance = this.dynamics.find(dynamicId);
       return instance !== null && this.dynamics.isActive(instance);
     }
-    return element >= 0 && !this.hidden[element] && !this.userHidden[element];
+    return element >= 0 && !this.hidden[element] && !this.userHidden[element] && !this.profiles.hides(element);
+  }
+
+  /** Bumps the scene revision (shadow, light and grass caches follow). */
+  bumpSceneRevision(): void { this.sceneRevision++; }
+
+  /** Changes whenever the walkthrough's visible scene changes (grass round P-C: the grass field follows). */
+  get sceneKey(): number { return this.shadowSceneKey; }
+
+  /** True while the active gun holds the movement keys (Gizmo / Clone / Place). */
+  get activeGunCapturesInput(): boolean { return this.guns[this.activeGun]?.capturesInput ?? false; }
+
+  /** Colour round B: an element's profile-hidden state changed (drawing, picking and collision follow). */
+  profileHiddenChanged(element: number): void {
+    const hide = this.profiles.hides(element);
+    this.renderer.setElementHidden(element, hide || this.hidden[element] || this.userHidden[element]);
+    const visible = !hide && !this.hidden[element] && !this.userHidden[element] && this.groupVisible[SceneBatches.groupOf(this.scene.elements[element])];
+    this.pickMask[element] = visible;
+    this.collisionMask[element] = visible && this.scene.elements[element].categoryIndex !== this.doorCategory;
+  }
+
+  /** P-C: per element, shown in the walkthrough now (category, link, hidden, demolished, moved, profile). */
+  grassVisibility(): boolean[] {
+    return this.scene.elements.map((record, e) => !this.hidden[e] && !this.userHidden[e] && !this.profiles.hides(e) && this.groupVisible[SceneBatches.groupOf(record)]);
   }
 
   // #endregion
@@ -1607,6 +1645,7 @@ export class GameSession implements GunHost, EditHost {
     // The ground plane as it was left (metres from its default)
     if (saved.groundOffset !== null) { this.groundZ = this.groundDefault + saved.groundOffset; }
     this.section.restore(saved.section);
+    this.profiles.restore(saved.appearance);
     this.applyHiddenLists(saved);
     this.refreshMasks();
   }
@@ -1679,8 +1718,8 @@ export class GameSession implements GunHost, EditHost {
     this.userHiddenCount += hidden ? 1 : -1;
     this.sceneRevision++;
     this.visibilityRevision++;
-    this.renderer.setElementHidden(element, hidden || this.hidden[element]);
-    const visible = !hidden && !this.hidden[element] && this.groupVisible[SceneBatches.groupOf(this.scene.elements[element])];
+    this.renderer.setElementHidden(element, hidden || this.hidden[element] || this.profiles.hides(element));
+    const visible = !hidden && !this.hidden[element] && !this.profiles.hides(element) && this.groupVisible[SceneBatches.groupOf(this.scene.elements[element])];
     this.pickMask[element] = visible;
     this.collisionMask[element] = visible && this.scene.elements[element].categoryIndex !== this.doorCategory;
   }
@@ -1876,7 +1915,15 @@ export class GameSession implements GunHost, EditHost {
 
     // Captures of the 3D view (no HUD)
     if (this.thumbnailFor || this.commentThumbnailFor) { this.captureThumbnail(width, height); }
-    if (this.screenshotRequested) { this.captureScreenshot(width, height); }
+    if (this.screenshotRequested) {
+      // Colour round B: the profile's legend in the screenshot when ticked
+      if (this.profiles.legendInShots) {
+        gl.viewport(0, 0, width, height);
+        this.profiles.queueLegendForShot(height);
+        this.ui.flush(width, height);
+      }
+      this.captureScreenshot(width, height);
+    }
     if (this.sunHours.shotRequested) {
       // The study's screenshot: the 3D view plus the legend (drawn and flushed first), no other UI
       this.sunHours.shotRequested = false;
@@ -1924,6 +1971,9 @@ export class GameSession implements GunHost, EditHost {
   renderScene(width: number, height: number, framebuffer: WebGLFramebuffer | null, photo: boolean): void {
     const renderer = this.renderer, settings = this.settings;
 
+    // ---- Colour round A: the active colour profile (evaluated again only when something changed)
+    this.profiles.update();
+
     // ---- Sun lighting and shadow maps (only changed cascades re-render). Clash pictures (C-B2) other than the real
     // model view draw without the sun, so they leave the cascades as the main view needs them
     renderer.lighting = this.sun.lighting();
@@ -1939,7 +1989,7 @@ export class GameSession implements GunHost, EditHost {
     // clash pictures keep the main view's picks)
     if (!clashShotUnlit) {
       this.lights.update(renderer.artificial, settings.lightMode, settings.lightIntensity, settings.bloomIntensity, this.bloomFailed,
-        renderer.lighting, this.camera, this.groupVisible, this.userHidden, this.hidden, this.dynamics);
+        renderer.lighting, this.camera, this.groupVisible, this.userHidden, this.hidden, this.dynamics, e => this.profiles.hides(e));
       const lightShadowError = renderer.updateLightShadows(this.groupVisible, this.shadowSceneKey);
       if (lightShadowError) { this.toast(lightShadowError, 6, true); }
     }
@@ -1971,6 +2021,7 @@ export class GameSession implements GunHost, EditHost {
     gl.disable(gl.BLEND);
 
     this.renderer.drawSky(this.camera);
+    this.grass.update(); // grass round: builds / uploads the grass field when needed
     const p = this.sceneParams();
     if (clashView) {
       // Clash view (Round C-B): the pair in red / green, the rest ghosted / wireframe / real / hidden (G)
@@ -1996,6 +2047,7 @@ export class GameSession implements GunHost, EditHost {
         this.section.capColour, extent);
     }
     this.renderer.drawGround(this.camera, this.groundZ);
+    this.grass.draw(p); // grass round: blades over the grass materials (Realistic)
 
     // Gun highlights (scan target…)
     const active = this.guns[this.activeGun];
@@ -2020,10 +2072,11 @@ export class GameSession implements GunHost, EditHost {
       gl.disable(gl.BLEND);
     }
 
-    // Transparent pass (glass etc.)
+    // Transparent pass (glass etc.), after the colour profile's ghosted elements (colour round A)
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
     gl.depthMask(false);
+    this.renderer.drawProfileGhosts(p, this.groupVisible);
     this.renderer.drawStatic(p, this.groupVisible, true);
     this.renderer.drawDynamic(p, this.dynamics, true);
     gl.depthMask(true);
@@ -2322,6 +2375,7 @@ export class GameSession implements GunHost, EditHost {
       this.buildStatusPanel(f);
       this.buildCoordinatePanel(f, this.s(20), this.s(20) + this.s(146) + this.s(10));
       this.clashes.buildDock(f);
+      this.buildProfileLegend(f, height, false);
       this.buildHelp(f, height);
       this.buildRoomBanner(f, width);
       this.buildToast(f, width);
@@ -2371,12 +2425,23 @@ export class GameSession implements GunHost, EditHost {
     if (this.sunHours.open) { this.sunHours.buildPanel(f, this.window.input); }
     this.section.buildPanel(f, this.window.input);
     this.sunHours.buildLegend(f, this.s(20), height - this.s(52) - this.s(78));
+    this.buildProfileLegend(f, height, this.sunHours.hasLegend);
 
     this.buildHelp(f, height);
     this.buildGunBar(f, width, height, active);
     this.buildRoomBanner(f, width);
     this.wheel.build(f, width, height);
     this.buildToast(f, width);
+  }
+
+  /** Colour round A: the colour profile's legend in the left-hand column, between the status panels and the help / sun legend. */
+  private buildProfileLegend(f: FontAtlas, height: number, sunLegend: boolean): void {
+    const gap = this.s(10);
+    let top = this.s(20) + this.s(146) + gap;
+    if (this.settings.coordinateReadout !== CoordinateReadout.Off) { top += this.s(100) + gap; }
+    let bottom = height - this.s(52);
+    if (sunLegend) { bottom -= this.s(78) + this.s(12); }
+    this.profiles.buildLegend(f, top, bottom, this.showHelp);
   }
 
   private buildStatusPanel(f: FontAtlas): void {
@@ -2592,9 +2657,9 @@ export class GameSession implements GunHost, EditHost {
     if (this.hidden[element] === hidden || this.scene.elements[element].isLibraryTemplate) { return; }
     this.hidden[element] = hidden;
     this.sceneRevision++;
-    this.renderer.setElementHidden(element, hidden || this.userHidden[element]);
+    this.renderer.setElementHidden(element, hidden || this.userHidden[element] || this.profiles.hides(element));
     const record = this.scene.elements[element];
-    const visible = this.groupVisible[SceneBatches.groupOf(record)] && !hidden && !this.userHidden[element];
+    const visible = this.groupVisible[SceneBatches.groupOf(record)] && !hidden && !this.userHidden[element] && !this.profiles.hides(element);
     this.pickMask[element] = visible;
     this.collisionMask[element] = visible && record.categoryIndex !== this.doorCategory;
   }
@@ -3116,7 +3181,7 @@ export class GameSession implements GunHost, EditHost {
   toVisibilitySettings(): VisibilitySettings {
     const settings: VisibilitySettings = {
       hiddenCategories: [], hiddenLinks: [], hiddenElements: [], groundOffset: cleanGroundOffset(this.groundZ - this.groundDefault),
-      section: this.section.current.isActive ? this.section.current.clone() : null, grids: null, appearance: null
+      section: this.section.current.isActive ? this.section.current.clone() : null, grids: null, appearance: this.profiles.forSave()
     };
     for (const def of CATEGORIES) {
       if (this.scene.categoryLoaded[def.index] && !this.categoryVisible[def.index]) { settings.hiddenCategories.push(def.key); }

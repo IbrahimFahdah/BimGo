@@ -95,19 +95,32 @@ export class Player {
    * @param upAction What flies up (clash mode uses its own keys so the gamepad's A still clicks).
    * @param downAction What flies down / crouches.
    */
-  fixedUpdate(dt: number, input: InputState, inputEnabled: boolean, upAction = InputAction.Jump, downAction = InputAction.Crouch): void {
+  /**
+   * @param moves Round K-B: the move and run actions (forward, back, left, right, run), or null for the walking ones (the
+   * path editor flies on its own: its ← / → pick keys).
+   */
+  fixedUpdate(dt: number, input: InputState, inputEnabled: boolean, upAction = InputAction.Jump, downAction = InputAction.Crouch,
+    moves: readonly InputAction[] | null = null): void {
     this.previousFeet = this.currentFeet;
 
     let forward = 0, strafe = 0;
     let run = false, up = false, down = false;
     if (inputEnabled) {
       // Keys read 0 or 1 (as before); a gamepad stick anything in between
-      forward = input.axis(InputAction.MoveForward) - input.axis(InputAction.MoveBack);
-      strafe = input.axis(InputAction.MoveRight) - input.axis(InputAction.MoveLeft);
-      run = input.down(InputAction.Run) || this.padSprint;
+      if (moves && moves.length >= 5) {
+        forward = input.axis(moves[0]) - input.axis(moves[1]);
+        strafe = input.axis(moves[3]) - input.axis(moves[2]);
+        run = input.down(moves[4]);
+      } else {
+        forward = input.axis(InputAction.MoveForward) - input.axis(InputAction.MoveBack);
+        strafe = input.axis(InputAction.MoveRight) - input.axis(InputAction.MoveLeft);
+        run = input.down(InputAction.Run) || this.padSprint;
+      }
       up = input.down(upAction);
       down = input.down(downAction);
     }
+    // P-C: a crouched bookmark's crouch ends with crouch, jump or flying
+    if (this.controller.holdCrouch && (up || down || this.jumpQueued || this.flying)) { this.controller.holdCrouch = false; }
 
     const cy = Math.cos(this.yaw), sy = Math.sin(this.yaw);
     const c = this.controller;

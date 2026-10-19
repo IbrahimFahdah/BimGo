@@ -20,6 +20,7 @@ import { BookmarkStore, shortDate } from './Stores';
 import { UnitFormat } from './UnitFormat';
 import { ColourMode } from './ViewerSettings';
 import { Hints } from './Hints';
+import { ScrollRegion } from './PanelShell';
 
 const COLOUR_OPTIONS = ['Whitecard', 'Material', 'Realistic'];
 const STATUS_FILTERS = ['All', 'Open', 'In progress', 'Closed'];
@@ -31,11 +32,10 @@ const REFLECTION_OPTIONS = ['Off', 'Some', 'All'];
 /** Reflection source: the sky, probes, or probes at 256 px. */
 const SOURCE_OPTIONS = ['Sky', 'Probes', 'Probes HQ'];
 /** Debug colours: off, reflection tiers, reflection probe cells. */
-const DEBUG_OPTIONS = ['Off', 'Reflection', 'Probes'];
 /** Display units (review tools round). */
 const UNIT_OPTIONS = ['Metric', 'Imperial'];
 /** The pause menu's settings tabs. */
-const RIGHT_TABS = ['DISPLAY', 'REFLECTIONS', 'DEBUG'];
+const RIGHT_TABS = ['DISPLAY', 'REFLECTIONS', 'APPEARANCE'];
 /** Height of the right column's card (unscaled): fits the Display tab, the tallest. */
 const RIGHT_CARD_HEIGHT = 440;
 /** Slider id of the reflection strength (unique across the menu's sliders). */
@@ -214,6 +214,7 @@ export class PauseMenu {
   private replyDeleteArmedUntil = 0;
   /** Open right-column tab: 0 display, 1 reflections, 2 debug (per session). */
   private rightTab = 0;
+  private readonly settingsScroll = new ScrollRegion();
   private bookmarksOpen = false;
   private bookmarkScroll = 0;
   private bookmarkDeleteArmed: BookmarkRecord | null = null;
@@ -262,6 +263,7 @@ export class PauseMenu {
     if (this.rooms.close()) { return true; }
     if (this.library.close()) { return true; }
     if (this.session.clashes.panel.close()) { return true; }
+    if (this.session.profiles.closePanel()) { return true; }
     if (this.commentsOpen && this.commentDetail) { this.commentDetail = null; return true; }
     if (this.commentsOpen) { this.commentsOpen = false; this.commentDeleteArmed = null; return true; }
     if (this.closeBookmarks()) { return true; }
@@ -281,6 +283,7 @@ export class PauseMenu {
     if (this.rooms.open) { this.rooms.build(); return; }
     if (this.library.open) { this.library.build(); return; }
     if (this.session.clashes.panel.isOpen) { this.session.clashes.panel.build(this.session.ui.atlas); return; }
+    if (this.session.profiles.panelOpen) { this.session.profiles.buildPanel(); return; } // colour round A
     if (this.geometryOpen) { this.buildGeometryPanel(); return; }
     if (this.controls.open) { this.controls.build(); return; }
 
@@ -565,25 +568,32 @@ export class PauseMenu {
   }
 
   /**
-   * The Display · Reflections · Debug tabs and the open tab's card. One fixed card height so the column doesn't jump
-   * between tabs.
+   * The Display · Reflections · Appearance tabs and the open tab's card. One fixed card height so the column doesn't
+   * jump between tabs (shorter, and scrolled, in a short window).
    */
   private buildSettingsTabs(f: FontAtlas, x: number, top: number, width: number): void {
-    const session = this.session, ui = session.ui, w = this.w;
+    const session = this.session, ui = session.ui, w = this.w, input = session.input;
     const tab = w.tabs(f, x, top, width, RIGHT_TABS, this.rightTab);
     if (tab !== this.rightTab) {
       this.rightTab = tab;
       w.activeSlider = -1;
+      this.settingsScroll.reset();
     }
 
     const cardTop = top + this.s(32);
-    ui.panel(x, cardTop, width, this.s(RIGHT_CARD_HEIGHT), UiTheme.CARD, UiTheme.CARD_BORDER);
-    const ix = x + this.s(14), iw = width - this.s(28), y = cardTop + this.s(14);
+    const cardH = Math.min(this.s(RIGHT_CARD_HEIGHT), Math.max(this.s(160), session.screenHeight - this.s(UiTheme.PANEL_MARGIN) - cardTop));
+    ui.panel(x, cardTop, width, cardH, UiTheme.CARD, UiTheme.CARD_BORDER);
+    const ix = x + this.s(14), iw = width - this.s(28);
+
+    // The tab's content scrolls when the card is shorter than it (the bar sits in the card's right padding)
+    const y = session.shell.beginScroll(this.settingsScroll, input, x + this.s(1), cardTop + this.s(1), width - this.s(2), cardH - this.s(2), w.activeSlider < 0) + this.s(13);
+    let bottom = y - this.s(13) + this.s(RIGHT_CARD_HEIGHT) - this.s(2);
     switch (this.rightTab) {
-      case 1: this.buildReflectionsTab(f, ix, y, iw); break;
-      case 2: this.buildDebugTab(f, ix, y, iw); break;
+      case 1: bottom = Math.max(bottom, this.buildReflectionsTab(f, ix, y, iw)); break;
+      case 2: bottom = Math.max(bottom, session.appearance.buildTab(f, w, input, ix, y, iw) + this.s(14)); break;
       default: this.buildDisplayTab(f, ix, y, iw); break;
     }
+    session.shell.endScroll(this.settingsScroll, input, bottom);
   }
 
   /** Display tab: ground plane, colour, FOV, sensitivity, toggles and the author name. */
@@ -642,7 +652,7 @@ export class PauseMenu {
   }
 
   /** Reflections tab: Off / Some / All, the source (sky or probes), strength, probe status and REFRESH. */
-  private buildReflectionsTab(f: FontAtlas, ix: number, y: number, iw: number): void {
+  private buildReflectionsTab(f: FontAtlas, ix: number, y: number, iw: number): number {
     const session = this.session, ui = session.ui, w = this.w;
     const settings = session.settings;
 
@@ -677,28 +687,10 @@ export class PauseMenu {
     if (w.smallButton(f, ix + iw - this.s(100), y, this.s(100), this.s(28), 'REFRESH')) { session.reflections.refresh(true); }
     y += this.s(54);
 
-    ui.textWrapped(f.body, ix, y, iw,
+    y += ui.textWrapped(f.body, ix, y, iw,
       'Realistic colour mode. Some = shiny surfaces (50 %+), All = satin too (25 %+); glass and water always reflect. Probes capture each room with a reflective surface; the sky is cheaper.',
-      UiTheme.TEXT_MUTED, 6);
-  }
-
-  /** Debug tab: colour surfaces by reflection tier or by reflection probe (not saved). */
-  private buildDebugTab(f: FontAtlas, ix: number, y: number, iw: number): void {
-    const session = this.session, ui = session.ui, w = this.w;
-    ui.text(f.body, ix, y, 'Debug colours', UiTheme.TEXT);
-    const debug = w.segmented(f, ix, y + this.s(22), iw, DEBUG_OPTIONS, session.reflections.debug);
-    if (debug !== session.reflections.debug) {
-      session.reflections.debug = debug;
-      if (debug !== 0 && (session.settings.colour !== ColourMode.Realistic || !session.renderer.hasMaterials)) {
-        session.toast('Debug colours need the Realistic colour mode and a file with materials.', 4);
-      }
-    }
-    y += this.s(66);
-
-    const help = session.reflections.debug === 1 ? 'Reflection: red 75 %+, orange 50 %, yellow 25 %, grey none, cyan glass, blue water.'
-      : session.reflections.debug === 2 ? 'Probes: one colour per reflection probe, blended at room edges; grey = sky. Probes bake as you look around.'
-        : 'Colours surfaces by reflection tier or by the probe they read. Needs the Realistic colour mode. Not saved.';
-    ui.textWrapped(f.body, ix, y, iw, help, UiTheme.TEXT_MUTED, 6);
+      UiTheme.TEXT_MUTED, 6) + this.s(14);
+    return y;
   }
 
   // #endregion

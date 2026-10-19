@@ -491,6 +491,7 @@ export class Clashes {
       this.advanceFlight(dt);
       return;
     }
+    if (input.pressed(InputAction.ColourProfile)) { session.profiles.toggle(); } // colour round A: shows in the real model view
     // Esc closes an open dropdown first, then stops making comments
     if (input.pressed(InputAction.Back) && session.menu.closeOverlay()) { return; }
     if (input.pressed(InputAction.Back) && this.batch) {

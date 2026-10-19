@@ -114,8 +114,20 @@ export class ClashPanel {
     }
     this.isOpen = false;
     this.clashes.listDirty = true;
+    if (session.profiles.returnFromClashes) {
+      // Colour round A: EDIT SETS… came from the colour profiles panel: back there
+      session.profiles.returnFromClashes = false;
+      session.profiles.openPanel();
+      return true;
+    }
     if (this.clashes.modeOn) { session.setPaused(false); }
     return true;
+  }
+
+  /** Colour round A: opens on the SETS tab (EDIT SETS… from the colour profiles panel). */
+  showSets(): void {
+    this.tab = 1;
+    this.scroll = this.ruleScroll = 0;
   }
 
   /** The pause menu button: "CLASHES", with the open count once clash detection is on. */
@@ -134,6 +146,7 @@ export class ClashPanel {
 
   private setupChanged(): void {
     this.clashes.changed();
+    this.session.profiles.setsChanged(); // colour round A: a by-set profile follows its sets
     this.rowsDirty = true;
     this.clashes.listDirty = true;
   }

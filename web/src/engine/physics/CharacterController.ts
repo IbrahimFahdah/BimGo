@@ -40,6 +40,8 @@ export class CharacterController {
   grounded = false;
   height = CharacterController.STAND_HEIGHT;
   crouching = false;
+  /** Polish round P-C: stay crouched without the crouch key (arriving at a crouched bookmark); crouch, jump or flying clear it. */
+  holdCrouch = false;
   /** Standing eye height for the current eye-height preset (m; setStandingEye). */
   standEye = CharacterController.STAND_EYE;
   /** Standing capsule height: the eye plus the same allowance over it as a standing adult. */
@@ -156,7 +158,7 @@ export class CharacterController {
   }
 
   private updateCrouch(crouch: boolean): void {
-    if (crouch) {
+    if (crouch || this.holdCrouch) {
       this.crouching = true;
       this.height = this.crouchHeight;
     } else if (this.crouching && !this.overlaps(this.feet, this.standHeight)) {

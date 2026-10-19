@@ -883,6 +883,9 @@ export class SunHoursMode {
     this.overlay.draw(camera, true, 1, false);
   }
 
+  /** True when the study has results to show in its legend. */
+  get hasLegend(): boolean { return this.study.hours !== null && this.legendTitle !== null; }
+
   /** The legend (bottom left, also in the study screenshot): the mode's colours with ticks, or the pass / fail swatches. */
   buildLegend(f: FontAtlas, x: number, y: number): void {
     if (!this.study.hours || !this.legendTitle) { return; }
