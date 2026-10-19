@@ -451,7 +451,7 @@ export class PauseMenu {
     const session = this.session, shell = session.shell, f = session.ui.atlas, input = session.input;
     const frame = shell.beginPanel(PanelSize.Standard, 'CATEGORIES & LINKS', UiTheme.ACCENT, 'Walkthrough only: Revit is never changed');
     const top = shell.beginScroll(this.geometryScroll, input, frame.ix, frame.bodyTop, frame.iw, frame.bodyBottom - frame.bodyTop);
-    const bottom = this.buildCategoryCards(f, frame.ix, top, frame.iw - this.s(12));
+    const bottom = this.buildCategoryCards(f, frame.ix, top, frame.iw - this.s(UiTheme.SCROLL_GUTTER));
     shell.endScroll(this.geometryScroll, input, bottom);
     shell.endPanel(frame, null, 'Click a category to show or hide it, or a group\'s heading for the whole group');
   }

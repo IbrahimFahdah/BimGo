@@ -22,6 +22,7 @@ import { MONTHS } from './SunState';
 import { UnitFormat } from './UnitFormat';
 import { type DaylightInputs, NO_ROOM_LIGHT, RayOutcome, type RoomLight, SunHoursFace, SunHoursStudy } from './SunHoursStudy';
 import { Hints } from './Hints';
+import { DOCK_BACK, DOCK_CLOSE, ScrollRegion } from './PanelShell';
 
 const GRID_OPTIONS = ['0.1', '0.25', '0.5', '1 m'];
 /** The same grid sizes in imperial (the grid itself stays metric). */
@@ -85,7 +86,8 @@ export class SunHoursMode {
   // Saved studies: the list view, its rows and the armed DELETE
   private studiesView = false;
   private studyList: SunStudyInfo[] = [];
-  private studyScroll = 0;
+  private readonly dockScroll = new ScrollRegion();
+  private exportAfterDraw = false; // P-A2: EXPORT CSV runs after the dock is drawn
   private deleteArmed: string | null = null;
   private deleteArmedUntil = 0;
 
@@ -683,7 +685,7 @@ export class SunHoursMode {
   /** SAVED STUDIES…: lists this model's studies. */
   private openStudies(): void {
     this.studiesView = true;
-    this.studyScroll = 0;
+    this.dockScroll.reset();
     this.deleteArmed = null;
     void this.refreshList();
   }
@@ -692,27 +694,28 @@ export class SunHoursMode {
     this.studyList = await SunStudyFiles.list(this.studyKey);
   }
 
-  /** The saved studies list (in place of the study controls): name and date, LOAD and DELETE (twice), BACK. */
-  private buildStudiesList(f: FontAtlas, x: number, y: number, w: number, bottom: number): void {
-    const session = this.session, ui = session.ui, input = session.input, wd = this.w;
-    ui.textWrapped(f.small, x, y, w, 'Saved in this browser for this model. LOAD shows the results again (the grid is laid again from the same surfaces).', UiTheme.TEXT_MUTED, 3);
-    y += this.s(48);
+  /**
+   * The saved studies list (in place of the study controls; the dock scrolls it, P-A2): name and date, LOAD and
+   * DELETE (twice). The dock's footer has ← BACK and the notice. Returns the list's bottom.
+   */
+  private buildStudiesList(f: FontAtlas, x: number, y: number, w: number): number {
+    const session = this.session, ui = session.ui, wd = this.w;
+    y += this.s(2) + ui.textWrapped(f.small, x, y, w, 'Saved in this browser for this model. LOAD shows the results again (the grid is laid again from the same surfaces).', UiTheme.TEXT_MUTED, 3);
+    y += this.s(10);
 
-    const listBottom = bottom - this.s(100), rowH = this.s(54);
-    const visible = Math.max(1, Math.trunc((listBottom - y) / rowH));
+    const rowH = this.s(54);
     if (this.studyList.length === 0) {
       ui.textWrapped(f.body, x, y, w, 'No saved studies yet: RUN a study, then SAVE STUDY…', UiTheme.TEXT_MUTED, 2);
-    } else {
-      const maxScroll = Math.max(0, this.studyList.length - visible);
-      if (input.wheel !== 0 && wd.hover(x, y, w, listBottom - y)) { this.studyScroll -= Math.sign(input.wheel); }
-      this.studyScroll = Math.min(Math.max(this.studyScroll, 0), maxScroll);
+      return y + this.s(44);
+    }
+    {
       if (this.deleteArmed !== null && session.clock > this.deleteArmedUntil) { this.deleteArmed = null; }
 
       let load: SunStudyInfo | null = null, remove: SunStudyInfo | null = null;
-      const last = Math.min(this.studyList.length, this.studyScroll + visible);
-      for (let i = this.studyScroll; i < last; i++) {
+      for (let i = 0; i < this.studyList.length; i++) {
         const info = this.studyList[i];
-        const ry = y + (i - this.studyScroll) * rowH;
+        const ry = y + i * rowH;
+        if (!this.dockScroll.inView(ry, rowH)) { continue; }
         ui.textWrapped(f.body, x, ry, w - this.s(150), info.name, UiTheme.TEXT, 1);
         ui.textWrapped(f.small, x, ry + this.s(22), w - this.s(150), shortDateTime(info.saved), UiTheme.TEXT_FAINT, 1);
         if (wd.smallButton(f, x + w - this.s(142), ry + this.s(4), this.s(66), this.s(30), 'LOAD')) { load = info; }
@@ -736,8 +739,7 @@ export class SunHoursMode {
       }
     }
 
-    if (this.notice) { ui.textWrapped(f.small, x, bottom - this.s(92), w, this.notice, UiTheme.MEASURE_TEXT, 2); }
-    if (wd.smallButton(f, x, bottom - this.s(44), w, this.s(30), 'BACK')) { this.studiesView = false; }
+    return y + this.studyList.length * rowH;
   }
 
   /**
@@ -887,12 +889,13 @@ export class SunHoursMode {
   get hasLegend(): boolean { return this.study.hours !== null && this.legendTitle !== null; }
 
   /** The legend (bottom left, also in the study screenshot): the mode's colours with ticks, or the pass / fail swatches. */
-  buildLegend(f: FontAtlas, x: number, y: number): void {
+  buildLegend(f: FontAtlas, x: number, y: number, collapsed = false): void {
     if (!this.study.hours || !this.legendTitle) { return; }
     const ui = this.session.ui;
-    const w = this.s(380), h = this.s(78);
+    const w = this.s(380), h = collapsed ? this.s(UiTheme.LEGEND_COLLAPSED_HEIGHT) : this.s(78); // P-A2: the title row only
     ui.panel(x, y, w, h, UiTheme.PANEL_STRONG, UiTheme.PANEL_BORDER);
-    ui.text(f.small, x + this.s(12), y + this.s(8), this.legendTitle, UiTheme.SUN, this.s(0.5));
+    ui.text(f.small, x + this.s(12), collapsed ? y + Math.round((h - f.small.lineHeight) * 0.5) : y + this.s(8), this.legendTitle, UiTheme.SUN, this.s(0.5));
+    if (collapsed) { return; }
 
     const barX = x + this.s(12), barY = y + this.s(30), barW = w - this.s(24), barH = this.s(14);
     if (passFail(this.settings) && this.passLabel && this.failLabel) {
@@ -924,25 +927,44 @@ export class SunHoursMode {
   }
 
   /**
-   * The study panel (right side): mode, the mode's settings, the pass / fail test, grid and offsets, surfaces, RUN /
-   * progress, results, exports and saved studies.
+   * The study dock (polish round P-A2: the right-hand dock column, wider; the shared header, scrolling body and
+   * footer): mode, the mode's settings, the pass / fail test, grid and offsets, surfaces, RUN / progress, results,
+   * exports and saved studies; the notice above the footer. SAVED STUDIES… shows the list in the body instead.
    */
   buildPanel(f: FontAtlas, input: InputState): void {
-    const session = this.session, ui = session.ui, w = this.w, study = this.study;
+    const session = this.session, shell = session.shell, w = this.w;
     if (!input.leftDown) { w.activeSlider = -1; }
-    const pw = this.s(380), x = session.screenWidth - this.s(20) - pw, y = this.s(20);
-    const ph = Math.min(session.screenHeight - this.s(40), this.s(820));
-    this.panelRect = [x, y, pw, ph];
-    ui.panel(x, y, pw, ph, UiTheme.PANEL_STRONG, UiTheme.SUN);
-    const ix = x + this.s(16), iw = pw - this.s(32);
-    let cy = y + this.s(14);
-    ui.text(f.small, ix, cy, 'SUN AND DAYLIGHT STUDY', UiTheme.SUN, this.s(1.4));
-    cy += this.s(28);
-    if (this.studiesView) {
-      this.buildStudiesList(f, ix, cy, iw, y + ph);
+    const list = this.studiesView;
+    const d = shell.beginDock(list ? 'SAVED STUDIES' : 'SUN AND DAYLIGHT STUDY', UiTheme.SUN, UiTheme.SUN, this.s(UiTheme.DOCK_WIDTH_WIDE), this.dockScroll,
+      this.notice !== null);
+    this.panelRect = [d.x, d.y, d.w, d.h];
+    // QOL round: hop to the sun settings (time, intensities, lights; it closes this panel)
+    if (shell.dockHeaderButton(d, 'SUN SETTINGS…', this.s(118))) {
+      session.sunPanel.show();
       return;
     }
+    let cy = shell.beginDockBody(d, this.dockScroll, input, w.activeSlider < 0);
+    cy = list ? this.buildStudiesList(f, d.ix, cy, d.iw) : this.buildBody(f, input, d.ix, cy, d.iw);
+    shell.endDockBody(this.dockScroll, input, cy);
 
+    const pressed = shell.endDock(d, this.notice, list ? null : Hints.studyFoot.text, list ? '← BACK' : null);
+    if (pressed === DOCK_BACK) {
+      this.studiesView = false;
+      this.dockScroll.reset();
+    } else if (pressed === DOCK_CLOSE) {
+      this.exportAfterDraw = false;
+      this.close();
+      return;
+    }
+    if (this.exportAfterDraw) {
+      this.exportAfterDraw = false;
+      this.exportCsv();
+    }
+  }
+
+  /** The study dock's settings and actions (from the body's first line). Returns the body's bottom. */
+  private buildBody(f: FontAtlas, input: InputState, ix: number, cy: number, iw: number): number {
+    const session = this.session, ui = session.ui, w = this.w, study = this.study;
     const shift = input.down(InputAction.FineAdjust);
     const locked = study.running;
     const s = this.settings;
@@ -1086,7 +1108,7 @@ export class SunHoursMode {
     if (this.summary) { cy += this.s(2) + ui.textWrapped(f.small, ix, cy, iw, this.summary, UiTheme.TEXT, 3) + this.s(6); }
     const results = study.finished && study.hours !== null;
     const third = (iw - this.s(16)) / 3;
-    if (w.smallButton(f, ix, cy, third, this.s(30), 'EXPORT CSV') && results) { this.exportCsv(); }
+    if (w.smallButton(f, ix, cy, third, this.s(30), 'EXPORT CSV') && results) { this.exportAfterDraw = true; }
     if (w.smallButton(f, ix + third + this.s(8), cy, third, this.s(30), 'SCREENSHOT') && results) { this.shotRequested = true; }
     if (w.smallButton(f, ix + (third + this.s(8)) * 2, cy, third, this.s(30), 'CLEAR') && study.hours) { this.clearResults(); }
     cy += this.s(38);
@@ -1095,10 +1117,8 @@ export class SunHoursMode {
       if (study.finished) { this.beginName(); } else { this.notice = 'Run the study first (only complete results can be saved)'; }
     }
     if (w.smallButton(f, ix + halfWidth + this.s(8), cy, halfWidth, this.s(30), 'SAVED STUDIES…') && !locked) { this.openStudies(); }
-    cy += this.s(40);
-
-    if (this.notice) { ui.textWrapped(f.small, ix, cy, iw, this.notice, UiTheme.MEASURE_TEXT, 2); }
-    if (w.smallButton(f, ix, y + ph - this.s(44), iw, this.s(30), Hints.studyClose.text)) { this.close(); }
+    cy += this.s(30);
+    return cy;
   }
 
   private timeRow(f: FontAtlas, x: number, y: number, label: string, start: boolean, step: number, locked: boolean): number {

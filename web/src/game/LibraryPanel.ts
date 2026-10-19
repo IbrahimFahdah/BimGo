@@ -9,6 +9,7 @@ import { SoundId } from '../platform/audio';
 import { Vk } from '../platform/input';
 import type { GameSession } from './GameSession';
 import type { Widgets } from './Menus';
+import { FOOTER_LEFT, PanelSize, ScrollRegion } from './PanelShell';
 
 /** Preview images started decoding per frame at most (keeps scrolling smooth on a big library). */
 const PREVIEW_DECODES_PER_FRAME = 6;
@@ -20,8 +21,8 @@ const SEARCH_MAX = 48;
  */
 export class LibraryPanel {
   open = false;
-  private scroll = 0;
-  private familyScroll = 0;
+  private readonly scroll = new ScrollRegion();
+  private readonly familyScroll = new ScrollRegion();
   private search = '';
   private category = -1;           // catalog index, -1 = all
   private family: string | null = null;
@@ -72,22 +73,13 @@ export class LibraryPanel {
 
   /** Draws and handles the library (in place of the pause menu). Typing goes into the search box. */
   build(): void {
-    const session = this.session, ui = session.ui, f = ui.atlas, w = this.w;
-    const width = session.screenWidth, height = session.screenHeight;
+    const session = this.session, ui = session.ui, f = ui.atlas, w = this.w, shell = session.shell;
     this.decodes = 0;
-    ui.rect(0, 0, width, height, UiTheme.MENU_BACKGROUND);
-
-    const pw = Math.min(this.s(1180), width - this.s(80)), ph = height - this.s(96);
-    const x = (width - pw) * 0.5, y = this.s(48);
-    ui.panel(x, y, pw, ph, UiTheme.CARD, UiTheme.CARD_BORDER);
-
     const library = session.scene.library;
-    const ix = x + this.s(24), iw = pw - this.s(48);
-    let cy = y + this.s(20);
-    ui.text(f.small, ix, cy, 'FAMILY LIBRARY', UiTheme.PLACE_LABEL, this.s(2));
-    ui.textRight(f.small, ix + iw, cy, `${library.entries.length.toLocaleString('en')} types · ${placeableCount(library).toLocaleString('en')} placeable · from Revit`,
-      UiTheme.TEXT_MUTED, this.s(0.6));
-    cy += this.s(32);
+    const frame = shell.beginPanel(PanelSize.Wide, 'FAMILY LIBRARY', UiTheme.PLACE_LABEL,
+      `${library.entries.length.toLocaleString('en')} types · ${placeableCount(library).toLocaleString('en')} placeable · from Revit`);
+    const ix = frame.ix, iw = frame.iw;
+    let cy = frame.bodyTop;
 
     // Search box (typing anywhere in the panel goes here)
     this.type();
@@ -103,7 +95,7 @@ export class LibraryPanel {
     const placeable = w.checkbox(f, ix + searchW + this.s(16), cy + this.s(9), this.s(200), 'Placeable only', this.placeableOnly);
     if (placeable !== this.placeableOnly) {
       this.placeableOnly = placeable;
-      this.scroll = 0;
+      this.scroll.reset();
       this.rowsDirty = true;
     }
     cy += boxH + this.s(14);
@@ -115,19 +107,14 @@ export class LibraryPanel {
     const chipH = this.s(28);
     this.categoryChip(f, chip, ix, iw, chipH, -1, 'ALL');
     for (const category of this.categories) { this.categoryChip(f, chip, ix, iw, chipH, category, CATEGORIES[category].label.toUpperCase()); }
-    cy = chip.y + chipH + this.s(16);
+    cy = chip.y + chipH + this.s(UiTheme.GAP);
 
-    // Footer: notice and CLOSE
-    const buttonsY = y + ph - this.s(24) - this.s(44);
-    if (this.notice) { ui.textWrapped(f.body, ix, buttonsY - this.s(28), iw, this.notice, UiTheme.MEASURE_TEXT, 1); }
-    ui.text(f.small, ix + this.s(176), buttonsY + this.s(14), 'Pick a card: it appears in front of you on the Place gun (9) · RMB commits · Esc discards', UiTheme.TEXT_MUTED);
-    if (w.menuButton(f, ix, buttonsY, this.s(160), 'CLOSE', false, false, true, this.s(44))) { this.close(); return; }
-
-    // Families on the left, cards on the right
+    // Families on the left, cards on the right (each its own scroll region)
     const listW = Math.min(this.s(240), iw * 0.24);
-    const bottom = buttonsY - this.s(40);
+    const bottom = frame.bodyBottom;
     this.buildFamilyList(f, ix, cy, listW, bottom);
     const picked = this.buildCards(f, ix + listW + this.s(20), cy, iw - listW - this.s(20), bottom);
+    if (shell.endPanel(frame, this.notice, 'Pick a card: it appears in front of you on the Place gun (9) · RMB commits · Esc discards') === FOOTER_LEFT) { return; }
     if (picked) {
       this.close();
       this.onPick?.(picked);
@@ -152,7 +139,8 @@ export class LibraryPanel {
       session.sound.play(SoundId.UiClick);
       this.category = on && category >= 0 ? -1 : category;
       this.family = null;
-      this.scroll = this.familyScroll = 0;
+      this.scroll.reset();
+      this.familyScroll.reset();
       this.rowsDirty = true;
     }
     pos.x += w + this.s(8);
@@ -163,16 +151,13 @@ export class LibraryPanel {
     const session = this.session, ui = session.ui, input = session.input;
     ui.panel(x, y, width, bottom - y, Rgba.hex(0xffffff, 0.02), UiTheme.CARD_BORDER);
     const rowH = this.s(28);
-    const visible = Math.max(1, Math.trunc((bottom - y - this.s(8)) / rowH));
     const total = this.families.length + 1;
-    const maxScroll = Math.max(0, total - visible);
-    if (input.wheel !== 0 && this.w.hover(x, y, width, bottom - y)) { this.familyScroll -= input.wheel * 3; }
-    this.familyScroll = Math.min(Math.max(this.familyScroll, 0), maxScroll);
-
-    const last = Math.min(total, this.familyScroll + visible);
-    for (let i = this.familyScroll; i < last; i++) {
+    const top = session.shell.beginScroll(this.familyScroll, input, x, y + this.s(4), width, bottom - y - this.s(8));
+    const [first, last] = this.familyScroll.visibleRows(rowH, total);
+    width = width - this.s(UiTheme.SCROLL_GUTTER) + this.s(4);
+    for (let i = first; i < last; i++) {
       const family = i === 0 ? null : this.families[i - 1];
-      const ry = y + this.s(4) + (i - this.familyScroll) * rowH;
+      const ry = top + i * rowH;
       const on = this.family === family;
       const hover = this.w.hover(x + this.s(4), ry, width - this.s(8), rowH - this.s(2));
       if (on || hover) { ui.rect(x + this.s(4), ry, width - this.s(8), rowH - this.s(2), on ? Rgba.withAlpha(UiTheme.PLACE, 0.25) : Rgba.hex(0xffffff, 0.06)); }
@@ -182,10 +167,11 @@ export class LibraryPanel {
         input.consumeClicks();
         session.sound.play(SoundId.UiClick);
         this.family = family;
-        this.scroll = 0;
+        this.scroll.reset();
         this.rowsDirty = true;
       }
     }
+    session.shell.endScroll(this.familyScroll, input, top + total * rowH);
   }
 
   /** The grid of cards (preview, type, family, status); wheel scrolls. Returns the entry clicked this frame. */
@@ -198,19 +184,17 @@ export class LibraryPanel {
     }
 
     const cardW = this.s(168), cardH = this.s(214), gap = this.s(12);
-    const columns = Math.max(1, Math.trunc((width + gap) / (cardW + gap)));
-    const rowsVisible = Math.max(1, Math.trunc((bottom - y + gap) / (cardH + gap)));
+    const top = session.shell.beginScroll(this.scroll, input, x, y, width, bottom - y);
+    const cw = width - this.s(UiTheme.SCROLL_GUTTER);
+    const columns = Math.max(1, Math.trunc((cw + gap) / (cardW + gap)));
     const rowCount = Math.ceil(this.rows.length / columns);
-    const maxScroll = Math.max(0, rowCount - rowsVisible);
-    if (input.wheel !== 0 && this.w.hover(x, y, width, bottom - y)) { this.scroll -= input.wheel; }
-    this.scroll = Math.min(Math.max(this.scroll, 0), maxScroll);
+    const [firstRow, lastRow] = this.scroll.visibleRows(cardH + gap, rowCount);
 
     let picked: LibraryEntry | null = null;
-    const first = this.scroll * columns, last = Math.min(this.rows.length, first + rowsVisible * columns);
+    const first = firstRow * columns, last = Math.min(this.rows.length, lastRow * columns);
     for (let i = first; i < last; i++) {
       const entry = entries[this.rows[i]];
-      const slot = i - first;
-      const cx = x + (slot % columns) * (cardW + gap), cy = y + Math.trunc(slot / columns) * (cardH + gap);
+      const cx = x + (i % columns) * (cardW + gap), cy = top + Math.trunc(i / columns) * (cardH + gap);
       const usable = entry.placeable && entry.element >= 0;
       const hovering = this.w.hover(cx, cy, cardW, cardH);
       const hover = usable && hovering;
@@ -238,9 +222,7 @@ export class LibraryPanel {
         this.notice = `${libraryLabel(entry)}: ${entry.reason ?? 'not placeable'}`;
       }
     }
-    if (maxScroll > 0) {
-      ui.textRight(f.small, x + width, bottom + this.s(6), `${first + 1}–${last} of ${this.rows.length} · wheel to scroll`, UiTheme.TEXT_FAINT);
-    }
+    session.shell.endScroll(this.scroll, input, top + rowCount * (cardH + gap));
     return picked;
   }
 
@@ -253,7 +235,7 @@ export class LibraryPanel {
       if (c >= ' ' && c !== '\u007f' && this.search.length < SEARCH_MAX) { this.search += c; }
     }
     if (this.search !== before) {
-      this.scroll = 0;
+      this.scroll.reset();
       this.rowsDirty = true;
     }
   }

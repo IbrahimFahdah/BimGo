@@ -1,7 +1,7 @@
 import { vec3 } from '../core/math/Vector';
 import { type RoomInfo, roomContains, roomDistanceToBoundary } from '../core/scene/SceneData';
 import { CharacterController } from '../engine/physics/CharacterController';
-import { Rgba } from '../engine/ui/Rgba';
+import { FOOTER_LEFT, PanelSize, ScrollRegion } from './PanelShell';
 import { UiTheme } from '../engine/ui/UiTheme';
 import { SoundId } from '../platform/audio';
 import { Vk } from '../platform/input';
@@ -27,7 +27,7 @@ const SEARCH_MAX = 40;
  */
 export class RoomFinder {
   open = false;
-  private scroll = 0;
+  private readonly scroll = new ScrollRegion();
   private search = '';
   private rows: RoomRow[] | null = null;
   private rowsUnits = -1;
@@ -48,7 +48,7 @@ export class RoomFinder {
     }
     if (!session.paused) { session.setPaused(true); }
     this.open = true;
-    this.scroll = 0;
+    this.scroll.reset();
     this.matchesDirty = true;
   }
 
@@ -109,23 +109,15 @@ export class RoomFinder {
 
   /** Draws and handles the room list (in place of the pause menu). Typing goes into the search box. */
   build(): void {
-    const session = this.session, ui = session.ui, f = ui.atlas, w = this.w;
-    const width = session.screenWidth, height = session.screenHeight;
-    ui.rect(0, 0, width, height, UiTheme.MENU_BACKGROUND);
-
-    const pw = Math.min(this.s(820), width - this.s(80)), ph = height - this.s(96);
-    const x = (width - pw) * 0.5, y = this.s(48);
-    ui.panel(x, y, pw, ph, UiTheme.CARD, UiTheme.CARD_BORDER);
-
-    const ix = x + this.s(24), iw = pw - this.s(48);
-    let cy = y + this.s(20);
-    ui.text(f.small, ix, cy, 'FIND ROOM', UiTheme.ACCENT, this.s(2));
-    ui.textRight(f.small, ix + iw, cy, `${session.scene.rooms.length.toLocaleString('en')} rooms · type a number, name or level`, UiTheme.TEXT_MUTED, this.s(0.6));
-    cy += this.s(32);
+    const session = this.session, ui = session.ui, f = ui.atlas, shell = session.shell;
+    const frame = shell.beginPanel(PanelSize.Standard, 'FIND ROOM', UiTheme.ACCENT,
+      `${session.scene.rooms.length.toLocaleString('en')} rooms · type a number, name or level`);
+    const ix = frame.ix, iw = frame.iw;
+    let cy = frame.bodyTop;
 
     // Search box (typing anywhere in the panel goes here; Enter goes to the first match)
     const enter = this.type();
-    const boxH = this.s(36);
+    const boxH = this.s(UiTheme.CONTROL_HEIGHT + 4);
     ui.panel(ix, cy, iw, boxH, UiTheme.CONTROL, UiTheme.CONTROL_BORDER);
     const ty = cy + boxH * 0.5 - f.body.lineHeight * 0.5;
     if (this.search.length === 0) {
@@ -134,15 +126,13 @@ export class RoomFinder {
       const used = ui.text(f.body, ix + this.s(10), ty, this.search, UiTheme.TEXT);
       if ((Math.trunc(session.clock * 2) & 1) === 0) { ui.rect(ix + this.s(11) + used, cy + this.s(8), this.s(2), boxH - this.s(16), UiTheme.TEXT_SOFT); }
     }
-    cy += boxH + this.s(16);
+    cy += boxH + this.s(UiTheme.GAP);
 
     this.refreshMatches();
-    const buttonsY = y + ph - this.s(24) - this.s(44);
-    let go = this.buildRows(ix, cy, iw, buttonsY - this.s(16));
+    let go = this.buildRows(ix, cy, iw, frame.bodyBottom);
     if (enter && this.matches.length > 0) { go = this.matches[0]; }
 
-    ui.text(f.small, ix + this.s(176), buttonsY + this.s(14), 'Click a room (or Enter for the first) to go there · Esc back', UiTheme.TEXT_MUTED);
-    if (w.menuButton(f, ix, buttonsY, this.s(160), 'CLOSE', false, false, true, this.s(44))) { this.close(); return; }
+    if (shell.endPanel(frame, null, 'Click a room (or Enter for the first) to go there · Esc back') === FOOTER_LEFT) { return; }
 
     if (!go) { return; }
     this.close();
@@ -163,32 +153,29 @@ export class RoomFinder {
       return null;
     }
 
-    const rowH = this.s(44);
-    const visible = Math.max(1, Math.trunc((bottom - y) / rowH));
-    const maxScroll = Math.max(0, this.matches.length - visible);
-    if (input.wheel !== 0) { this.scroll -= input.wheel * 3; }
-    this.scroll = Math.min(Math.max(this.scroll, 0), maxScroll);
+    // Polish round P-A1: a scroll region
+    const rowH = this.s(UiTheme.ROW_HEIGHT);
+    const top = session.shell.beginScroll(this.scroll, input, x, y, width, bottom - y);
+    const cw = width - this.s(UiTheme.SCROLL_GUTTER);
+    const [first, last] = this.scroll.visibleRows(rowH, this.matches.length);
 
     let picked: RoomRow | null = null;
     const current = session.currentRoom;
-    const last = Math.min(this.matches.length, this.scroll + visible);
-    for (let i = this.scroll; i < last; i++) {
+    for (let i = first; i < last; i++) {
       const row = this.matches[i];
-      const ry = y + (i - this.scroll) * rowH;
-      const hover = this.w.hover(x, ry, width, rowH - this.s(4));
+      const ry = top + i * rowH;
+      const hover = this.w.hover(x, ry, cw, rowH - this.s(4));
       const here = current !== null && session.scene.rooms[row.room] === current;
-      if (hover || (i & 1) === 0) { ui.rect(x, ry, width, rowH - this.s(4), hover ? Rgba.hex(0xffffff, 0.08) : Rgba.hex(0xffffff, 0.03)); }
-      ui.textWrapped(f.bold, x + this.s(12), ry + this.s(10), width * 0.55, row.title, here ? UiTheme.ACCENT : UiTheme.TEXT, 1);
-      ui.textRight(f.body, x + width - this.s(12), ry + this.s(11), row.detail, UiTheme.TEXT_MUTED);
+      if (hover || (i & 1) === 0) { ui.rect(x, ry, cw, rowH - this.s(4), hover ? UiTheme.HOVER : UiTheme.ROW_STRIPE); }
+      ui.textWrapped(f.bold, x + this.s(12), ry + this.s(10), cw * 0.55, row.title, here ? UiTheme.ACCENT : UiTheme.TEXT, 1);
+      ui.textRight(f.body, x + cw - this.s(12), ry + this.s(11), row.detail, UiTheme.TEXT_MUTED);
       if (hover && input.leftPressed) {
         input.consumeClicks();
         session.sound.play(SoundId.UiClick);
         picked = row;
       }
     }
-    if (maxScroll > 0) {
-      ui.textRight(f.small, x + width, bottom + this.s(2), `${this.scroll + 1}–${last} of ${this.matches.length} · wheel to scroll`, UiTheme.TEXT_FAINT);
-    }
+    session.shell.endScroll(this.scroll, input, top + this.matches.length * rowH);
     return picked;
   }
 
@@ -202,7 +189,7 @@ export class RoomFinder {
     }
     if (this.search !== before) {
       this.matchesDirty = true;
-      this.scroll = 0;
+      this.scroll.reset();
     }
     return input.isPressed(Vk.RETURN);
   }

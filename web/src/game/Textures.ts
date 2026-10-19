@@ -14,6 +14,7 @@ import { SoundId } from '../platform/audio';
 import type { InputState } from '../platform/input';
 import type { GameSession } from './GameSession';
 import { Widgets } from './Menus';
+import { PanelSize, ScrollRegion, ShellStyle } from './PanelShell';
 
 interface ScanRow {
   result: TextureSearchResult;
@@ -40,7 +41,8 @@ export class Textures {
   proxies: ProxyPack | null = null;
 
   private readonly w: Widgets;
-  private scroll = 0;
+  private readonly scroll = new ScrollRegion();
+  private readonly pickerScroll = new ScrollRegion();
   private filter = 0;                 // 0 missing, 1 proxy, 2 all
   private notice: string | null = null;
   private pickerFor = -1;
@@ -50,7 +52,7 @@ export class Textures {
   private scanStage = TextureMatchStage.Exact;
   private scanRemaining: string[] = [];
   private scanRows: ScanRow[] | null = null;
-  private scanScroll = 0;
+  private readonly scanScroll = new ScrollRegion();
   private scanAccepted = 0;
 
   constructor(private readonly session: GameSession) {
@@ -88,7 +90,7 @@ export class Textures {
 
   show(): void {
     this.open = true;
-    this.scroll = 0;
+    this.scroll.reset();
     this.pickerFor = -1;
     this.notice = null;
   }
@@ -106,21 +108,13 @@ export class Textures {
 
   build(): void {
     const session = this.session, ui = session.ui, f = ui.atlas, w = this.w, input = session.input;
-    const settings = session.settings;
-    const width = session.screenWidth, height = session.screenHeight;
-    ui.rect(0, 0, width, height, UiTheme.MENU_BACKGROUND);
-
-    const pw = Math.min(this.s(1080), width - this.s(80)), ph = height - this.s(96);
-    const x = (width - pw) * 0.5, y = this.s(48);
-    ui.panel(x, y, pw, ph, UiTheme.CARD, UiTheme.CARD_BORDER);
-
-    const ix = x + this.s(24), iw = pw - this.s(48);
-    let cy = y + this.s(20);
+    const settings = session.settings, shell = session.shell;
     const table = this.current.materials;
     const missing = table.filter(isMissing).length;
-    ui.text(f.small, ix, cy, 'TEXTURES · REALISTIC MODE', UiTheme.ACCENT, this.s(2));
-    ui.textRight(f.small, ix + iw, cy, `${table.length.toLocaleString('en')} materials · ${missing} missing an image · proxy pack: ${this.proxies?.count ?? 0} textures`, UiTheme.TEXT_MUTED, this.s(0.6));
-    cy += this.s(34);
+    const frame = shell.beginPanel(PanelSize.Standard, 'TEXTURES · REALISTIC MODE', UiTheme.ACCENT,
+      `${table.length.toLocaleString('en')} materials · ${missing} missing an image · proxy pack: ${this.proxies?.count ?? 0} textures`);
+    const ix = frame.ix, iw = frame.iw;
+    let cy = frame.bodyTop;
 
     // Display options for the Realistic mode
     const colW = Math.min(this.s(360), iw * 0.4);
@@ -137,12 +131,17 @@ export class Textures {
       this.applyRendererOptions();
       void this.load();
     }
-    cy += this.s(70);
+    cy += this.s(64);
 
-    const buttonsY = y + ph - this.s(24) - this.s(48);
+    // The folder search takes the body and the footer while it runs (← BACK stops it)
     if (this.scanRows) {
-      this.buildScanRows(f, input, ix, cy, iw, buttonsY - this.s(16));
-      this.buildScanButtons(f, ix, buttonsY);
+      this.buildScanRows(f, input, ix, cy, iw, frame.bodyBottom);
+      const canNext = this.scanStage < TextureMatchStage.Loose && this.scanRemaining.length > 0;
+      const next = shell.footerAction('ACCEPT TICKED, NEXT STAGE', canNext ? ShellStyle.Primary : ShellStyle.Normal, canNext && !this.busy);
+      const done = shell.footerAction('ACCEPT TICKED, DONE', canNext ? ShellStyle.Normal : ShellStyle.Primary, !this.busy);
+      const scanPressed = shell.endPanel(frame, this.notice, '← BACK stops the search (nothing more is applied)');
+      if (scanPressed === next) { void this.acceptScan().then(() => { this.scanStage++; this.runScanStage(); }); }
+      else if (scanPressed === done) { void this.acceptScan().then(() => this.endScan()); }
       return;
     }
 
@@ -151,18 +150,19 @@ export class Textures {
     const filter = w.segmented(f, ix, cy, Math.min(this.s(420), iw), [`Missing (${missing})`, `Proxy (${proxied})`, `All (${table.length})`], this.filter);
     if (filter !== this.filter) {
       this.filter = filter;
-      this.scroll = 0;
+      this.scroll.reset();
       this.pickerFor = -1;
     }
-    cy += this.s(46);
+    cy += this.s(UiTheme.CONTROL_HEIGHT + UiTheme.GAP);
 
-    if (this.pickerFor >= 0) { this.buildProxyPicker(f, ix, cy, iw, buttonsY - this.s(16)); }
-    else { this.buildRows(f, input, ix, cy, iw, buttonsY - this.s(16)); }
+    const picking = this.pickerFor >= 0;
+    if (picking) { this.buildProxyPicker(f, input, ix, cy, iw, frame.bodyBottom); }
+    else { this.buildRows(f, input, ix, cy, iw, frame.bodyBottom); }
 
-    if (this.notice) { ui.textWrapped(f.body, ix, buttonsY - this.s(30), iw, this.notice, UiTheme.MEASURE_TEXT, 1); }
-    if (w.menuButton(f, ix, buttonsY, this.s(260), 'FIND IN FOLDER…', false, false, !this.busy)) { void this.startScan(); }
-    if (w.menuButton(f, ix + this.s(276), buttonsY, this.s(160), 'CLOSE', false, false)) { this.open = false; }
-    ui.textRight(f.small, ix + iw, buttonsY + this.s(18), 'Picked images are embedded in the file when you save', UiTheme.TEXT_FAINT, this.s(0.4));
+    const find = picking ? -1 : shell.footerAction('FIND IN FOLDER…', ShellStyle.Normal, !this.busy);
+    const hint = picking ? 'Pick a proxy keyword · ← BACK leaves the material as it is' : 'Picked images are embedded in the file when you save';
+    const pressed = shell.endPanel(frame, this.notice, hint);
+    if (find >= 0 && pressed === find) { void this.startScan(); }
   }
 
   private rows(): number[] {
@@ -177,24 +177,26 @@ export class Textures {
     const rows = this.rows();
     const table = this.current.materials;
     const rowH = this.s(52);
-    const visible = Math.max(1, Math.trunc((bottom - y) / rowH));
     if (rows.length === 0) {
       ui.textWrapped(f.body, x, y + this.s(8), width, this.filter === 0 ? 'No material is missing its image.'
         : this.filter === 1 ? 'No material is drawn with a proxy.' : 'No materials.', UiTheme.TEXT_MUTED, 2);
       return;
     }
 
-    const maxScroll = Math.max(0, rows.length - visible);
-    if (input.wheel !== 0) { this.scroll -= input.wheel * 2; }
-    this.scroll = Math.min(Math.max(this.scroll, 0), maxScroll);
+    // Polish round P-A1: a clipped scroll region (rows drawn from 4 px inside, so the stripe fits)
+    const shell = this.session.shell;
+    const top = shell.beginScroll(this.scroll, input, x, y, width, bottom - y);
+    const [first, last] = this.scroll.visibleRows(rowH, rows.length);
+    const cw = width - this.s(UiTheme.SCROLL_GUTTER), listX = x;
+    x += this.s(8);
+    width = cw - this.s(16);
 
     let pick = -1, proxy = -1, plain = -1, undo = -1;
     const wide = this.s(84), gap = this.s(6), buttonsW = wide * 4 + gap * 3;
-    const last = Math.min(rows.length, this.scroll + visible);
-    for (let r = this.scroll; r < last; r++) {
+    for (let r = first; r < last; r++) {
       const index = rows[r], m = table[index];
-      const ry = y + (r - this.scroll) * rowH;
-      if (((r - this.scroll) & 1) === 0) { ui.rect(x - this.s(8), ry - this.s(4), width + this.s(16), rowH - this.s(4), Rgba.hex(0xffffff, 0.03)); }
+      const ry = top + r * rowH + this.s(4);
+      if ((r & 1) === 0) { ui.rect(listX, ry - this.s(4), cw, rowH - this.s(4), UiTheme.ROW_STRIPE); }
 
       // Swatch in the colour drawn under (or instead of) the image
       const sw = this.s(36);
@@ -217,13 +219,11 @@ export class Textures {
       bx += wide + gap;
       if (this.changed.has(index) && w.smallButton(f, bx, by, wide, bh, 'UNDO')) { undo = index; }
     }
-    if (maxScroll > 0) {
-      ui.textRight(f.small, x + width, bottom + this.s(2), `${this.scroll + 1}–${last} of ${rows.length} · wheel to scroll`, UiTheme.TEXT_FAINT);
-    }
+    shell.endScroll(this.scroll, input, top + rows.length * rowH);
 
     // Act after drawing (the rows must not change while they are being walked)
     if (pick >= 0) { void this.pickImage(pick); }
-    else if (proxy >= 0) { this.pickerFor = proxy; }
+    else if (proxy >= 0) { this.pickerFor = proxy; this.pickerScroll.reset(); }
     else if (plain >= 0) { this.applyChoice([plain], null); }
     else if (undo >= 0) { this.undo(undo); }
   }
@@ -244,21 +244,26 @@ export class Textures {
       yours ? UiTheme.ACCENT : UiTheme.TEXT_SOFT];
   }
 
-  private buildProxyPicker(f: FontAtlas, x: number, y: number, width: number, bottom: number): void {
-    const ui = this.session.ui, w = this.w;
+  private buildProxyPicker(f: FontAtlas, input: InputState, x: number, y: number, width: number, bottom: number): void {
+    const ui = this.session.ui, w = this.w, shell = this.session.shell;
     const m = this.current.materials[this.pickerFor];
     const suggested = ProxyCatalog.suggest(m.name, m.schema);
     ui.textWrapped(f.bold, x, y, width, `Proxy for “${m.name}”${suggested ? ` · suggested: ${ProxyCatalog.find(suggested)?.label ?? suggested}` : ''}`, UiTheme.TEXT, 1);
 
-    const columns = 4, gap = this.s(8), bw = (width - gap * (columns - 1)) / columns, bh = this.s(34);
+    // The keyword grid (a scroll region; ← BACK / Esc cancel)
+    const gy0 = y + this.s(34);
+    const gy = shell.beginScroll(this.pickerScroll, input, x, gy0, width, bottom - gy0);
+    const cw = width - this.s(UiTheme.SCROLL_GUTTER);
+    const columns = 4, gap = this.s(8), bw = (cw - gap * (columns - 1)) / columns, bh = this.s(34);
     let chosen: string | null = null;
+    const count = ProxyCatalog.ALL.length;
     ProxyCatalog.ALL.forEach((k, i) => {
-      const bx = x + (i % columns) * (bw + gap), by = y + this.s(34) + Math.trunc(i / columns) * (bh + gap);
-      if (by + bh > bottom) { return; }
+      const bx = x + (i % columns) * (bw + gap), by = gy + Math.trunc(i / columns) * (bh + gap);
+      if (!this.pickerScroll.inView(by, bh)) { return; }
       const label = ((k.keyword === suggested ? '» ' : '') + k.label + (this.proxies?.has(k.keyword) ? '' : ' (no image)')).toUpperCase();
       if (w.smallButton(f, bx, by, bw, bh, label)) { chosen = k.keyword; }
     });
-    if (w.menuButton(f, x, bottom - this.s(48), this.s(160), 'CANCEL', false, false)) { this.pickerFor = -1; return; }
+    shell.endScroll(this.pickerScroll, input, gy + Math.ceil(count / columns) * (bh + gap));
     if (chosen !== null) {
       const index = this.pickerFor;
       this.pickerFor = -1;
@@ -412,7 +417,7 @@ export class Textures {
         : r.stage === TextureMatchStage.Extension ? (r.isAmbiguous ? `EXT ×${r.candidates.length}` : 'EXTENSION') : 'LOOSE'
     }));
     this.scanRemaining = results.filter(r => r.stage === TextureMatchStage.None).map(r => r.raw);
-    this.scanScroll = 0;
+    this.scanScroll.reset();
   }
 
   private buildScanRows(f: FontAtlas, input: InputState, x: number, y: number, width: number, bottom: number): void {
@@ -428,18 +433,16 @@ export class Textures {
     y += this.s(76);
 
     const rowH = this.s(30);
-    const visible = Math.max(1, Math.trunc((bottom - y) / rowH));
     if (rows.length === 0) {
       ui.textWrapped(f.body, x, y, width, 'Nothing found at this stage.', UiTheme.TEXT_MUTED, 1);
       return;
     }
-    const maxScroll = Math.max(0, rows.length - visible);
-    if (input.wheel !== 0) { this.scanScroll -= input.wheel * 2; }
-    this.scanScroll = Math.min(Math.max(this.scanScroll, 0), maxScroll);
-
-    const last = Math.min(rows.length, this.scanScroll + visible);
-    for (let i = this.scanScroll; i < last; i++) {
-      const row = rows[i], ry = y + (i - this.scanScroll) * rowH;
+    const shell = this.session.shell;
+    const top = shell.beginScroll(this.scanScroll, input, x, y, width, bottom - y);
+    const [first, last] = this.scanScroll.visibleRows(rowH, rows.length);
+    width -= this.s(UiTheme.SCROLL_GUTTER);
+    for (let i = first; i < last; i++) {
+      const row = rows[i], ry = top + i * rowH;
       const nameW = width * 0.28, stageW = this.s(110), countW = this.s(90);
       row.accepted = w.checkbox(f, x, ry + this.s(4), nameW, row.name, row.accepted);
       ui.text(f.small, x + nameW + this.s(8), ry + this.s(6), row.stage, row.result.stage === TextureMatchStage.Loose ? UiTheme.MEASURE_TEXT : UiTheme.GOOD, this.s(0.6));
@@ -455,23 +458,7 @@ export class Textures {
       }
       ui.textRight(f.small, x + width, ry + this.s(6), `${row.materials} ${row.materials === 1 ? 'material' : 'materials'}`, UiTheme.TEXT_FAINT);
     }
-    if (maxScroll > 0) {
-      ui.textRight(f.small, x + width, bottom + this.s(2), `${this.scanScroll + 1}–${last} of ${rows.length} · wheel to scroll`, UiTheme.TEXT_FAINT);
-    }
-  }
-
-  private buildScanButtons(f: FontAtlas, x: number, y: number): void {
-    const w = this.w;
-    const canNext = this.scanStage < TextureMatchStage.Loose && this.scanRemaining.length > 0;
-    if (w.menuButton(f, x, y, this.s(280), 'ACCEPT TICKED, NEXT STAGE', canNext, false, canNext && !this.busy)) {
-      void this.acceptScan().then(() => { this.scanStage++; this.runScanStage(); });
-      return;
-    }
-    if (w.menuButton(f, x + this.s(296), y, this.s(240), 'ACCEPT TICKED, DONE', !canNext, false, !this.busy)) {
-      void this.acceptScan().then(() => this.endScan());
-      return;
-    }
-    if (w.menuButton(f, x + this.s(552), y, this.s(130), 'STOP', false, false)) { this.endScan(); }
+    shell.endScroll(this.scanScroll, input, top + rows.length * rowH);
   }
 
   private async acceptScan(): Promise<void> {

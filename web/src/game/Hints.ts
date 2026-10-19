@@ -20,7 +20,6 @@ export const Hints = {
   photoTake: new KeyHint(() => `TAKE PHOTO (${keyUpper(InputAction.PhotoTake)})`),
   photoClose: new KeyHint(() => `CLOSE (${keyUpper(InputAction.PhotoMode)} / ESC)`),
 
-  studyClose: new KeyHint(() => `CLOSE (${keyUpper(InputAction.SunStudy)} / ESC) · results stay`),
 
   sectionDrag: new KeyHint(() => `Drag a handle along its arrow (${keyOf(InputAction.SectionFreeDrag)}: no snap) · RMB-drag to look`),
   sectionClear: new KeyHint(() => `CLEAR ALL CUTS (${keyOf(InputAction.SectionClear)})`),
