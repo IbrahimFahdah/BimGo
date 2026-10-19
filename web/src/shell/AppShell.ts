@@ -1,5 +1,6 @@
 import { type BimGoDocument, BimGoReadError, BimGoReader } from '../core/format/BimGoReader';
 import { readBookmarkDocument, readCommentDocument, readSunSettings, readVisibility } from '../core/format/DocumentModels';
+import { readPathsDocument } from '../core/format/CameraPathModels';
 import { LiveClient, LiveConnectError } from '../core/live/LiveClient';
 import { type LaunchInfo, MessageTypes, readHelloAck, readLaunch } from '../core/live/LiveProtocol';
 import { LiveSessionSource } from '../core/sources/LiveSessionSource';
@@ -330,13 +331,14 @@ function drawPadCursor(ui: UiBatch, x: number, y: number, width: number, height:
   ui.flush(width, height);
 }
 
-/** The sidecars kept beside the Revit model replace the snapshot's empty ones (comments, bookmarks, sun, visibility, clashes). */
+/** The sidecars kept beside the Revit model replace the snapshot's empty ones (comments, bookmarks, sun, visibility, clashes, paths). */
 async function loadSidecars(source: LiveSessionSource, document: BimGoDocument): Promise<void> {
   if (!source.hello.sidecars) { return; }
-  const [comments, bookmarks, sun, visibility, clashes] = await Promise.all([
+  const [comments, bookmarks, sun, visibility, clashes, paths] = await Promise.all([
     source.readSidecar('comments'), source.readSidecar('bookmarks'), source.readSidecar('sun'), source.readSidecar('visibility'),
-    source.readSidecar('clashes')
+    source.readSidecar('clashes'), source.readSidecar('paths')
   ]);
+  if (paths) { document.paths = readPathsDocument(paths); } // Round K
   if (comments) { document.comments = readCommentDocument(comments); }
   if (bookmarks) { document.bookmarks = readBookmarkDocument(bookmarks); }
   if (sun) { document.sun = readSunSettings(sun); }

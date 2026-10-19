@@ -20,7 +20,8 @@ import { BookmarkStore, shortDate } from './Stores';
 import { UnitFormat } from './UnitFormat';
 import { ColourMode } from './ViewerSettings';
 import { Hints } from './Hints';
-import { ScrollRegion } from './PanelShell';
+import { PanelSize, ScrollRegion, ShellStyle } from './PanelShell';
+import { MediaTab } from './MediaPanel';
 import { InputAction } from '../core/scene/InputCatalog';
 import { keyOf } from '../platform/Hotkeys';
 
@@ -223,7 +224,7 @@ export class PauseMenu {
   private previewLabel: string | null = null;
   private readonly settingsScroll = new ScrollRegion();
   private bookmarksOpen = false;
-  private bookmarkScroll = 0;
+  private readonly bookmarkScroll = new ScrollRegion();
   private bookmarkDeleteArmed: BookmarkRecord | null = null;
   private bookmarkDeleteArmedUntil = 0;
   private bookmarksNotice: string | null = null;
@@ -272,6 +273,7 @@ export class PauseMenu {
     if (this.library.close()) { return true; }
     if (this.session.clashes.panel.close()) { return true; }
     if (this.session.profiles.closePanel()) { return true; }
+    if (this.session.media.close()) { return true; }
     if (this.commentsOpen && this.commentDetail) { this.commentDetail = null; return true; }
     if (this.commentsOpen) { this.commentsOpen = false; this.commentDeleteArmed = null; return true; }
     if (this.closeBookmarks()) { return true; }
@@ -287,6 +289,7 @@ export class PauseMenu {
     if (this.session.markup.open) { this.session.markup.build(this.w); return; }
     if (this.commentsOpen) { this.buildCommentsPanel(); return; }
     if (this.bookmarksOpen) { this.buildBookmarksPanel(); return; }
+    if (this.session.media.isOpen) { this.session.media.build(); return; } // Round K-A
     if (this.session.textures?.open) { this.session.textures.build(); return; }
     if (this.rooms.open) { this.rooms.build(); return; }
     if (this.library.open) { this.library.build(); return; }
@@ -342,7 +345,7 @@ export class PauseMenu {
     const roomsButton = session.scene.rooms.length > 0;
     const libraryButton = this.library.available;
     const sessionButtons = 5; // + CONTROLS
-    const reviewButtons = 5 + (hiddenThings > 0 ? 1 : 0) + (texturesButton ? 1 : 0) + (libraryButton ? 1 : 0) + (roomsButton ? 1 : 0);
+    const reviewButtons = 6 + (hiddenThings > 0 ? 1 : 0) + (texturesButton ? 1 : 0) + (libraryButton ? 1 : 0) + (roomsButton ? 1 : 0);
     const rows = twoStacks ? Math.max(sessionButtons, reviewButtons) : sessionButtons + reviewButtons;
     const step = Math.min(Math.max((endY - this.s(12) - buttonsTop) / rows, this.s(32)), this.s(44));
     const buttonH = step - this.s(6);
@@ -374,6 +377,8 @@ export class PauseMenu {
     y += step;
     const bookmarks = session.bookmarks.bookmarks.length;
     if (w.menuButton(f, x, y, stackW, bookmarks === 0 ? 'BOOKMARKS' : `BOOKMARKS (${bookmarks})`, false, false, true, buttonH, true)) { this.openBookmarks(); return; }
+    y += step;
+    if (w.menuButton(f, x, y, stackW, 'MEDIA', false, false, true, buttonH, true)) { session.media.open(); return; } // Round K-A
     y += step;
     if (texturesButton) {
       if (w.menuButton(f, x, y, stackW, session.textures.menuLabel(), false, false, true, buttonH, true)) { session.textures.show(); return; }
@@ -1220,15 +1225,14 @@ export class PauseMenu {
   /** Opens the bookmark list. */
   openBookmarks(): void {
     this.bookmarksOpen = true;
-    this.bookmarkScroll = 0;
+    this.bookmarkScroll.reset();
     this.bookmarkDeleteArmed = null;
     this.bookmarksNotice = null;
   }
 
-  /** Closes the bookmark list (and its tour settings, saving them); false when it wasn't open. */
+  /** One level back: the list closes (Round K-A: the tour settings moved to MEDIA → TOUR); false when it wasn't open. */
   closeBookmarks(): boolean {
     if (!this.bookmarksOpen) { return false; }
-    this.session.tour.closeSettings();
     this.bookmarksOpen = false;
     this.bookmarkDeleteArmed = null;
     return true;
@@ -1240,76 +1244,59 @@ export class PauseMenu {
   }
 
   private buildBookmarksPanel(): void {
-    const session = this.session, ui = session.ui, f = ui.atlas, w = this.w;
-    const width = session.screenWidth, height = session.screenHeight;
-    ui.rect(0, 0, width, height, UiTheme.MENU_BACKGROUND);
-
-    const pw = Math.min(this.s(920), width - this.s(80)), ph = height - this.s(96);
-    const x = (width - pw) * 0.5, y = this.s(48);
-    ui.panel(x, y, pw, ph, UiTheme.CARD, UiTheme.CARD_BORDER);
-
-    const ix = x + this.s(24), iw = pw - this.s(48);
-    let cy = y + this.s(20);
+    const session = this.session, ui = session.ui, f = ui.atlas, shell = session.shell;
     const count = session.bookmarks.bookmarks.length;
-    const tour = session.tour;
-    ui.text(f.small, ix, cy, tour.settingsOpen ? 'BOOKMARKS · TOUR' : 'BOOKMARKS', UiTheme.BOOKMARK_LABEL, this.s(2));
-    ui.textRight(f.small, ix + iw, cy, `${count.toLocaleString('en')} ${count === 1 ? 'viewpoint' : 'viewpoints'} · kept in ${session.bookmarks.fileName}`, UiTheme.TEXT_MUTED, this.s(0.6));
-    cy += this.s(30);
-    ui.text(f.body, ix, cy, tour.settingsOpen
-      ? Hints.bookmarksTour.text
-      : Hints.bookmarksKeys.text, UiTheme.TEXT_MUTED);
-    cy += this.s(34);
-
-    const buttonsY = y + ph - this.s(24) - this.s(48);
-    if (tour.settingsOpen) { tour.buildSettings(f, w, ix, cy, iw, buttonsY - this.s(16)); }
-    else { this.buildBookmarkRows(f, ix, cy, iw, buttonsY - this.s(16)); }
-
-    if (this.bookmarksNotice) { ui.textWrapped(f.body, ix, buttonsY - this.s(30), iw, this.bookmarksNotice, UiTheme.MEASURE_TEXT, 1); }
-    let bx = ix;
-    if (!tour.settingsOpen) {
-      if (w.menuButton(f, bx, buttonsY, this.s(220), 'ADD THIS VIEW', false, false)) {
-        const added = session.addBookmarkFromMenu();
-        this.bookmarksNotice = `Added “${added.name}” (RENAME to change it)`;
-        this.bookmarkScroll = session.bookmarks.bookmarks.length;
-      }
-      bx += this.s(236);
+    const ADD = 'ADD THIS VIEW';
+    const frame = shell.beginPanel(PanelSize.Standard, 'BOOKMARKS', UiTheme.BOOKMARK_LABEL,
+      `${count.toLocaleString('en')} ${count === 1 ? 'viewpoint' : 'viewpoints'} · kept in ${session.bookmarks.fileName}`, shell.buttonWidth(f, ADD));
+    if (shell.headerButton(frame, ADD)) {
+      const added = session.addBookmarkFromMenu();
+      this.bookmarksNotice = `Added “${added.name}” (RENAME to change it)`;
+      this.bookmarkScroll.scrollToEnd();
     }
-    if (w.menuButton(f, bx, buttonsY, this.s(200), tour.settingsOpen ? 'BACK TO LIST' : 'TOUR SETTINGS', false, false)) { tour.toggleSettings(w); }
-    bx += this.s(216);
-    if (w.menuButton(f, bx, buttonsY, this.s(140), 'CLOSE', false, false)) {
+
+    this.buildBookmarkRows(f, frame.ix, frame.bodyTop, frame.iw, frame.bodyBottom);
+    if (!this.bookmarksOpen) { return; } // GO / RENAME left the panel
+
+    const settings = shell.footerAction('TOUR SETTINGS'); // Round K-A: MEDIA → TOUR
+    const play = shell.footerAction('PLAY TOUR', ShellStyle.Primary);
+    const pressed = shell.endPanel(frame, this.bookmarksNotice, Hints.bookmarksKeys.text);
+    if (pressed === settings) {
       this.closeBookmarks();
-      return;
+      session.media.open(MediaTab.Tour);
+    } else if (pressed === play) {
+      session.tour.start();
     }
-    const playW = this.s(200);
-    if (w.menuButton(f, ix + iw - playW, buttonsY, playW, 'PLAY TOUR', true, false)) { tour.start(); return; }
-    if (tour.settingsOpen && w.menuButton(f, ix + iw - playW * 2 - this.s(16), buttonsY, playW, 'RECORD VIDEO', false, false)) { session.video.start(); }
   }
 
+  /** The rows (a clipped scroll region): number, thumbnail, name, details and GO / RENAME / SET HERE / ↑ / ↓ / DELETE. */
   private buildBookmarkRows(f: FontAtlas, x: number, y: number, width: number, bottom: number): void {
-    const session = this.session, ui = session.ui, w = this.w, input = session.input;
+    const session = this.session, ui = session.ui, w = this.w, input = session.input, shell = session.shell;
     const list = session.bookmarks.bookmarks;
-    const rowH = this.s(70);
-    const visible = Math.max(1, Math.trunc((bottom - y) / rowH));
+    const rowH = this.s(74);
 
     if (list.length === 0) {
       ui.textWrapped(f.body, x, y + this.s(8), width, Hints.bookmarksEmpty.text, UiTheme.TEXT_MUTED, 2);
       return;
     }
-
-    const maxScroll = Math.max(0, list.length - visible);
-    if (input.wheel !== 0) { this.bookmarkScroll -= input.wheel * 2; }
-    this.bookmarkScroll = Math.min(Math.max(this.bookmarkScroll, 0), maxScroll);
     if (this.bookmarkDeleteArmed && session.clock > this.bookmarkDeleteArmedUntil) { this.bookmarkDeleteArmed = null; }
+
+    // Polish round P-A1: a clipped, pixel-scrolled list (rows drawn from 4 px inside, so the stripe fits)
+    const top = shell.beginScroll(this.bookmarkScroll, input, x, y, width, bottom - y);
+    const cw = width - this.s(UiTheme.SCROLL_GUTTER);
+    const [first, last] = this.bookmarkScroll.visibleRows(rowH, list.length);
+    const listX = x;
+    x += this.s(8);
+    width = cw - this.s(16);
 
     let go: BookmarkRecord | null = null, rename: BookmarkRecord | null = null, here: BookmarkRecord | null = null;
     let up: BookmarkRecord | null = null, down: BookmarkRecord | null = null, remove: BookmarkRecord | null = null;
     const small = this.s(34), wide = this.s(84), gap = this.s(6);
     const buttonsW = wide * 4 + small * 2 + gap * 5;
-    const last = Math.min(list.length, this.bookmarkScroll + visible);
-    for (let i = this.bookmarkScroll; i < last; i++) {
+    for (let i = first; i < last; i++) {
       const record = list[i];
-      const ry = y + (i - this.bookmarkScroll) * rowH;
-      if (((i - this.bookmarkScroll) & 1) === 0) { ui.rect(x - this.s(8), ry - this.s(4), width + this.s(16), rowH - this.s(4), Rgba.hex(0xffffff, 0.03)); }
+      const ry = top + i * rowH + this.s(4);
+      if ((i & 1) === 0) { ui.rect(listX, ry - this.s(4), cw, rowH - this.s(4), UiTheme.ROW_STRIPE); }
 
       // Number (Alt+n for the first nine), thumbnail, name, then "Level · author · date"
       ui.text(f.mono, x, ry + this.s(4), String(i + 1), i < 9 ? UiTheme.BOOKMARK_LABEL : UiTheme.TEXT_FAINT);
@@ -1342,9 +1329,7 @@ export class PauseMenu {
       const armed = this.bookmarkDeleteArmed === record;
       if (w.smallButton(f, bx, by, wide, bh, armed ? 'SURE?' : 'DELETE', true)) { remove = record; }
     }
-    if (maxScroll > 0) {
-      ui.textRight(f.small, x + width, bottom + this.s(2), `${this.bookmarkScroll + 1}–${last} of ${list.length} · wheel to scroll`, UiTheme.TEXT_FAINT);
-    }
+    shell.endScroll(this.bookmarkScroll, input, top + list.length * rowH);
 
     // Act after drawing (the list must not change while it is being walked)
     if (go) {

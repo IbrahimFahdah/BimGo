@@ -13,10 +13,10 @@ import type { GameSession } from './GameSession';
 import { Widgets } from './Menus';
 import { Hints } from './Hints';
 
-const PHOTO_KINDS = ['STILL', '360°'];
-const PHOTO_SCALES = ['1×', '2×', '3×', '4×'];
-const PHOTO_FORMATS = ['PNG', 'JPEG'];
-const PANO_SIZES = ['4K', '8K'];
+export const PHOTO_KINDS = ['STILL', '360°'];
+export const PHOTO_SCALES = ['1×', '2×', '3×', '4×'];
+export const PHOTO_FORMATS = ['PNG', 'JPEG'];
+export const PANO_SIZES = ['4K', '8K'];
 /** Field of view of each panorama view (degrees): wider than 90° so the stitch never reads an edge. */
 const PANO_FACE_FOV = 96;
 
@@ -83,14 +83,25 @@ export class PhotoMode {
   /** The field of view while open (the setting comes back on close). */
   fov = 90;
   exposure = 0;
-  private kind = 0;
-  private scale = 2;
-  private jpeg = false;
-  private eightK = false;
-  private grid = true;
+  /** 0 still, 1 360° (shared with MEDIA → PHOTO). */
+  kind = 0;
+  scale = 2;
+  jpeg = false;
+  eightK = false;
+  grid = true;
+  /** Polish round P-C: grid lines in the photo (opt-in; when grids are on). */
+  gridLines = false;
+  /** P-C: while a photo renders: its line scale (stills at 2–4× keep the lines' look) and that a real photo is rendering. */
+  lineScale = 1;
+  shooting = false;
+  /** The last photo's file name (MEDIA → PHOTO), or null. */
+  lastName: string | null = null;
   /** Frames until the shot (one frame shows "RENDERING…" first). */
   private shotIn = 0;
-  private busy = false;
+  /** Photos being encoded and saved (a key photo batch waits when there are many). */
+  saving = 0;
+  /** Round K-C: a batch shot's file name (without the extension), or null for the usual photo name. */
+  named: string | null = null;
   private notice: string | null = null;
   private panelRect = [0, 0, 0, 0];
   private readonly w: Widgets;
@@ -122,7 +133,20 @@ export class PhotoMode {
     this.open = false;
     this.shotIn = 0;
     this.session.input.releaseAll();
+    this.session.keyPhotos.endKeyPhoto(); // Round K-C: PHOTO AT THIS KEY puts the walkthrough back
   }
+
+  /** True while a shot is due (it renders at the next frame's start). */
+  get shotPending(): boolean { return this.shotIn > 0; }
+
+  /** Round K-C: a key photo batch's shot at the next render, under its own name. */
+  shootNamed(name: string): void {
+    this.named = name;
+    this.shotIn = 1;
+  }
+
+  /** Drops a due shot (a batch stopping). */
+  cancelShot(): void { this.shotIn = 0; }
 
   /** M / Esc close, Enter shoots, RMB-drag looks, the wheel changes the field of view, [ ] the sun time. */
   updateMode(input: InputState): void {
@@ -142,7 +166,7 @@ export class PhotoMode {
   }
 
   private request(): void {
-    if (this.shotIn > 0 || this.busy) { return; }
+    if (this.shotIn > 0 || this.saving > 0) { return; }
     this.shotIn = 2;
     this.notice = null;
   }
@@ -199,20 +223,28 @@ export class PhotoMode {
     camera.viewportHeight = height;
     camera.aspect = width / Math.max(height, 1);
     camera.update();
-    const pixels = this.renderView(width, height);
+    let pixels: Uint8Array;
+    this.shooting = true;
+    this.lineScale = scale;
+    try { pixels = this.renderView(width, height, scale); }
+    finally {
+      this.shooting = false;
+      this.lineScale = 1;
+    }
 
     const jpeg = this.jpeg;
     const name = this.fileName(jpeg ? '.jpg' : '.png', ` ${width}x${height}`);
     const reduced = scale < this.scale ? ` (reduced to ${scale}× for this GPU)` : '';
     this.notice = 'Saving…';
-    this.busy = true;
+    this.saving++;
     void encode(pixels, width, height, true, jpeg).then(blob => {
       downloadBlob(blob, name);
+      this.lastName = name;
       this.notice = `Saved ${name}${reduced} (your Downloads folder)`;
     }).catch(e => {
       console.warn('Photo could not be saved', e);
       this.notice = 'The photo could not be saved: ' + (e instanceof Error ? e.message : String(e));
-    }).finally(() => { this.busy = false; });
+    }).finally(() => { this.saving--; });
   }
 
   /** A 360° panorama: six 96° views from the eye, stitched into an equirectangular JPEG with Photo Sphere metadata. */
@@ -237,36 +269,57 @@ export class PhotoMode {
       camera.setCustomView(forwards[i], ups[i]);
       camera.update();
       matrices.push(Float32Array.from(camera.viewProjection));
-      faces.push(this.renderView(face, face));
+      this.shooting = true; // P-C: grids in the 360 too when ticked
+      this.lineScale = Math.max(1, face / Math.max(1, session.screenHeight));
+      try { faces.push(this.renderView(face, face)); }
+      finally {
+        this.shooting = false;
+        this.lineScale = 1;
+      }
     }
 
     const name = this.fileName('.jpg', ` 360 ${this.eightK ? '8K' : '4K'}`);
     this.notice = 'Stitching the 360…';
-    this.busy = true;
+    this.saving++;
     void stitch(faces, matrices, forwards, eye, face, width, height, heading)
       .then(rgba => encode(rgba, width, height, false, true))
       .then(async blob => {
         const bytes = Panorama.addPhotoSphereXmp(new Uint8Array(await blob.arrayBuffer()), width, height);
         downloadBlob(new Blob([bytes as BlobPart], { type: 'image/jpeg' }), name);
+        this.lastName = name;
         this.notice = `Saved ${name} (360°: open it on a phone or in a panorama viewer)`;
       })
       .catch(e => {
         console.warn('Panorama could not be saved', e);
         this.notice = 'The 360 could not be saved: ' + (e instanceof Error ? e.message : String(e));
       })
-      .finally(() => { this.busy = false; });
+      .finally(() => { this.saving--; });
   }
 
-  /** Renders the camera's current view off-screen and reads it back (bottom-up RGBA). */
-  private renderView(width: number, height: number): Uint8Array {
+  /**
+   * Renders the camera's current view off-screen and reads it back (bottom-up RGBA).
+   * @param legendScale A still (colour round B): the profile's legend goes in when ticked, laid out on a screen 1/k the
+   * size and flushed over the whole target (P-C: k× bigger, so it reads as on screen); 0 for none (360s).
+   */
+  private renderView(width: number, height: number, legendScale = 0): Uint8Array {
     this.target ??= new PhotoTarget();
     if (!this.target.ensure(width, height)) { throw new Error(`the GPU refused a ${width} × ${height} target`); }
-    this.session.renderScene(width, height, this.target.framebuffer, true);
+    const session = this.session;
+    session.renderScene(width, height, this.target.framebuffer, true);
+    if (legendScale > 0 && session.profiles.legendInShots) {
+      const k = Math.min(Math.max(legendScale, 1), 4);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this.target.framebuffer);
+      gl.viewport(0, 0, width, height);
+      session.profiles.queueLegendForShot(Math.trunc(height / k));
+      session.ui.flush(Math.trunc(width / k), Math.trunc(height / k), width, height);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    }
     return this.target.read();
   }
 
-  /** "<model> photo <kind> <time>.ext". */
+  /** "<model> photo <kind> <time>.ext" (Round K-C: a batch shot's own name). */
   private fileName(extension: string, kind: string): string {
+    if (this.named !== null) { return this.named + extension; }
     const d = new Date();
     const two = (n: number) => String(n).padStart(2, '0');
     return `${safeFileName(this.session.scene.modelTitle)} photo${kind} ${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())} ` +
@@ -295,7 +348,7 @@ export class PhotoMode {
       ui.textCentred(f.bold, width * 0.5, height * 0.5 - this.s(8), this.kind === 0 ? 'RENDERING…' : 'RENDERING 360…', UiTheme.TEXT);
     }
 
-    const pw = this.s(320), x = width - this.s(20) - pw, y = this.s(20), ph = this.s(434);
+    const pw = this.s(320), x = width - this.s(20) - pw, y = this.s(20), ph = this.s(468);
     this.panelRect = [x, y, pw, ph];
     ui.panel(x, y, pw, ph, UiTheme.PANEL_STRONG, UiTheme.ACCENT);
     const ix = x + this.s(16), iw = pw - this.s(32);
@@ -345,8 +398,11 @@ export class PhotoMode {
 
     this.grid = w.checkbox(f, ix, cy + this.s(4), iw, 'Thirds grid (not in the photo)', this.grid);
     cy += this.s(34);
+    // Polish round P-C: the grid lines in the photo (the grids key / panel turn them on)
+    this.gridLines = w.checkbox(f, ix, cy + this.s(4), iw, session.grids.showing ? 'Grid lines in the photo' : 'Grid lines in the photo (grids are off)', this.gridLines);
+    cy += this.s(34);
 
-    const due = this.shotIn > 0 || this.busy;
+    const due = this.shotIn > 0 || this.saving > 0;
     if (w.menuButton(f, ix, cy, iw, due ? 'RENDERING…' : Hints.photoTake.text, true, false, !due, this.s(44))) { this.request(); }
     cy += this.s(52);
     if (this.notice) { ui.textWrapped(f.small, ix, cy, iw, this.notice, UiTheme.MEASURE_TEXT, 2); }

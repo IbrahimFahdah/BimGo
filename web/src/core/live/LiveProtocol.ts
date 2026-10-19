@@ -36,7 +36,7 @@ export const MessageTypes = {
 } as const;
 
 /** The sidecar files kept beside the Revit model ('clashes': Round C, add-ins from this round on). */
-export type SidecarKind = 'comments' | 'bookmarks' | 'sun' | 'visibility' | 'clashes';
+export type SidecarKind = 'comments' | 'bookmarks' | 'sun' | 'visibility' | 'clashes' | 'paths';
 
 /**
  * SHOW IN REVIT (Round C-B2): the clash 3D view's name, section box and camera, in Revit internal metres (port of

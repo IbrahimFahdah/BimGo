@@ -454,7 +454,7 @@ export class SectionMode {
 }
 
 /** The parameter along an axis (point + s · axis) where a ray passes closest; null when they are near parallel. */
-function closestOnAxis(point: Vec3, axis: Vec3, rayOrigin: Vec3, rayDirection: Vec3): number | null {
+export function closestOnAxis(point: Vec3, axis: Vec3, rayOrigin: Vec3, rayDirection: Vec3): number | null {
   const w = V.sub(point, rayOrigin);
   const b = V.dot(axis, rayDirection), d = V.dot(axis, w), e = V.dot(rayDirection, w);
   const denominator = 1 - b * b;

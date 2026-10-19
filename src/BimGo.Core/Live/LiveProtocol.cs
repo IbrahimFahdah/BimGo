@@ -367,6 +367,9 @@ namespace BimGo.Live
 
         /// <summary>Clash detection's sets, tests and results (Round C; clashes.json in the model folder).</summary>
         public const string CLASHES = "clashes";
+
+        /// <summary>The keyframed camera paths (Round K; paths.json in the model folder).</summary>
+        public const string PATHS = "paths";
     }
 
     /// <summary>

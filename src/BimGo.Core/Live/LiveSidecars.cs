@@ -5,7 +5,7 @@ using BimGo.Format;
 namespace BimGo.Live
 {
     /// <summary>
-    /// The sidecar files beside a Revit model (comments, bookmarks, sun, visibility, clashes), read and written for a browser
+    /// The sidecar files beside a Revit model (comments, bookmarks, sun, visibility, clashes, paths), read and written for a browser
     /// walkthrough, which can't reach the disk itself (sidecar.read / sidecar.write). Same files and shapes as the
     /// desktop app writes, so both can work on the same model.
     /// </summary>
@@ -40,6 +40,9 @@ namespace BimGo.Live
                     break;
                 case SidecarKinds.CLASHES:
                     document = Clashes.ClashFiles.Read(Clashes.ClashFiles.SidecarFor(commentsPath), out error);
+                    break;
+                case SidecarKinds.PATHS:
+                    document = CameraPathFiles.Read(CameraPathFiles.SidecarFor(commentsPath), out error);
                     break;
                 default:
                     return Fail(kind, $"Unknown sidecar '{kind}'.");
@@ -91,6 +94,9 @@ namespace BimGo.Live
                         Clashes.ClashDocument clashes = Clashes.ClashFiles.Parse(System.Text.Encoding.UTF8.GetBytes(json.GetRawText()), out error);
                         if (clashes == null) { return Fail(kind, error ?? "No clash data to write."); }
                         written = Clashes.ClashFiles.Write(Clashes.ClashFiles.SidecarFor(commentsPath), clashes, out error);
+                        break;
+                    case SidecarKinds.PATHS:
+                        written = CameraPathFiles.Write(CameraPathFiles.SidecarFor(commentsPath), json.Deserialize<CameraPathDocument>(LiveProtocol.JSON)?.Clean() ?? new CameraPathDocument(), out error);
                         break;
                     default:
                         return Fail(kind, $"Unknown sidecar '{kind}'.");

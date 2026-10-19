@@ -132,12 +132,16 @@ export class CommentStore {
     this.save();
   }
 
+  /** Polish round P-C: the player's standing eye height now (set by the session), stored with each view. */
+  currentEye: (() => number) | null = null;
+
   /** Sets the viewpoint a comment is seen from (scene-local feet; stored in Revit internal metres). */
   setView(record: CommentRecord, localFeet: Vec3, yaw: number, pitch: number, flying: boolean, section: SectionCut | null = null,
     eyeHeight: number | null = null): void {
     record.view = {
       x: round4(localFeet.x + this.origin.x), y: round4(localFeet.y + this.origin.y), z: round4(localFeet.z + this.origin.z),
-      yaw, pitch, flying, eyeHeight: eyeHeight === null ? null : Math.fround(eyeHeight), section: section?.clone() ?? null
+      yaw, pitch, flying, section: section?.clone() ?? null,
+      eyeHeight: (eyeHeight ?? this.currentEye?.() ?? null) === null ? null : Math.fround(eyeHeight ?? this.currentEye!()) // P-C: the eye-height preset seen with
     };
     if (this.comments.includes(record)) { this.save(); }
   }
@@ -287,6 +291,13 @@ export class BookmarkStore {
   lastError: string | null = null;
   readonly fileName = 'this file';
   onChanged: (() => void) | null = null;
+  /**
+   * Polish round P-C: fills what the session keeps beyond the store's parameters (crouching, the colour profile) into a
+   * new or re-pointed bookmark, before it is saved.
+   */
+  stamp: ((record: BookmarkRecord) => void) | null = null;
+  /** P-C: a colour profile's name by id for the list's detail line (null when unknown). */
+  profileName: ((id: string) => string | null) | null = null;
 
   constructor(private readonly model: string, private readonly origin: Vec3) {}
 
@@ -375,6 +386,7 @@ export class BookmarkStore {
       eyeHeight: eyeHeight === null ? null : f32(eyeHeight), visibility
     });
     this.setPosition(record, localFeet);
+    this.stamp?.(record);
     this.prepare(record);
     return record;
   }
@@ -404,6 +416,7 @@ export class BookmarkStore {
       yaw, pitch, flying, level: level ?? '', sun: sun ? { ...sun } : null, section: section?.clone() ?? null,
       eyeHeight: eyeHeight === null ? null : f32(eyeHeight), visibility
     });
+    this.stamp?.(record);
     this.prepare(record);
     this.save();
     return true;
@@ -460,6 +473,10 @@ export class BookmarkStore {
     const sun = s ? ` · SUN ${s.day}/${s.month} ${two(Math.trunc(s.minutes / 60))}:${two(s.minutes % 60)}` : '';
     const eye = record.eyeHeight !== null && Math.abs(record.eyeHeight - DEFAULT_EYE_STANDING) > 0.005 ? ` · EYE ${UnitFormat.length(record.eyeHeight, 2)}` : '';
     const skip = record.tourSkip ? ' · NOT IN TOUR' : '';
-    record.detail = `${level} · ${record.author} · ${shortDate(record.created)}${fly}${sun}${eye}${skip}`;
+    const crouch = record.crouched && !record.flying ? ' · CROUCHED' : ''; // P-C
+    const profile = record.colourProfile === null ? ''
+      : record.colourProfile === '' ? ' · PROFILE OFF'
+        : ' · PROFILE ' + (this.profileName?.(record.colourProfile) ?? '(gone)').toUpperCase();
+    record.detail = `${level} · ${record.author} · ${shortDate(record.created)}${fly}${crouch}${sun}${eye}${profile}${skip}`;
   }
 }

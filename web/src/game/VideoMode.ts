@@ -11,12 +11,13 @@ import { downloadBlob, safeFileName } from '../platform/files';
 import { InputAction } from '../core/scene/InputCatalog';
 import type { InputState } from '../platform/input';
 import type { GameSession } from './GameSession';
-import type { Widgets } from './Menus';
 import { PhotoTarget } from './PhotoMode';
 import { VideoSize } from './ViewerSettings';
+import type { CameraPath } from '../core/format/CameraPathModels';
+import { MediaTab } from './MediaPanel';
 
-const VIDEO_SIZE_OPTIONS = ['Window', '1080p', '4K'];
-const VIDEO_FPS_OPTIONS = ['30 fps', '60 fps'];
+export const VIDEO_SIZE_OPTIONS = ['Window', '1080p', '4K'];
+export const VIDEO_FPS_OPTIONS = ['30 fps', '60 fps'];
 
 /** Milliseconds of video rendering per window frame (the page stays responsive). */
 const VIDEO_BUDGET_MS = 45;
@@ -49,8 +50,9 @@ interface Recording {
 }
 
 /**
- * Walkthrough video (port of GameSession.Video.cs and VideoRecorder.cs): BOOKMARKS → TOUR SETTINGS → RECORD VIDEO
- * renders the bookmark tour to an MP4 (H.264) with its fades, holds, swivels and glides, and its UI setting.
+ * Walkthrough video (port of GameSession.Video.cs and VideoRecorder.cs): RECORD VIDEO renders the bookmark tour (or,
+ * Round K-A, a camera path: the same player) to an MP4 (H.264) with its fades, holds, swivels and glides, and its UI
+ * setting; recorded from MEDIA → VIDEO (source: the tour or a path), TOUR or PATHS.
  * - Frames are rendered off-screen at a fixed rate (the tour clock steps 1 / fps per frame), not in real time, so the
  *   video is smooth on any computer; as many frames as fit in ~45 ms are rendered per page frame.
  * - Each frame: the scene (photo path: no markers, highlights or gizmos), then with the UI on the HUD drawn at the
@@ -62,7 +64,8 @@ interface Recording {
  */
 export class VideoMode {
   private recording: Recording | null = null;
-  private lastName: string | null = null;
+  /** The last video's file name (MEDIA → VIDEO), or null. */
+  lastName: string | null = null;
 
   constructor(private readonly session: GameSession) {}
 
@@ -79,7 +82,7 @@ export class VideoMode {
   }
 
   /** The frame size for the current setting (even numbers). */
-  private frameSize(): { width: number; height: number } {
+  frameSize(): { width: number; height: number } {
     switch (this.session.settings.videoSize) {
       case VideoSize.Uhd4K: return { width: 3840, height: 2160 };
       case VideoSize.Window: return { width: Math.max(2, this.session.screenWidth & ~1), height: Math.max(2, this.session.screenHeight & ~1) };
@@ -87,52 +90,31 @@ export class VideoMode {
     }
   }
 
-  // #region Settings (tour settings view)
-
-  /** The VIDEO rows of the tour settings: size and frame rate, and the last file's name. */
-  buildSettings(f: FontAtlas, w: Widgets, x: number, y: number, width: number): void {
-    const session = this.session, ui = session.ui, settings = session.settings;
-    ui.text(f.small, x, y, 'VIDEO (RECORD VIDEO BELOW)', UiTheme.TEXT_MUTED, this.s(1.4));
-    y += this.s(20);
-    const sizeW = width * 0.6;
-    const size = w.segmented(f, x, y, sizeW - this.s(6), VIDEO_SIZE_OPTIONS, settings.videoSize);
-    if (size !== settings.videoSize) { settings.videoSize = size; settings.save(); }
-    const rate = settings.videoFps >= 60 ? 1 : 0;
-    const pickedRate = w.segmented(f, x + sizeW, y, width - sizeW, VIDEO_FPS_OPTIONS, rate);
-    if (pickedRate !== rate) { settings.videoFps = pickedRate === 1 ? 60 : 30; settings.save(); }
-    y += this.s(40);
-    const note = !VideoMode.supported ? 'This browser can\'t encode video: use Chrome, Edge or Safari 16.4+'
-      : this.lastName ? `Last: ${this.lastName} (your Downloads folder)` : 'MP4 (H.264), saved to your Downloads folder';
-    ui.textWrapped(f.small, x, y, width, note, VideoMode.supported ? UiTheme.TEXT_FAINT : UiTheme.MEASURE_LABEL, 2);
-  }
-
-  // #endregion
-
   // #region Start / finish
 
-  /** RECORD VIDEO: starts the tour and a recording of it. */
-  start(): void {
+  /** RECORD VIDEO: starts the tour (or, Round K-A, a camera path) and a recording of it. */
+  start(cameraPath: CameraPath | null = null): void {
     const session = this.session;
     if (this.recording || session.tour.active) { return; }
     if (!VideoMode.supported) {
-      session.menu.setBookmarksNotice('This browser can\'t encode video (WebCodecs): use Chrome, Edge or Safari 16.4+');
+      session.media.setNotice('This browser can\'t encode video (WebCodecs): use Chrome, Edge or Safari 16.4+');
       session.sound.play(SoundId.Error);
       return;
     }
     const { width, height } = this.frameSize();
     const max = gl.getParameter(gl.MAX_RENDERBUFFER_SIZE) as number;
     if (max > 0 && (width > max || height > max)) {
-      session.menu.setBookmarksNotice(`This graphics card can't render ${width} × ${height} frames (its limit is ${max} px): pick a smaller size`);
+      session.media.setNotice(`This graphics card can't render ${width} × ${height} frames (its limit is ${max} px): pick a smaller size`);
       session.sound.play(SoundId.Error);
       return;
     }
     const target = new PhotoTarget();
     if (!target.ensure(width, height)) {
-      session.menu.setBookmarksNotice(`The graphics card refused a ${width} × ${height} frame: pick a smaller size`);
+      session.media.setNotice(`The graphics card refused a ${width} × ${height} frame: pick a smaller size`);
       session.sound.play(SoundId.Error);
       return;
     }
-    if (!session.tour.start(false)) {
+    if (!(cameraPath ? session.tour.startPath(cameraPath, false) : session.tour.start(false))) {
       target.dispose();
       return;
     }
@@ -147,7 +129,8 @@ export class VideoMode {
     }
     const d = new Date();
     const two = (n: number) => String(n).padStart(2, '0');
-    const name = `${safeFileName(session.documentName.replace(/\.bimgo$/i, ''))} tour ${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())} ` +
+    const what = cameraPath ? ` path ${safeFileName(cameraPath.name)} ` : ' tour ';
+    const name = `${safeFileName(session.documentName.replace(/\.bimgo$/i, ''))}${what}${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())} ` +
       `${two(d.getHours())}${two(d.getMinutes())}${two(d.getSeconds())}.mp4`;
     const recording: Recording = {
       width, height, fps, frame: 0, frames: Math.max(1, Math.ceil(timeline.duration * fps)), encoder: null, mp4: new Mp4Writer(width, height, fps),
@@ -244,16 +227,15 @@ export class VideoMode {
     }
   }
 
-  /** Releases the recording, ends the tour (the walkthrough comes back as it was) and opens the tour settings with a notice. */
+  /** Releases the recording, ends the tour or path (the walkthrough comes back as it was) and opens MEDIA → VIDEO with a notice. */
   private end(notice: string): void {
     this.release();
     const session = this.session;
     session.tour.stop(true, true);
     session.clearToast();
     session.setPaused(true);
-    session.menu.openBookmarks();
-    session.tour.openSettings();
-    session.menu.setBookmarksNotice(notice);
+    session.media.open(MediaTab.Video); // Round K-A
+    session.media.setNotice(notice);
   }
 
   /** Stops a recording without the menu (the page is closing): nothing is saved. */

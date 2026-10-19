@@ -115,20 +115,31 @@ export class ColourProfiles {
     return this.showing ? this.appearance.active ?? '' : '';
   }
 
-  /** P-C: shows a bookmark's (or a path key's) profile ("" switches profiles off; an unknown id leaves it alone). */
-  applySaved(id: string | null): void {
+  /**
+   * P-C: a bookmark's (or a path key's) colour profile (null: leave it; "": off; an id: that profile on). Recorded (saved
+   * with the model) unless quiet (the tour, which puts it back at the end).
+   */
+  applySaved(id: string | null, quiet = false): void {
     if (id === null) { return; }
-    if (id === '') {
-      if (this.appearance.on) { this.appearance.on = false; this.lookChanged(); }
-      return;
-    }
-    if (!Appearance.find(this.appearance, id)) { return; }
-    if (this.appearance.active !== id || !this.appearance.on) {
-      this.appearance.active = id;
-      this.appearance.on = true;
-      this.failure = null;
-      this.changed();
-    }
+    const on = id.length > 0 && Appearance.find(this.appearance, id) !== null;
+    const active = on ? id : this.appearance.active;
+    if (this.appearance.on === on && this.appearance.active === active) { return; }
+    this.appearance.active = active;
+    this.appearance.on = on;
+    this.failure = null;
+    if (quiet) { this.dirty = true; } else { this.changed(); }
+  }
+
+  /** A profile's name by id (null when unknown). */
+  profileName(id: string): string | null { return Appearance.find(this.appearance, id)?.name ?? null; }
+
+  /** K-A: a key's profile choice after this one: leave → none → each profile → leave. */
+  nextChoice(current: string | null): string | null {
+    const profiles = this.appearance.profiles;
+    if (current === null) { return ''; }
+    if (current === '') { return profiles.length > 0 ? profiles[0].id : null; }
+    const index = profiles.findIndex(p => p.id === current);
+    return index >= 0 && index + 1 < profiles.length ? profiles[index + 1].id : null;
   }
 
   // #endregion

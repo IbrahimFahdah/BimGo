@@ -68,6 +68,10 @@ import { Appearance } from './Appearance';
 import { ColourProfiles } from './ColourProfiles';
 import { Grass } from './Grass';
 import { Grids } from './Grids';
+import { KeyPhotos } from './KeyPhotos';
+import { MediaPanel } from './MediaPanel';
+import { PATH_MOVES, PathEditor } from './PathEditor';
+import { CameraPaths } from './Paths';
 import { Clashes, ClashViewMode } from './clashes/Clashes';
 import { TourPlayer } from './Tour';
 import { UnitFormat } from './UnitFormat';
@@ -237,6 +241,14 @@ export class GameSession implements GunHost, EditHost {
   readonly grass: Grass;
   /** Grids rounds A / B: grid lines, nodes and the GRIDS panel (Shift+G, C). */
   readonly grids: Grids;
+  /** Round K-A: the MEDIA panel (Shift+M): photo, tour, paths, video. */
+  readonly media: MediaPanel;
+  /** Round K-B: the 3D camera path editor (Shift+K). */
+  readonly pathEditor: PathEditor;
+  /** Round K-C: photos at path keys. */
+  readonly keyPhotos: KeyPhotos;
+  /** Round K-A: the model's camera paths (created with the scene). */
+  paths!: CameraPaths;
   aim: AimInfo = { hasHit: false, hit: null, origin: vec3(), direction: vec3(1, 0, 0) };
 
   // #endregion
@@ -402,6 +414,9 @@ export class GameSession implements GunHost, EditHost {
     this.appearance = new Appearance(this);
     this.grass = new Grass(this);
     this.grids = new Grids(this);
+    this.media = new MediaPanel(this);
+    this.pathEditor = new PathEditor(this);
+    this.keyPhotos = new KeyPhotos(this);
     Hotkeys.read(settings);
     PadInput.read(settings);
     UnitFormat.set(settings.displayUnits, settings.decimalFeet);
@@ -476,9 +491,17 @@ export class GameSession implements GunHost, EditHost {
     // Comments and bookmarks live in the file
     this.comments = new CommentStore(this.scene.modelTitle, this.scene.originOffset);
     this.comments.loadFrom(this.document.comments);
+    this.comments.currentEye = () => this.player.controller.standEye; // P-C
     this.bookmarks = new BookmarkStore(this.scene.modelTitle, this.scene.originOffset);
+    this.bookmarks.stamp = record => { // P-C: crouching and the colour profile
+      record.crouched = !this.player.flying && this.player.controller.crouching;
+      record.colourProfile = this.profiles.bookmarkProfile();
+    };
+    this.bookmarks.profileName = id => this.profiles.profileName(id);
     this.bookmarks.loadFrom(this.document.bookmarks);
+    this.paths = new CameraPaths(this, this.live !== null); // Round K-A
     this.initialiseVisibility();
+    this.bookmarks.refreshLabels();
     const skipped = this.replayJournal();
     this.sun = new SunState(this.scene.site, this.document.sun);
     this.lights = new Lights(this.scene);
@@ -748,6 +771,12 @@ export class GameSession implements GunHost, EditHost {
     }
 
     // Clash mode (Round C-B): the docked clash list has the cursor; the move keys fly, RMB-drag looks
+    // Round K-B: the 3D path editor has the cursor; its own fly keys, RMB-drag looks
+    if (this.pathEditor.on && !this.paused) {
+      this.pathEditor.update(input, dt);
+      return;
+    }
+
     if (this.clashes.modeOn && !this.paused) {
       this.clashes.updateMode(input, dt);
       return;
@@ -883,6 +912,14 @@ export class GameSession implements GunHost, EditHost {
       this.grids.show();
       return;
     }
+    if (input.pressed(InputAction.MediaPanel)) { // Round K-A
+      this.media.open();
+      return;
+    }
+    if (input.pressed(InputAction.PathEditMode)) { // Round K-B
+      this.pathEditor.enter(this.paths.path);
+      return;
+    }
     if (input.pressed(InputAction.GridsCycle)) { this.grids.cycle(); }
     if (input.pressed(InputAction.ColourProfile)) { this.profiles.toggle(); } // colour round A
     if (this.sun.enabled) { this.stepSunTimeKeys(input); }
@@ -1009,9 +1046,12 @@ export class GameSession implements GunHost, EditHost {
   private fixedUpdate(dt: number): void {
     if (this.tour.active) { return; } // the tour places the player itself
     this.player.controller.groundZ = this.groundZ;
-    const frozen = this.editor.active || (this.cursorModeOpen && !this.clashModeOn) || this.window.isMinimised
-      || this.guns[this.activeGun].capturesInput || this.clashFreezesPlayer;
-    if (this.clashModeOn) {
+    const frozen = this.editor.active || (this.cursorModeOpen && !this.clashModeOn && !this.pathEditor.on) || this.window.isMinimised
+      || this.guns[this.activeGun].capturesInput || this.clashFreezesPlayer || this.pathEditor.freezesPlayer;
+    if (this.pathEditor.on) {
+      // Round K-B: the path editor flies with its own keys
+      this.player.fixedUpdate(dt, this.window.input, !frozen, InputAction.PathFlyUp, InputAction.PathFlyDown, PATH_MOVES);
+    } else if (this.clashModeOn) {
       // Clash mode flies with its own up / down keys (the gamepad's A and B click and go back there)
       this.player.fixedUpdate(dt, this.window.input, !frozen, InputAction.ClashFlyUp, InputAction.ClashFlyDown);
     } else {
@@ -1313,7 +1353,7 @@ export class GameSession implements GunHost, EditHost {
 
   /** True while a mode that frees the cursor is open (sun panel, study, section editor, photo mode). */
   get cursorModeOpen(): boolean {
-    return this.sunPanel.open || this.sunHours.open || this.section.open || this.photo.open || this.clashModeOn || this.grids.panelOpen;
+    return this.sunPanel.open || this.sunHours.open || this.section.open || this.photo.open || this.clashModeOn || this.grids.panelOpen || this.pathEditor.on;
   }
 
   /** Closes the cursor modes other than the one opening (one panel at a time). */
@@ -1597,8 +1637,10 @@ export class GameSession implements GunHost, EditHost {
     if (record.section) { this.section.apply(record.section, false); }
     if (record.visibility) { this.applyVisibility(record.visibility, true); }
     if (record.eyeHeight !== null) { this.eye.apply(record.eyeHeight); }
+    this.profiles.applySaved(record.colourProfile); // P-C
     if (record.flying !== this.player.flying) { this.player.toggleFly(); }
     this.player.teleportTo(record.local, record.yaw, clamp(record.pitch, -1.5, 1.5));
+    this.player.controller.holdCrouch = record.crouched && !record.flying; // P-C: arrive crouched (crouch or jump stands)
     this.sound.play(SoundId.Teleport);
     this.flash(UiTheme.BOOKMARK, 0.25);
     this.toast(record.name);
@@ -1688,7 +1730,7 @@ export class GameSession implements GunHost, EditHost {
   }
 
   /** What a new bookmark keeps of the visibility: hidden categories, links and elements (not the ground or the section). */
-  private bookmarkVisibility(): VisibilitySettings {
+  bookmarkVisibility(): VisibilitySettings {
     const settings = this.toVisibilitySettings();
     settings.groundOffset = null;
     settings.section = null;
@@ -2134,6 +2176,8 @@ export class GameSession implements GunHost, EditHost {
       this.clashes.drawMarkers(this.overlay);
       this.overlay.draw(this.camera, true, 1, false);
       this.overlay.draw(this.camera, false, 0.16, false);
+    } else if (this.photo.gridLines && !this.clashes.shot && ((this.photo.open && !photo) || (photo && this.photo.shooting))) {
+      this.grids.draw(photo ? this.photo.lineScale : 1); // polish round P-C: grids in photo mode and its photos (ticked)
     }
 
     // Sun hours grid (study results are content, so they show with the UI hidden too)
@@ -2141,6 +2185,7 @@ export class GameSession implements GunHost, EditHost {
 
     // Section box frame and handles (editor only)
     if (!photo) { this.section.drawGizmo(); }
+    if (!photo) { this.pathEditor.draw(); } // Round K-B: the path, its keys and handles
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   }
 
@@ -2409,6 +2454,20 @@ export class GameSession implements GunHost, EditHost {
     const ui = this.ui, f = ui.atlas;
     const width = this.window.width, height = this.window.height;
     const active = this.guns[this.activeGun];
+
+    // Round K-B: the path editor's HUD (dock, scrubber; no crosshair or guns)
+    if (this.pathEditor.on) {
+      this.buildStatusPanel(f);
+      this.buildCoordinatePanel(f, this.s(20), this.s(20) + this.s(146) + this.s(10));
+      this.grids.drawLabels(f);
+      if (this.showMap && !this.shell.dockOverMap) { this.drawMinimapOverlay(mapX, mapY); }
+      this.pathEditor.buildHud(f, width, height);
+      this.buildProfileLegend(f, height, false);
+      this.buildHelp(f, height);
+      this.buildRoomBanner(f, width);
+      this.buildToast(f, width);
+      return;
+    }
 
     // Clash mode (Round C-B): its own HUD (docked list, no crosshair or guns)
     if (this.clashModeOn) {
@@ -3147,7 +3206,8 @@ export class GameSession implements GunHost, EditHost {
 
   /** The sidecar revisions now (comments, bookmarks, sun, visibility). */
   private sidecarRevisions(): [SidecarKind, number][] {
-    return [['comments', this.comments.revision], ['bookmarks', this.bookmarks.revision], ['sun', this.sun.revision], ['visibility', this.visibilityRevision]];
+    return [['comments', this.comments.revision], ['bookmarks', this.bookmarks.revision], ['sun', this.sun.revision], ['visibility', this.visibilityRevision],
+      ['paths', this.paths.store.revision]];
   }
 
   private markSidecarsWritten(): void {
@@ -3189,7 +3249,8 @@ export class GameSession implements GunHost, EditHost {
     const document = kind === 'comments' ? SidecarJson.comments(this.comments.toDocument())
       : kind === 'bookmarks' ? SidecarJson.bookmarks(this.bookmarks.toDocument())
         : kind === 'sun' ? SidecarJson.sun(this.sun.settings)
-          : SidecarJson.visibility(this.toVisibilitySettings());
+          : kind === 'paths' ? SidecarJson.paths(this.paths.store.toDocument())
+            : SidecarJson.visibility(this.toVisibilitySettings());
     // Not connected: kept dirty, so it goes once the link is back
     if (live.writeSidecar(kind, document)) {
       this.sidecarRevision.set(kind, revision);
@@ -3203,7 +3264,8 @@ export class GameSession implements GunHost, EditHost {
 
   /** Everything Save writes, as one comparable value. */
   private get saveKey(): string {
-    return `${this.journal.revision}|${this.comments.revision}|${this.bookmarks.revision}|${this.sun.revision}|${this.visibilityRevision}|${this.dirtyRevision}|${this.clashes.revision}`;
+    return `${this.journal.revision}|${this.comments.revision}|${this.bookmarks.revision}|${this.sun.revision}|${this.visibilityRevision}|${this.dirtyRevision}|${this.clashes.revision}`
+      + `|${this.paths?.store.revision ?? 0}`;
   }
 
   /** True when edits, comments, bookmarks, the sun, visibility or materials changed since the last save. */
@@ -3294,6 +3356,7 @@ export class GameSession implements GunHost, EditHost {
         comments: this.comments.toDocument(),
         journal: this.journal,
         bookmarks: this.bookmarks.toDocument(),
+        paths: this.paths.store.forFile(), // Round K-A
         sun: { ...this.sun.settings, time: { ...this.sun.settings.time } },
         visibility: this.toVisibilitySettings(),
         materials: this.textures.current,

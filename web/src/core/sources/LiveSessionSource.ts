@@ -119,6 +119,8 @@ export class LiveSessionSource implements ModelSource {
 
   /** True once the add-in turned down the clashes sidecar (an add-in from before clash detection). */
   clashesUnsupported = false;
+  /** True once the add-in turned down the paths sidecar (an add-in from before camera paths). */
+  pathsUnsupported = false;
 
   /** Reads a sidecar beside the model (null when there is none yet or it can't be read). */
   async readSidecar(kind: SidecarKind): Promise<Json | null> {
@@ -129,6 +131,10 @@ export class LiveSessionSource implements ModelSource {
         const message = String(answer.payload.message ?? `The ${kind} could not be read`);
         if (kind === 'clashes' && /unknown sidecar/i.test(message)) {
           this.clashesUnsupported = true;
+          return null;
+        }
+        if (kind === 'paths' && /unknown sidecar/i.test(message)) {
+          this.pathsUnsupported = true; // Round K: an add-in from before camera paths
           return null;
         }
         this.notices.push(message);
@@ -144,7 +150,7 @@ export class LiveSessionSource implements ModelSource {
 
   /** Replaces a sidecar (answers come back as notices on failure only). */
   writeSidecar(kind: SidecarKind, document: Json): boolean {
-    if (!this.hello.sidecars || !this.connected || (kind === 'clashes' && this.clashesUnsupported)) { return false; }
+    if (!this.hello.sidecars || !this.connected || (kind === 'clashes' && this.clashesUnsupported) || (kind === 'paths' && this.pathsUnsupported)) { return false; }
     return this.client.send(MessageTypes.SIDECAR_WRITE, { kind, document }) !== null;
   }
 

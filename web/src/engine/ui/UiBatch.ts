@@ -378,12 +378,16 @@ export class UiBatch {
   }
 
   /** Draws everything queued and clears the queue. */
-  flush(screenWidth: number, screenHeight: number): void {
-    this.flushWith(screenWidth, screenHeight, null);
+  /**
+   * Draws what has been queued, laid out on a screen of this size, over a viewport of that size (or, P-C, a bigger
+   * one: the legend in a 2–4× photo is drawn k× bigger).
+   */
+  flush(screenWidth: number, screenHeight: number, viewportWidth = screenWidth, viewportHeight = screenHeight): void {
+    this.flushWith(screenWidth, screenHeight, null, viewportWidth, viewportHeight);
   }
 
   /** Draws what has been queued with the atlas (null) or another texture. */
-  private flushWith(screenWidth: number, screenHeight: number, texture: WebGLTexture | null): void {
+  private flushWith(screenWidth: number, screenHeight: number, texture: WebGLTexture | null, viewportWidth = screenWidth, viewportHeight = screenHeight): void {
     if (this.count === 0 || !this.program) { return; }
 
     gl.bindVertexArray(this.vao);
@@ -403,7 +407,7 @@ export class UiBatch {
     gl.disable(gl.DEPTH_TEST);
     gl.enable(gl.BLEND);
     gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
-    gl.viewport(0, 0, screenWidth, screenHeight);
+    gl.viewport(0, 0, viewportWidth, viewportHeight);
 
     gl.drawArrays(gl.TRIANGLES, 0, this.count);
 
