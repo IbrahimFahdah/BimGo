@@ -532,6 +532,7 @@ export class GameSession implements GunHost, EditHost {
     const edits = count > 0 ? ` · ${count} edit${count === 1 ? '' : 's'}${skipped > 0 ? ` (${skipped} not applied: their elements are missing)` : ''}` : '';
     const start = this.startedAtSavedHome ? ` Starting at your saved home (${keyOf(InputAction.SetHome)} sets it).` : '';
     if (this.scene.phaseNote) { this.toast(this.scene.phaseNote, 6); }
+    else if (this.showControlsDefaultsNotice()) { /* polish round P-B: once after an update that changed default keys */ }
     else {
       this.toast(`${this.scene.elements.length.toLocaleString('en')} elements · ${(this.scene.geometry.indices.length / 3).toLocaleString('en')} triangles${links}${edits}.${start} Click to look around.`,
         this.startedAtSavedHome ? 4 : 2.6);
@@ -1194,6 +1195,21 @@ export class GameSession implements GunHost, EditHost {
     UnitFormat.set(system, decimalFeet);
     this.bookmarks?.refreshLabels();
     this.settingsChanged();
+  }
+
+  /**
+   * Polish round P-B: after an update that changed default keys, a one-time toast (how many, any clash with the user's
+   * own keys, where to look); the clashes are logged. The settings then record the version as seen.
+   */
+  private showControlsDefaultsNotice(): boolean {
+    const notice = Hotkeys.pendingDefaultsNotice();
+    if (!notice) { return false; }
+    for (const [first, second] of Hotkeys.newDefaultClashes(Hotkeys.freshChanges)) {
+      console.info(`Key bindings: the new default ${Hotkeys.map.display(first.chord)} for “${InputCatalog.get(first.action)?.label}” / “${InputCatalog.get(second.action)?.label}” clashes with your own binding (CONTROLS shows it in red).`);
+    }
+    this.toast(notice, 7);
+    Hotkeys.markDefaultsSeen(this.settings);
+    return true;
   }
 
   /** Writes the eye-height presets and the units into the viewer settings and saves them. */

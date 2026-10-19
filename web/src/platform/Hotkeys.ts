@@ -1,6 +1,6 @@
-import type { InputAction } from '../core/scene/InputCatalog';
+import { type DefaultsChange, type InputAction, InputCatalog } from '../core/scene/InputCatalog';
 import { KeyCodes } from '../core/scene/KeyChord';
-import { KeyMap } from '../core/scene/KeyMap';
+import { type BindingClash, KeyMap } from '../core/scene/KeyMap';
 import type { ViewerSettings } from '../game/ViewerSettings';
 
 /** The punctuation keys' KeyboardEvent.code (the layout map names them). */
@@ -11,6 +11,19 @@ const OEM_CODES: [number, string][] = [
 ];
 
 interface LayoutKeyboard { getLayoutMap?: () => Promise<Map<string, string>> }
+
+// Polish round P-B: the controls defaults version the settings hold (-1: not read yet) and the one the tags compare
+let seenVersion = -1;
+let tagsSince = Number.MAX_SAFE_INTEGER;
+// Per action: changed in a version newer than the one seen when this page loaded (NEW / CHANGED tags)
+const fresh = new Map<InputAction, boolean>(); // action → added
+let freshChanges: DefaultsChange[] = [];
+
+function refreshFresh(): void {
+  fresh.clear();
+  freshChanges = InputCatalog.changesSince(tagsSince);
+  for (const change of freshChanges) { fresh.set(change.action, (fresh.get(change.action) ?? false) || change.added); }
+}
 
 /**
  * The app's key map (port of BimGo.App/Platform/Hotkeys.cs, input round B2): one per browser (the viewer settings keep
@@ -38,12 +51,54 @@ export const Hotkeys = {
     for (const problem of problems) { console.info(`Key bindings: skipped ${problem}.`); }
     const clashes = Hotkeys.map.allClashes().length;
     if (clashes > 0) { console.info(`Key bindings: ${clashes} clash${clashes === 1 ? '' : 'es'} (shown in red in CONTROLS).`); }
+
+    // Polish round P-B: which controls defaults the user has seen (the tags last for this page)
+    seenVersion = Math.max(0, settings.controlsDefaultsVersion);
+    if (tagsSince === Number.MAX_SAFE_INTEGER) { tagsSince = seenVersion; }
+    refreshFresh();
   },
 
   /** Puts the changed bindings into the settings (saved by the caller). */
   write(settings: ViewerSettings): void {
     settings.keyBindings = Hotkeys.map.toOverrides();
     settings.padBindings = Hotkeys.map.toPadOverrides();
+    if (seenVersion >= 0) { settings.controlsDefaultsVersion = seenVersion; } // P-B
+  },
+
+  /** P-B: the defaults this page's tags mark (changed after the version seen when it loaded). */
+  get freshChanges(): DefaultsChange[] { return freshChanges; },
+
+  /** P-B: the tag for a row in CONTROLS: "NEW", "CHANGED" or null. */
+  freshTag(action: InputAction): string | null {
+    const added = fresh.get(action);
+    return added === undefined ? null : added ? 'NEW' : 'CHANGED';
+  },
+
+  /**
+   * P-B: the one-time notice after an update that changed defaults ("Controls: N defaults changed · …"), or null when
+   * the user has seen the current defaults. Clashes between a new default and a rebind of theirs are counted.
+   */
+  pendingDefaultsNotice(): string | null {
+    if (seenVersion < 0 || seenVersion >= InputCatalog.DEFAULTS_VERSION) { return null; }
+    const changes = InputCatalog.changesSince(seenVersion);
+    if (changes.length === 0) { return null; }
+    const clashes = Hotkeys.newDefaultClashes(changes).length;
+    const clash = clashes === 0 ? '' : ` · ${clashes} clash${clashes === 1 ? '' : 'es'} with your own keys (red)`;
+    return `Controls: ${changes.length} default${changes.length === 1 ? '' : 's'} changed${clash} · Esc → CONTROLS`;
+  },
+
+  /** P-B: the clashes left in the map that involve a changed default (a rebind of the user's now meets a new default). */
+  newDefaultClashes(changes: DefaultsChange[]): [BindingClash, BindingClash][] {
+    const changed = new Set(changes.map(c => c.action));
+    return Hotkeys.map.allClashes().filter(([first, second]) => changed.has(first.action) || changed.has(second.action));
+  },
+
+  /** P-B: the notice was shown: the settings record the current defaults version (the tags stay for this page). */
+  markDefaultsSeen(settings: ViewerSettings): void {
+    if (seenVersion >= InputCatalog.DEFAULTS_VERSION) { return; }
+    seenVersion = InputCatalog.DEFAULTS_VERSION;
+    settings.controlsDefaultsVersion = seenVersion;
+    settings.save();
   },
 
   /**

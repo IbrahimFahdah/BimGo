@@ -3,6 +3,7 @@ import { GenericPadMap, PadSource } from '../core/scene/GenericPadMap';
 import { KeyChord, KeyCodes, KeyModifiers, type KeyState } from '../core/scene/KeyChord';
 import { KeyMap } from '../core/scene/KeyMap';
 import { Rgba } from '../engine/ui/Rgba';
+import { UiBatch } from '../engine/ui/UiBatch';
 import type { FontAtlas } from '../engine/ui/UiFont';
 import { UiTheme } from '../engine/ui/UiTheme';
 import { SoundId } from '../platform/audio';
@@ -12,6 +13,7 @@ import { Hotkeys } from '../platform/Hotkeys';
 import { type InputState, Vk } from '../platform/input';
 import type { GameSession } from './GameSession';
 import type { Widgets } from './Menus';
+import { PanelSize, ScrollRegion, ShellStyle } from './PanelShell';
 
 const SEARCH_MAX = 40;
 const SLIDER_PAD_LOOK = 51, SLIDER_PAD_DEAD = 52, SLIDER_PAD_TRIGGER = 53;
@@ -52,7 +54,10 @@ const PAD_MAP_STEPS: [number, string][] = [
  */
 export class ControlsPanel {
   open = false;
-  private scroll = 0;
+  private readonly scroll = new ScrollRegion();
+  // Polish round P-B: RESET ALL asks first, listing what it will change
+  private resetAllAsk = false;
+  private resetAllText = '';
   private notice: string | null = null;
   private noticeError = false;
   private search = '';
@@ -104,6 +109,13 @@ export class ControlsPanel {
     this.open = true;
     this.notice = null;
     this.rowsVersion = Number.MIN_SAFE_INTEGER;
+    this.resetAllAsk = false;
+
+    // Polish round P-B: after an update that changed defaults, say what the tags mean
+    const fresh = Hotkeys.freshChanges.length;
+    if (fresh > 0) {
+      this.setNotice(`NEW / CHANGED: ${fresh} default${fresh === 1 ? '' : 's'} this version changed (search “new” or “changed”; a red key clashes with one of yours)`, false);
+    }
   }
 
   /** Esc / CLOSE: a clash question or MAP BUTTONS is dismissed first; otherwise the panel closes. */
@@ -114,8 +126,9 @@ export class ControlsPanel {
       this.endPadMapping(false);
       return true;
     }
-    if (this.pendingAction !== InputAction.None) {
+    if (this.pendingAction !== InputAction.None || this.resetAllAsk) {
       this.pendingAction = InputAction.None;
+      this.resetAllAsk = false;
       this.setNotice('Not changed', false);
       return true;
     }
@@ -288,25 +301,28 @@ export class ControlsPanel {
 
   // #region Panel
 
-  /** CONTROLS full screen: search and file buttons, gamepad tuning, the question or the last notice, the list, CLOSE. */
+  /**
+   * CONTROLS in the panel shell (polish round P-A1): IMPORT / EXPORT / RESET ALL in the header, the search, the gamepad
+   * tuning, the clash question or the last notice, the grouped list (a scroll region).
+   */
   build(): void {
-    const session = this.session, ui = session.ui, f = ui.atlas, w = this.w, input = session.input;
-    const width = session.screenWidth, height = session.screenHeight;
-    ui.rect(0, 0, width, height, UiTheme.MENU_BACKGROUND);
+    const session = this.session, ui = session.ui, f = ui.atlas, w = this.w, input = session.input, shell = session.shell;
     if (!input.leftDown) { w.activeSlider = -1; }
-    const asking = this.pendingAction !== InputAction.None;
+    const asking = this.pendingAction !== InputAction.None || this.resetAllAsk;
     const mapping = this.mappingPad;
     const interactive = !this.capturing && !asking && !mapping;
 
-    const x = this.s(56), pw = width - this.s(112);
-    let y = this.s(48);
-    ui.text(f.small, x, y, 'BIMGO', UiTheme.TEXT_MUTED, this.s(2.6));
-    y += this.s(20);
-    ui.text(f.title, x, y, 'CONTROLS', UiTheme.TEXT, this.s(2.4));
-    ui.textRight(f.small, x + pw, y + this.s(16), 'Click a key to change it · right-click clears it · saved at once · Esc back', UiTheme.TEXT_MUTED, this.s(0.6));
-    y += this.s(60);
+    // Header: IMPORT… · EXPORT… · RESET ALL on the right
+    const allDefault = Hotkeys.map.allDefault();
+    const controlsW = this.s(130) * 2 + this.s(UiTheme.GAP_SMALL) * 2 + (allDefault ? 0 : this.s(140));
+    const frame = shell.beginPanel(PanelSize.Wide, 'CONTROLS', UiTheme.ACCENT, 'Click a key to change it · right-click clears it · saved at once', controlsW);
+    if (shell.headerButton(frame, 'IMPORT…', ShellStyle.Normal, interactive, this.s(130))) { void this.importKeymap(); }
+    if (shell.headerButton(frame, 'EXPORT…', ShellStyle.Normal, interactive, this.s(130))) { this.exportKeymap(); }
+    if (!allDefault && shell.headerButton(frame, 'RESET ALL', ShellStyle.Danger, interactive, this.s(140))) { this.askResetAll(); } // P-B: asks first
+    const x = frame.ix, pw = frame.iw;
+    let y = frame.bodyTop;
 
-    // Search box and the file buttons
+    // Search box
     if (this.typingPause > 0) { this.typingPause--; }
     else if (interactive) { this.typeIntoSearch(input); }
     const boxW = Math.min(this.s(340), pw * 0.4), boxH = this.s(34);
@@ -317,24 +333,13 @@ export class ControlsPanel {
       const used = ui.text(f.body, x + this.s(10), textY, this.search, UiTheme.TEXT);
       if ((Math.trunc(session.clock * 2) & 1) === 0) { ui.rect(x + this.s(11) + used, y + this.s(8), this.s(2), boxH - this.s(16), UiTheme.TEXT_SOFT); }
     }
-    let bx = x + pw - this.s(150);
-    if (w.smallButton(f, bx, y + this.s(2), this.s(150), this.s(30), 'IMPORT…') && interactive) { void this.importKeymap(); }
-    bx -= this.s(160);
-    if (w.smallButton(f, bx, y + this.s(2), this.s(150), this.s(30), 'EXPORT…') && interactive) { this.exportKeymap(); }
-    bx -= this.s(190);
-    if (!Hotkeys.map.allDefault() && w.smallButton(f, bx, y + this.s(2), this.s(180), this.s(30), 'RESET ALL', true) && interactive) {
-      Hotkeys.map.resetAll();
-      this.save();
-      session.sound.play(SoundId.UiClick);
-      this.setNotice('Every key is back to its default.', false);
-    }
     y += boxH + this.s(12);
 
     // Gamepad tuning: look speed, dead zone, trigger threshold, invert Y, swap sticks, map buttons
     y += this.buildPadTuning(f, input, x, y, pw, interactive);
 
     // MAP BUTTONS, the clash question, the capture prompt or the notice
-    const noticeH = this.s(34);
+    const noticeH = this.resetAllAsk ? this.s(54) : this.s(34);
     if (mapping) {
       this.buildPadMappingStrip(f, x, y, pw, noticeH);
     } else if (asking) {
@@ -349,6 +354,22 @@ export class ControlsPanel {
         this.pendingAction = InputAction.None;
         this.setNotice('Not changed', false);
       }
+    } else if (this.resetAllAsk) {
+      // P-B: RESET ALL lists what it changes; CONFIRM resets, CANCEL (or Esc) keeps everything
+      ui.panel(x, y, pw, noticeH, UiTheme.PANEL_STRONG, UiTheme.DANGER);
+      const buttonsW = this.s(240);
+      ui.textWrapped(f.body, x + this.s(12), y + this.s(6), pw - buttonsW - this.s(36), this.resetAllText, UiTheme.TEXT, 2);
+      const by = y + noticeH * 0.5 - this.s(14);
+      if (w.smallButton(f, x + pw - buttonsW - this.s(6), by, this.s(120), this.s(28), 'CONFIRM')) {
+        this.resetAllAsk = false;
+        Hotkeys.map.resetAll();
+        this.save();
+        session.sound.play(SoundId.UiClick);
+        this.setNotice('Every key is back to its default.', false);
+      } else if (w.smallButton(f, x + pw - this.s(116), by, this.s(110), this.s(28), 'CANCEL')) {
+        this.resetAllAsk = false;
+        this.setNotice('Not changed', false);
+      }
     } else if (this.capturing) {
       const def = InputCatalog.get(this.captureAction);
       const text = this.captureSlot === KeyMap.PAD_SLOT
@@ -360,14 +381,35 @@ export class ControlsPanel {
     }
     y += noticeH + this.s(10);
 
-    const bottom = height - this.s(48) - this.s(44) - this.s(16);
-    this.buildRows(f, input, x, y, pw, bottom, interactive);
+    // The list (a scroll region; the wheel is left alone while a key is being captured)
+    this.buildRows(f, input, x, y, pw, frame.bodyBottom, interactive);
 
-    if (w.menuButton(f, x, height - this.s(48) - this.s(44), this.s(160), 'CLOSE', false, false, true, this.s(44))) { this.close(); }
     const clashes = this.slotClash.filter(c => c).length;
-    if (clashes > 0) {
-      ui.text(f.body, x + this.s(180), height - this.s(48) - this.s(30), `${clashes}${clashes === 1 ? ' key clashes' : ' keys clash'} (red): change one of each pair`, UiTheme.DANGER);
+    const clashText = clashes === 0 ? null : `${clashes} ${clashes === 1 ? 'key clashes' : 'keys clash'} (red): change one of each pair`;
+    shell.endPanel(frame, clashText, 'Esc goes back · F1 shows the keys for what you are doing');
+  }
+
+  /** P-B: RESET ALL lists the actions it would put back (current → default, keys and gamepad) and waits for CONFIRM. */
+  private askResetAll(): void {
+    const map = Hotkeys.map;
+    const defaults = new KeyMap();
+    defaults.keyName = map.keyName;
+    const parts: string[] = [];
+    let count = 0;
+    const blank = (label: string) => label ? label : 'none';
+    for (const def of InputCatalog.all) {
+      if (def.isFixed || map.isDefault(def.action)) { continue; }
+      count++;
+      if (parts.length >= 6) { continue; }
+      const now = map.isKeyDefault(def.action) ? null : `${map.allLabelsOf(def.action)} → ${defaults.allLabelsOf(def.action)}`;
+      const pad = map.padChord(def.action).equals(def.padDefault) ? null : `gamepad ${blank(map.padLabel(def.action))} → ${blank(defaults.padLabel(def.action))}`;
+      parts.push(`${def.label}: ${[now, pad].filter(p => p !== null).join(', ')}`);
     }
+    if (count === 0) { return; }
+    const more = count > parts.length ? ` · and ${count - parts.length} more` : '';
+    this.resetAllText = `RESET ALL puts ${count} action${count === 1 ? '' : 's'} back to the defaults: ${parts.join(' · ')}${more}`;
+    this.resetAllAsk = true;
+    this.session.sound.play(SoundId.UiClick);
   }
 
   /** A header per group (name and note) and a row per action with its three key slots, the gamepad's and RESET. */
@@ -375,6 +417,8 @@ export class ControlsPanel {
     this.refreshRows();
     const ui = this.session.ui, w = this.w, map = Hotkeys.map;
     const rowH = this.s(30);
+    const regionW = pw;
+    pw -= this.s(UiTheme.SCROLL_GUTTER); // the columns stop short of the scroll bar
     const labelW = pw * 0.38;
     const slotW = Math.floor((pw - labelW - this.s(110)) / KeyMap.ALL_SLOTS);
     const resetX = x + labelW + slotW * KeyMap.ALL_SLOTS + this.s(10);
@@ -391,15 +435,12 @@ export class ControlsPanel {
       return;
     }
 
-    const visible = Math.max(1, Math.trunc((bottom - y) / rowH));
-    const maxScroll = Math.max(0, this.rows.length - visible);
-    if (interactive && input.wheel !== 0) { this.scroll -= input.wheel * 3; }
-    this.scroll = Math.min(Math.max(this.scroll, 0), maxScroll);
-    const last = Math.min(this.rows.length, this.scroll + visible);
-
-    for (let i = this.scroll; i < last; i++) {
+    const shell = this.session.shell;
+    const top = shell.beginScroll(this.scroll, input, x, y, regionW, bottom - y, interactive);
+    const [first, last] = this.scroll.visibleRows(rowH, this.rows.length);
+    for (let i = first; i < last; i++) {
       const [context, action] = this.rows[i];
-      const ry = y + (i - this.scroll) * rowH;
+      const ry = top + i * rowH;
       if (action === InputAction.None) {
         const used = ui.text(f.small, x, ry + this.s(10), InputCatalog.contextName(context).toUpperCase(), UiTheme.ACCENT, this.s(1.4));
         const note = InputCatalog.contextNote(context);
@@ -411,7 +452,21 @@ export class ControlsPanel {
       const rowHover = w.hover(x, ry, pw, rowH - this.s(2));
       const stripe = rowHover ? Rgba.hex(0xffffff, 0.05) : (i & 1) === 0 ? Rgba.hex(0xffffff, 0.025) : 0;
       if (stripe) { ui.rect(x, ry, pw, rowH - this.s(2), stripe); }
-      ui.textWrapped(f.body, x + this.s(10), ry + this.s(6), labelW - this.s(16), def.label, def.isFixed ? UiTheme.TEXT_MUTED : UiTheme.TEXT, 1);
+
+      // P-B: NEW / CHANGED (a default this version changed) at the label's right
+      const tag = Hotkeys.freshTag(action);
+      let tagW = 0;
+      if (tag) {
+        let tagClash = false; // red: a new default meets one of the user's own keys
+        for (let k = 0; k < KeyMap.ALL_SLOTS && !tagClash; k++) { tagClash = this.slotClash[action * KeyMap.ALL_SLOTS + k] === true; }
+        const tagColour = tagClash ? UiTheme.DANGER : UiTheme.ACCENT;
+        tagW = UiBatch.measure(f.small, tag, this.s(1)) + this.s(12);
+        const tx = x + labelW - tagW - this.s(8);
+        ui.rect(tx, ry + this.s(6), tagW, rowH - this.s(14), Rgba.withAlpha(tagColour, 0.22));
+        ui.text(f.small, tx + this.s(6), ry + this.s(9), tag, tagColour, this.s(1));
+        tagW += this.s(8);
+      }
+      ui.textWrapped(f.body, x + this.s(10), ry + this.s(6), labelW - this.s(16) - tagW, def.label, def.isFixed ? UiTheme.TEXT_MUTED : UiTheme.TEXT, 1);
 
       for (let s = 0; s < KeyMap.ALL_SLOTS; s++) {
         const sx = x + labelW + s * slotW, sw = slotW - this.s(8), sy = ry + this.s(2), sh = rowH - this.s(6);
@@ -456,16 +511,14 @@ export class ControlsPanel {
       }
     }
 
-    if (maxScroll > 0) {
-      ui.textRight(f.small, x + pw, bottom + this.s(2), `${this.scroll + 1}–${last} of ${this.rows.length} rows · wheel to scroll`, UiTheme.TEXT_FAINT);
-    }
+    shell.endScroll(this.scroll, input, top + this.rows.length * rowH);
   }
 
   /** Every group in display order with the actions matching every word of the search; the clashing slots (red). */
   private refreshRows(): void {
     const search = this.search.trim();
     if (this.rowsVersion === Hotkeys.version && this.rowsSearch === search) { return; }
-    if (this.rowsSearch !== search) { this.scroll = 0; }
+    if (this.rowsSearch !== search) { this.scroll.reset(); }
     this.rowsSearch = search;
     this.rowsVersion = Hotkeys.version;
     this.rows = [];
@@ -477,7 +530,7 @@ export class ControlsPanel {
       let header = false;
       for (const def of InputCatalog.all) {
         if (def.context !== context) { continue; }
-        const keys = (map.allLabelsOf(def.action) + ' ' + map.padLabel(def.action)).toLowerCase();
+        const keys = (map.allLabelsOf(def.action) + ' ' + map.padLabel(def.action) + ' ' + (Hotkeys.freshTag(def.action) ?? '')).toLowerCase(); // P-B: "new", "changed"
         const label = def.label.toLowerCase();
         if (!words.every(word => label.includes(word) || group.includes(word) || keys.includes(word))) { continue; }
         if (!header) {
