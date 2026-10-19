@@ -186,13 +186,15 @@ export class PanelShell {
     ui.rect(frame.x + this.s(1), frame.noticeY - this.s(UiTheme.GAP_SMALL) * 0.5, frame.w - this.s(2), Math.max(1, ui.scale), UiTheme.DIVIDER);
     const y = frame.footerY, h = this.s(UiTheme.FOOTER_HEIGHT);
     const side = Math.min(this.s(UiTheme.FOOTER_SIDE_WIDTH), frame.iw * 0.2);
-    const back = this.button(f, input, frame.ix, y, side, h, backLabel ?? '← BACK', ShellStyle.Normal, true);
+    const backLabelText = backLabel ?? '← BACK';
+    const backW = Math.max(side, Math.min(this.buttonWidth(f, backLabelText), frame.iw * 0.3)); // a longer label (← CLASH MODE) isn't clipped
+    const back = this.button(f, input, frame.ix, y, backW, h, backLabelText, ShellStyle.Normal, true);
     const close = this.button(f, input, frame.ix + frame.iw - side, y, side, h, 'CLOSE', ShellStyle.Normal, true);
     let pressed = FOOTER_NONE;
     const count = this.footerItems.length;
     if (count > 0) {
       const gap = this.s(UiTheme.GAP);
-      const left = frame.ix + side + gap * 2, right = frame.ix + frame.iw - side - gap * 2;
+      const left = frame.ix + backW + gap * 2, right = frame.ix + frame.iw - side - gap * 2;
       const room = right - left - gap * (count - 1);
       const total = this.footerItems.reduce((sum, item) => sum + this.buttonWidth(f, item.label), 0);
       const squeeze = total > room && total > 0 ? room / total : 1;

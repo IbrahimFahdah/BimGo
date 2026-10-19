@@ -2176,6 +2176,7 @@ export class GameSession implements GunHost, EditHost {
       this.clashes.drawMarkers(this.overlay);
       this.overlay.draw(this.camera, true, 1, false);
       this.overlay.draw(this.camera, false, 0.16, false);
+      this.clashes.tools.draw(); // C-C2: a grouping tool's dots, sphere and handle
     } else if (this.photo.gridLines && !this.clashes.shot && ((this.photo.open && !photo) || (photo && this.photo.shooting))) {
       this.grids.draw(photo ? this.photo.lineScale : 1); // polish round P-C: grids in photo mode and its photos (ticked)
     }

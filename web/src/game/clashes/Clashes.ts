@@ -28,12 +28,16 @@ import type { GameSession } from '../GameSession';
 import { PhotoTarget } from '../PhotoMode';
 import type { ProgressState } from '../ProgressScreen';
 import { UnitFormat } from '../UnitFormat';
+import { ScrollRegion } from '../PanelShell';
 import { ClashPanel } from './ClashPanel';
+import { CLASH_SHOW_CHOICES, CLASH_SHOW_LABELS, CLASH_TOOL_ACTIONS, ClashGroupUi } from './ClashGroupUi';
+import { ClashReportUi } from './ClashReportUi';
+import { CLASH_TOOL_BOX, CLASH_TOOL_NONE, CLASH_TOOL_PICK, CLASH_TOOL_SPHERE, ClashTools } from './ClashTools';
 
 /** The rest of the model in the clash view (G cycles). */
 export const ClashViewMode = { GHOST: 0, WIREFRAME: 1, REAL: 2, HIDDEN: 3 } as const;
 export const CLASH_VIEW_NAMES = ['GHOST', 'WIREFRAME', 'REAL MODEL', 'HIDDEN'];
-const CLASH_STATUS_FILTERS = ['ALL', 'OPEN', 'NEW', 'ACTIVE', 'REVIEWED', 'APPROVED', 'RESOLVED'];
+export const CLASH_STATUS_FILTERS = ['ALL', 'OPEN', 'NEW', 'ACTIVE', 'REVIEWED', 'APPROVED', 'RESOLVED'];
 const CLASH_STATUS_SHORT = ['1 NEW', '2 ACTIVE', '3 REVIEW', '4 APPROVE', '5 RESOLVE'];
 const CLASH_GHOST = 0.15, CLASH_WIRE = 0.4;
 const A_TINT = [0.94, 0.27, 0.27, 0.75], B_TINT = [0.13, 0.77, 0.37, 0.75], BOTH_TINT = [0.98, 0.62, 0.10, 0.75];
@@ -43,7 +47,9 @@ const CLASH_FOCUS_BOX_CAP = 200, CLASH_REVIT_WARN = 500;
 const THUMB_W = 160, THUMB_H = 90, THUMB_RENDER_W = 320, THUMB_RENDER_H = 180, THUMB_CACHE_MAX = 300;
 const SHOT_W = 1280, SHOT_H = 720;
 const PICTURE_BUDGET_MS = 40;
-const DROP_DOCK_TEST = 11, DROP_DOCK_STATUS = 12, DROP_DOCK_LEVEL = 13, DROP_DOCK_VIEW = 14;
+const DROP_DOCK_TEST = 11, DROP_DOCK_STATUS = 12, DROP_DOCK_LEVEL = 13, DROP_DOCK_VIEW = 14, DROP_DOCK_REPORT = 15, DROP_DOCK_AUTO = 16, DROP_DOCK_SHOW = 19;
+/** REPORT… (C-C3: the HTML / XML report's card first; the BimGo JSON exchange as before). */
+const CLASH_REPORT_ACTIONS = ['EXPORT REPORT (HTML / XML)…', 'EXPORT BIMGO REPORT (JSON)…', 'IMPORT BIMGO REPORT (JSON)…'];
 const CARD_BUTTONS_Y = 210;
 /** Comment thumbnails as other comments (192 × 108 JPEG). */
 const COMMENT_THUMB_W = 192, COMMENT_THUMB_H = 108;
@@ -51,7 +57,7 @@ const COMMENT_THUMB_W = 192, COMMENT_THUMB_H = 108;
 const CLASH_HINT = new KeyHint(() =>
   `${keyOf(InputAction.ClashPrevious)} ${keyOf(InputAction.ClashNext)} previous / next · ${keyOf(InputAction.ClashFrame)} re-frame · `
   + `1–5 status · ${keyOf(InputAction.ClashView)} view · ${keyOf(InputAction.ClashSectionToggle)} box · ${keyOf(InputAction.ClashSelectAll)} all · `
-  + `${keyOf(InputAction.ClashSelectInRevit)} Revit · RMB-drag looks · ${keyOf(InputAction.ClashMode)} / Esc leaves`);
+  + `${keyOf(InputAction.ClashGroup)} group · right-click rows · ${keyOf(InputAction.ClashSelectInRevit)} Revit · RMB-drag looks · ${keyOf(InputAction.ClashMode)} / Esc leaves`);
 
 /** A clash's status colour (rows, markers, chips). */
 export function clashStatusColour(status: string): number {
@@ -76,7 +82,7 @@ export function clashLevel(clash: ClashRecord): string {
   return clash.a.level.trim() && clash.a.level !== '—' ? clash.a.level : clash.b.level.trim() && clash.b.level !== '—' ? clash.b.level : '—';
 }
 
-interface ClashRow {
+export interface ClashRow {
   clash: ClashRecord;
   title: string;
   detail: string;
@@ -84,8 +90,12 @@ interface ClashRow {
   search: string;
 }
 
-function makeRow(clash: ClashRecord): ClashRow {
-  const detail = `${clashAmount(clash)} · ${clashLevel(clash)}${clash.approximate ? ' · approximate (stand-in box)' : ''}`
+/**
+ * One clash's row text: the pair, depth or gap, level, (P-C) the nearest grid intersection, flags, assignee; status; and
+ * what search reads (so "C-4" finds the clashes there).
+ */
+function makeRow(clash: ClashRecord, gridNode: string | null): ClashRow {
+  const detail = `${clashAmount(clash)} · ${clashLevel(clash)}${gridNode ? ' · ' + gridNode : ''}${clash.approximate ? ' · approximate (stand-in box)' : ''}`
     + (clash.assignedTo ? ` · ${clash.assignedTo}` : '') + (clash.notes ? ' · notes' : '');
   const title = `${elementRefLabel(clash.a)}  ×  ${elementRefLabel(clash.b)}`;
   return { clash, title, detail, status: ClashStatus.label(clash.status).toUpperCase(), search: `${title} ${detail} ${clash.notes ?? ''} ${clash.status}`.toLocaleLowerCase() };
@@ -134,6 +144,12 @@ export class Clashes {
   /** Bumped with every change (Save compares it). */
   revision = 0;
   readonly panel: ClashPanel;
+  /** C-C1: clash groups (rows, card, menus, actions). */
+  readonly groups: ClashGroupUi;
+  /** C-C2: the grouping tools. */
+  readonly tools: ClashTools;
+  /** C-C3: the HTML / XML report. */
+  readonly report: ClashReportUi;
 
   modeOn = false;
   view: number = ClashViewMode.GHOST;
@@ -173,10 +189,17 @@ export class Clashes {
   private levelFilter: string | null = null;
   private search = '';
   searchFocused = false;
-  private dockScroll = 0;
+  /** The list's scroll region (P-A2: the shared ScrollRegion: wheel, thumb drag, track paging). */
+  readonly listScroll = new ScrollRegion();
   /** The dock's left edge this frame (other docks sit left of it in clash mode). */
   dockLeft = 0;
-  private scrollToCurrent = false;
+  /** The dock's rectangle this frame (0 width: folded away by the box tool). */
+  dockRect: [number, number, number, number] = [0, 0, 0, 0];
+  /** RMB went down over the dock: no drag-look until it is released (C-C1: a right-click there is a menu). */
+  menuLook = false;
+  scrollToCurrent = false;
+  /** A REPORT… pick (after the dock is drawn: they open file pickers): 0 none, 1 the card, 2 export JSON, 3 import JSON. */
+  private reportAction = 0;
   private testCount = 0;
   private dockCounts = '';
   private dockTestName = '';
@@ -226,6 +249,9 @@ export class Clashes {
 
   constructor(private readonly session: GameSession) {
     this.panel = new ClashPanel(session, this);
+    this.groups = new ClashGroupUi(session, this);
+    this.tools = new ClashTools(session, this);
+    this.report = new ClashReportUi(session, this);
     this.refreshViewLabels();
   }
 
@@ -240,8 +266,28 @@ export class Clashes {
       || (this.multiActive && this.multiA.length + this.multiB.length + this.multiDynamicA.length + this.multiDynamicB.length + this.multiBoth.length + this.multiDynamicBoth.length > 0));
   }
 
-  /** True when the player's own movement waits (a flight, or typing in the search box). */
-  get freezesPlayer(): boolean { return this.modeOn && (this.flying || this.searchFocused); }
+  /** True when the player's own movement waits (a flight, typing in the search box; C-C2: picking points with Ctrl held). */
+  get freezesPlayer(): boolean { return this.modeOn && (this.flying || this.searchFocused || this.tools.freezesPlayer); }
+
+  /** True while a flight to a clash is under way. */
+  get isFlying(): boolean { return this.flying; }
+
+  /** Stops a flight where it is (a tool starting, the box tool's orbit). */
+  stopFlying(): void { this.flying = false; }
+
+  /** Moves a flight on (the tools' frames). */
+  advanceFlightNow(dt: number): void { this.advanceFlight(dt); }
+
+  /** How many clashes the review test has (filters aside). */
+  get testClashCount(): number { return this.testCount; }
+
+  /** The list's filters (the report's cover). */
+  get filterState(): { status: number; level: string | null; search: string; show: number } {
+    return { status: this.statusFilter, level: this.levelFilter, search: this.search.trim(), show: this.groups.filter };
+  }
+
+  /** True while TO COMMENTS makes comments. */
+  get commentBatchActive(): boolean { return this.batch !== null; }
 
   // #region Document
 
@@ -421,7 +467,8 @@ export class Clashes {
     this.listDirty = true;
     session.sound.play(SoundId.Commit);
     const other = r.sameModel ? '' : ' The report names a different model: check the pairs.';
-    session.toast(`Report merged: ${r.clashesAdded} clashes added, ${r.clashesUpdated} updated, ${r.unchanged} unchanged; ${r.testsAdded} tests and ${r.setsAdded} sets added.${other}`, 6, !r.sameModel);
+    session.toast(`Report merged: ${r.clashesAdded} clashes added, ${r.clashesUpdated} updated, ${r.unchanged} unchanged; ${r.testsAdded} tests and ${r.setsAdded} sets added`
+      + (r.groupsAdded > 0 ? `; ${r.groupsAdded} group${r.groupsAdded === 1 ? '' : 's'} added` : '') + `.${other}`, 6, !r.sameModel);
   }
 
   // #endregion
@@ -443,6 +490,7 @@ export class Clashes {
     session.menu.closeOverlay();
     this.panel.close();
     session.closeModes(null);
+    session.pathEditor.exit(); // Round K-B: one free-cursor mode at a time
     if (session.paused) { session.setPaused(false); }
     session.showUi();
 
@@ -466,17 +514,30 @@ export class Clashes {
       : `Clash mode: ${keyOf(InputAction.ClashPrevious)} / ${keyOf(InputAction.ClashNext)} previous / next · 1–5 status · RMB-drag looks · ${keyOf(InputAction.ClashMode)} or Esc leaves`, 4);
   }
 
-  /** Leaves clash mode: the clash view goes, the section box and flying stay. */
+  /** Leaves clash mode: the clash view goes, flying stays. QOL round: the clash section box goes too (BOX stays on). */
   exit(): void {
     if (!this.modeOn) { return; }
     const session = this.session;
     if (this.batch) { this.finishBatch(true); }
+    session.grids.close(); // grids round A
+    this.report.cancel(); // C-C3
+    this.report.cardOpen = false;
+    this.tools.leave(); // C-C2: a box tool puts the cut back first
+    this.tools.hover = null;
+    this.menuLook = false;
     this.modeOn = false;
     this.flying = false;
     this.searchFocused = false;
     session.menu.closeOverlay();
     session.input.releaseAll();
-    session.toast(`Clash mode off · still flying (${keyOf(InputAction.Fly)} walks) · the section box stays (${keyOf(InputAction.SectionClear)} clears) · click to look around`, 3.5);
+    let boxCleared = false;
+    if (this.boxOn && session.section.isActive) {
+      session.section.apply(new SectionCut(), false);
+      boxCleared = true;
+    }
+    session.toast(boxCleared
+      ? `Clash mode off · still flying (${keyOf(InputAction.Fly)} walks) · section box off · click to look around`
+      : `Clash mode off · still flying (${keyOf(InputAction.Fly)} walks) · click to look around`, 3);
   }
 
   // #endregion
@@ -495,12 +556,26 @@ export class Clashes {
     if (input.pressed(InputAction.GridsPanel)) { session.grids.toggle(); }
     if (input.pressed(InputAction.GridsCycle)) { session.grids.cycle(); }
     if (input.pressed(InputAction.ColourProfile)) { session.profiles.toggle(); } // colour round A: shows in the real model view
-    if (session.grids.panelOpen && !session.menu.overlays.isOpen && input.pressed(InputAction.Back)) {
+    if (session.grids.panelOpen && this.tools.tool === CLASH_TOOL_NONE && !session.menu.overlays.isOpen && input.pressed(InputAction.Back)) {
       session.grids.close();
       return;
     }
-    if (session.grids.clickNode(input)) { return; } // grids round B: a click on a node flies there
-    // Esc closes an open dropdown first, then stops making comments
+
+    // C-C2: a grouping tool (box, pick points, cluster) has the keys and the mouse
+    if (this.tools.tool !== CLASH_TOOL_NONE) {
+      this.tools.update(input, dt);
+      return;
+    }
+
+    // Esc closes an open dropdown first, then stops making comments (C-B2) or the report (C-C3), closes its card
+    if (input.pressed(InputAction.Back) && this.report.job) {
+      this.report.cancel();
+      return;
+    }
+    if (input.pressed(InputAction.Back) && this.report.cardOpen && !session.menu.overlays.isOpen) {
+      this.report.cardOpen = false;
+      return;
+    }
     if (input.pressed(InputAction.Back) && session.menu.closeOverlay()) { return; }
     if (input.pressed(InputAction.Back) && this.batch) {
       this.finishBatch(true);
@@ -514,9 +589,21 @@ export class Clashes {
     if (input.pressed(InputAction.HideUi)) { session.toggleUiHidden(); }
     if (input.pressed(InputAction.Fullscreen)) { session.toggleFullscreen(); }
     if (input.pressed(InputAction.Screenshot)) { session.requestScreenshot(); }
-    if (input.down(InputAction.DragLook) && !this.flying) { session.player.look(input.mouseDeltaX, input.mouseDeltaY, session.settings.mouseSensitivity, session.settings.invertY); }
+    // C-C1: RMB pressed over the dock opens a row menu, so it doesn't look until it is released
+    if (input.rightPressed && this.overDockAt(input.mouseX, input.mouseY)) { this.menuLook = true; }
+    if (!input.rightDown) { this.menuLook = false; }
+    if (input.down(InputAction.DragLook) && !this.flying && !this.menuLook) { session.player.look(input.mouseDeltaX, input.mouseDeltaY, session.settings.mouseSensitivity, session.settings.invertY); }
     if (!this.flying) { session.padEditorLook(input); }
     session.updateRoom();
+    // C-C3: the dots take clicks as list rows do: a click goes to that clash, Ctrl adds / removes, Shift a run
+    const overDock = this.overDockAt(input.mouseX, input.mouseY), overlayOpen = session.menu.overlays.isOpen;
+    this.tools.updateHover(input.mouseX, input.mouseY, overDock || overlayOpen || input.down(InputAction.DragLook) || this.flying);
+    if (input.leftPressed && this.tools.hover && !overDock && !overlayOpen) {
+      const hit = this.tools.hover;
+      input.consumeClicks();
+      session.sound.play(SoundId.UiClick);
+      this.clickRow(hit, input.isDown(Vk.CONTROL), input.isDown(Vk.SHIFT));
+    } else if (!overDock && !this.tools.hover) { session.grids.clickNode(input); } // grids round B: a node flies there
 
     if (input.pressedOrRepeated(InputAction.ClashNext)) { this.step(1); }
     else if (input.pressedOrRepeated(InputAction.ClashPrevious)) { this.step(-1); }
@@ -526,6 +613,11 @@ export class Clashes {
     else if (input.pressed(InputAction.ClashView)) { this.setView((this.view + 1) % CLASH_VIEW_NAMES.length); }
     else if (input.pressed(InputAction.ClashSectionToggle)) { this.toggleBox(); }
     else if (input.pressed(InputAction.ClashSelectAll)) { this.toggleSelectAllShown(); }
+    else if (input.pressed(InputAction.ClashPictures)) { this.toggleThumbnails(); } // sky round: P / the pad's Back
+    else if (input.pressed(InputAction.ClashUngroup)) { this.groups.ungroupFromKeys(); } // C-C1: Ctrl+Shift+G
+    else if (input.pressed(InputAction.ClashGroup)) { this.groups.groupClashes(this.targetClashes(), null); } // C-C1: Ctrl+G
+    else if (input.pressed(InputAction.ClashPickPoints)) { this.tools.startPickFromKey(); } // P-B: K (TOOLS ▾ → PICK POINTS)
+    else if (input.pressed(InputAction.ClashStatusCycle)) { this.cycleStatus(); } // P-B: the gamepad's LB+A
     else {
       for (let k = 0; k < ClashStatus.ALL.length; k++) {
         if (input.pressed(InputAction.ClashStatusNew + k)) {
@@ -561,6 +653,7 @@ export class Clashes {
   goTo(clash: ClashRecord, animate: boolean): void {
     const session = this.session;
     this.clearSelection();
+    this.groups.current = null; // C-C1: a clash row shows the clash card
     this.current = clash;
     [this.elementA, this.dynamicA] = this.resolve(clash.a);
     [this.elementB, this.dynamicB] = this.resolve(clash.b);
@@ -682,6 +775,9 @@ export class Clashes {
 
   // #region View, box, status, Revit
 
+  /** G: the next view. */
+  cycleView(): void { this.setView((this.view + 1) % CLASH_VIEW_NAMES.length); }
+
   /** G / the VIEW dropdown: how the rest of the model draws round the pair. */
   setView(view: number): void {
     const session = this.session;
@@ -724,9 +820,23 @@ export class Clashes {
     this.thumbLabel = this.session.settings.clashRowPictures ? 'PICTURES: ON' : 'PICTURES: OFF';
   }
 
-  /** 1–5: the status of every selected clash (or the current one); their comments follow. */
+  /** P-B: the next status for the picked group or the current clash (new → … → resolved → new). */
+  private cycleStatus(): void {
+    const status = this.groups.current?.status ?? this.current?.status;
+    if (!status) {
+      this.session.sound.play(SoundId.Error);
+      return;
+    }
+    this.setCurrentStatus(ClashStatus.ALL[(ClashStatus.indexOf(status) + 1) % ClashStatus.ALL.length]);
+  }
+
+  /** 1–5: the status of every selected clash (or the current one; C-C1: the picked group and its members); comments follow. */
   setCurrentStatus(status: string): void {
     const session = this.session;
+    if (this.groups.current) {
+      this.groups.setGroupStatus(this.groups.current, status);
+      return;
+    }
     if (!this.current) {
       session.sound.play(SoundId.Error);
       return;
@@ -891,13 +1001,14 @@ export class Clashes {
 
   /** The list's clashes as dots (status colours; the current one larger, ringed), overlay only. */
   drawMarkers(overlay: Overlay3D): void {
-    if (!this.modeOn) { return; }
+    if (!this.modeOn || this.tools.tool !== CLASH_TOOL_NONE) { return; } // C-C2: a tool draws its own dots
     const origin = this.session.scene.originOffset;
     const count = Math.min(this.list.length, 4000);
     for (let i = 0; i < count; i++) {
       const clash = this.list[i];
       if (clash === this.current) { continue; }
       const point = vec3(clash.x - origin.x, clash.y - origin.y, clash.z - origin.z);
+      if (clash === this.tools.hover) { overlay.dot(point, this.s(9), Rgba.hex(0xffffff)); } // C-C3: the dot under the mouse
       if (this.selected.length > 1 && this.selectedLookup.has(clash)) { overlay.dot(point, this.s(7.5), Rgba.hex(0xffffff)); }
       overlay.dot(point, this.s(4.5), clashStatusColour(clash.status));
     }
@@ -915,10 +1026,11 @@ export class Clashes {
   /** Shows a test in clash mode (filters kept, list rebuilt). */
   setReviewTest(testId: string | null): void {
     if (testId === this.reviewTest) { return; }
+    this.tools.leave(); // C-C2: a tool works on one test's list
     this.clearSelection();
     this.reviewTest = testId;
     this.levelFilter = null;
-    this.dockScroll = 0;
+    this.listScroll.reset();
     this.listDirty = true;
   }
 
@@ -930,9 +1042,10 @@ export class Clashes {
     if (!this.listDirty) { return; }
     this.listDirty = false;
     this.listUnits = UnitFormat.revision;
+    const groups = this.groups;
+    groups.ensureIndex(); // C-C1: rows know their group (search matches group names too)
 
     const words = this.search.trim() ? this.search.trim().toLocaleLowerCase().split(/\s+/) : [];
-    this.list.length = 0;
     this.rows = [];
     const levels = new Set<string>();
     this.levels = [];
@@ -944,13 +1057,16 @@ export class Clashes {
       if (!levels.has(level)) { levels.add(level); this.levels.push(level); }
       if (!this.matchesStatusFilter(clash.status)) { continue; }
       if (this.levelFilter !== null && level !== this.levelFilter) { continue; }
-      const row = makeRow(clash);
-      if (!words.every(w => row.search.includes(w))) { continue; }
+      const row = makeRow(clash, this.session.grids.clashLocation(clash)?.node ?? null);
+      const groupName = words.length === 0 ? '' : groups.searchText(clash).toLocaleLowerCase();
+      if (!words.every(w => row.search.includes(w) || groupName.includes(w))) { continue; }
       this.rows.push(row);
     }
     // Open first (new, active, reviewed, approved, resolved), deepest first
     this.rows.sort((p, q) => ClashStatus.indexOf(p.clash.status) - ClashStatus.indexOf(q.clash.status) || q.clash.distance - p.clash.distance);
-    for (const row of this.rows) { this.list.push(row.clash); }
+    groups.buildDisplay(this.rows, this.list); // C-C1: group rows among the clashes; the list in display order (every member)
+    this.tools.dotsDirty = true; // C-C2: the tools' dots and the cluster follow the list
+    this.tools.sphereDirty = true;
     this.pruneSelection();
 
     // Levels in elevation order, unknown ones last
@@ -962,7 +1078,9 @@ export class Clashes {
 
     const test = findTest(document, this.reviewTest);
     this.dockTestName = test ? test.name : 'No test';
-    this.dockCounts = `${this.list.length.toLocaleString('en')} shown · ${this.testCount.toLocaleString('en')} in the test`;
+    const groupCount = groups.groupsInTest;
+    this.dockCounts = `${this.list.length.toLocaleString('en')} shown · ${this.testCount.toLocaleString('en')} in the test`
+      + (groupCount > 0 ? ` · ${groupCount.toLocaleString('en')} group${groupCount === 1 ? '' : 's'}` : '');
     this.statusLabel = 'STATUS: ' + CLASH_STATUS_FILTERS[this.statusFilter];
     this.levelLabel = 'LEVEL: ' + (this.levelFilter ?? 'ALL');
     this.refreshViewLabels();
@@ -970,13 +1088,15 @@ export class Clashes {
     this.refreshCard();
   }
 
-  private refreshCard(): void {
+  refreshCard(): void {
+    this.groups.refreshCard(); // C-C1
     const clash = this.current;
     if (!clash) {
       this.cardDetail = this.cardAssign = this.cardNotes = null;
       return;
     }
-    this.cardDetail = makeRow(clash).detail + (this.currentRoom ? ' · ' + this.currentRoom : '');
+    const grids = this.session.grids;
+    this.cardDetail = makeRow(clash, grids.clashLocation(clash)?.node ?? null).detail + (this.currentRoom ? ' · ' + this.currentRoom : '') + grids.clashSuffix(clash, true); // grids round B
     this.cardAssign = clash.assignedTo ? 'ASSIGNED: ' + clash.assignedTo : 'ASSIGN…';
     this.cardNotes = clash.notes ? 'NOTES (EDIT)…' : 'NOTES…';
   }
@@ -1009,7 +1129,7 @@ export class Clashes {
     }
     if (changed) {
       this.listDirty = true;
-      this.dockScroll = 0;
+      this.listScroll.reset();
     }
   }
 
@@ -1019,21 +1139,37 @@ export class Clashes {
 
   /** Clash mode's HUD: the dock on the right (the session draws the status panels, help, banners and toasts). */
   buildDock(f: FontAtlas): void {
-    const session = this.session, ui = session.ui, input = session.input, overlays = session.menu.overlays;
+    const session = this.session, ui = session.ui, input = session.input, overlays = session.menu.overlays, wd = session.menu.widgets;
     const width = session.screenWidth, height = session.screenHeight;
     this.refreshList();
     overlays.begin(input);
     const w = Math.min(this.s(420), width * 0.42);
+
+    // C-C2: GROUP BY BOX… folds the dock away (its bar only); PICK POINTS and CLUSTER keep it beside their bar
+    if (this.tools.tool === CLASH_TOOL_BOX) {
+      this.dockRect = [0, 0, 0, 0];
+      this.dockLeft = width;
+      this.tools.buildBar(f, input, height, width);
+      overlays.draw(f, input, 0, 0, width, height);
+      this.tools.runBarAction();
+      return;
+    }
+    if (this.tools.tool !== CLASH_TOOL_NONE) { this.tools.buildBar(f, input, height, width - w - this.s(16)); }
     const x = width - w - this.s(16), y = this.s(16), h = height - this.s(32);
     this.dockLeft = x;
+    this.dockRect = [x, y, w, h];
     ui.panel(x, y, w, h, UiTheme.PANEL_STRONG, UiTheme.PANEL_BORDER);
-    const hover = (hx: number, hy: number, hw: number, hh: number) => input.mouseX >= hx && input.mouseX < hx + hw && input.mouseY >= hy && input.mouseY < hy + hh;
-    const overDock = hover(x, y, w, h);
+    const overDock = this.overDockAt(input.mouseX, input.mouseY);
+    if (overDock && input.rightPressed) { this.menuLook = true; } // C-C1: a right-click on the dock is a menu, not a look
+
+    // P-A2: the docks' header (title, the counts on the right, a divider)
     const ix = x + this.s(14), iw = w - this.s(28);
-    let cy = y + this.s(12);
-    ui.text(f.small, ix, cy, 'CLASH MODE', UiTheme.ACCENT, this.s(2));
-    ui.textRight(f.small, ix + iw, cy, this.dockCounts, UiTheme.TEXT_MUTED);
-    cy += this.s(22);
+    const header = this.s(UiTheme.DOCK_HEADER_HEIGHT);
+    const titleY = y + Math.round((header - f.small.lineHeight) * 0.5);
+    ui.text(f.small, ix, titleY, 'CLASH MODE', UiTheme.ACCENT, this.s(1.6));
+    ui.textRight(f.small, ix + iw, titleY, this.dockCounts, UiTheme.TEXT_MUTED);
+    ui.rect(x + this.s(1), y + header, w - this.s(2), Math.max(1, ui.scale), UiTheme.DIVIDER);
+    let cy = y + header + this.s(UiTheme.GAP_SMALL);
 
     const document = this.document!;
     if (overlays.button(f, input, ix, cy, iw, this.s(30), this.dockTestName, overlays.isDropdownOpen(this.list, DROP_DOCK_TEST))) {
@@ -1046,13 +1182,13 @@ export class Clashes {
     }
     cy += this.s(38);
 
-    // Filters: status, level (dropdowns), search
+    // Filters: status, level, show (C-C2: SHOW joins them; search moved down beside SELECT ALL)
     const third = (iw - this.s(12)) / 3;
     if (overlays.button(f, input, ix, cy, third, this.s(30), this.statusLabel, overlays.isDropdownOpen(this.list, DROP_DOCK_STATUS))) {
       overlays.openDropdown(this.list, DROP_DOCK_STATUS, ix, cy, third, this.s(30), CLASH_STATUS_FILTERS, this.statusFilter, i => {
         this.statusFilter = i;
         this.listDirty = true;
-        this.dockScroll = 0;
+        this.listScroll.reset();
       });
     }
     const lx = ix + third + this.s(6);
@@ -1061,23 +1197,13 @@ export class Clashes {
       overlays.openDropdown(this.list, DROP_DOCK_LEVEL, lx, cy, third, this.s(30), values, this.levelFilter === null ? 0 : values.indexOf(this.levelFilter), i => {
         this.levelFilter = i === 0 ? null : values[i];
         this.listDirty = true;
-        this.dockScroll = 0;
+        this.listScroll.reset();
       });
     }
-    const sx = ix + (third + this.s(6)) * 2;
-    const searchHover = hover(sx, cy, third, this.s(30));
-    ui.panel(sx, cy, third, this.s(30), UiTheme.CONTROL, this.searchFocused ? UiTheme.ACCENT : UiTheme.CONTROL_BORDER);
-    if (!this.search && !this.searchFocused) { ui.text(f.small, sx + this.s(8), cy + this.s(8), 'search…', UiTheme.TEXT_FAINT); }
-    else {
-      const used = ui.text(f.small, sx + this.s(8), cy + this.s(8), this.search, UiTheme.TEXT);
-      if (this.searchFocused && (Math.trunc(session.clock * 2) & 1) === 0) { ui.rect(sx + this.s(9) + used, cy + this.s(7), this.s(1.5), this.s(16), UiTheme.TEXT_SOFT); }
+    const showX = ix + (third + this.s(6)) * 2;
+    if (overlays.button(f, input, showX, cy, third, this.s(30), CLASH_SHOW_LABELS[this.groups.filter], overlays.isDropdownOpen(this.list, DROP_DOCK_SHOW))) {
+      overlays.openDropdown(this.list, DROP_DOCK_SHOW, showX, cy, third, this.s(30), CLASH_SHOW_CHOICES, this.groups.filter, i => this.groups.setFilter(i));
     }
-    if (input.leftPressed && overDock) {
-      if (searchHover !== this.searchFocused) {
-        this.searchFocused = searchHover;
-        if (searchHover) { input.releaseAll(); }
-      }
-    } else if (input.leftPressed && this.searchFocused) { this.searchFocused = false; }
     cy += this.s(38);
 
     // The view, the section box and the row pictures
@@ -1085,38 +1211,112 @@ export class Clashes {
     if (overlays.button(f, input, ix, cy, viewW, this.s(30), this.viewLabel, overlays.isDropdownOpen(this.list, DROP_DOCK_VIEW))) {
       overlays.openDropdown(this.list, DROP_DOCK_VIEW, ix, cy, viewW, this.s(30), CLASH_VIEW_NAMES, this.view, v => this.setView(v));
     }
-    const w2 = session.menu.widgets;
-    if (w2.smallButton(f, ix + viewW + this.s(6), cy, toggleW, this.s(30), this.boxLabel)) { this.toggleBox(); }
-    if (w2.smallButton(f, ix + viewW + toggleW + this.s(12), cy, toggleW, this.s(30), this.thumbLabel)) { this.toggleThumbnails(); }
+    if (wd.smallButton(f, ix + viewW + this.s(6), cy, toggleW, this.s(30), this.boxLabel)) { this.toggleBox(); }
+    if (wd.smallButton(f, ix + viewW + toggleW + this.s(12), cy, toggleW, this.s(30), this.thumbLabel)) { this.toggleThumbnails(); }
     cy += this.s(38);
 
-    // Select every clash the list shows / clear
-    if (w2.smallButton(f, ix, cy, iw, this.s(28), this.selectAllLabel())) { this.toggleSelectAllShown(); }
+    // Search · select every clash the list shows / clear · the clash report (C-C2: one row)
+    const reportW = Math.min(this.s(100), iw * 0.24), selectW = Math.min(this.s(140), iw * 0.32);
+    const searchW = iw - reportW - selectW - this.s(12);
+    const searchHover = wd.hover(ix, cy, searchW, this.s(28));
+    ui.panel(ix, cy, searchW, this.s(28), UiTheme.CONTROL, this.searchFocused ? UiTheme.ACCENT : UiTheme.CONTROL_BORDER);
+    if (!this.search && !this.searchFocused) { ui.text(f.small, ix + this.s(8), cy + this.s(7), 'search…', UiTheme.TEXT_FAINT); }
+    else {
+      const used = ui.text(f.small, ix + this.s(8), cy + this.s(7), this.search, UiTheme.TEXT);
+      if (this.searchFocused && (Math.trunc(session.clock * 2) & 1) === 0) { ui.rect(ix + this.s(9) + used, cy + this.s(6), this.s(1.5), this.s(16), UiTheme.TEXT_SOFT); }
+    }
+    if (input.leftPressed && overDock) {
+      if (searchHover !== this.searchFocused) {
+        this.searchFocused = searchHover;
+        if (searchHover) { input.releaseAll(); }
+      }
+    } else if (input.leftPressed && this.searchFocused) { this.searchFocused = false; }
+    const selectX = ix + searchW + this.s(6);
+    if (wd.smallButton(f, selectX, cy, selectW, this.s(28), this.selectAllLabel())) { this.toggleSelectAllShown(); }
+    const reportX = selectX + selectW + this.s(6);
+    if (overlays.button(f, input, reportX, cy, reportW, this.s(28), 'REPORT…', overlays.isDropdownOpen(this.list, DROP_DOCK_REPORT))) {
+      const menuW = Math.max(reportW, this.s(260));
+      overlays.openDropdown(this.list, DROP_DOCK_REPORT, reportX + reportW - menuW, cy, menuW, this.s(28), CLASH_REPORT_ACTIONS, -1, i => { this.reportAction = i + 1; });
+    }
     cy += this.s(36);
 
-    // The current clash's card (bottom) and the list above it
+    // C-C1 / C-C2: GROUP and UNGROUP act on the selection or the group on the card; TOOLS ▾ holds the grouping tools
+    const toolsW = Math.min(this.s(150), iw * 0.36), groupW = (iw - toolsW - this.s(12)) * 0.5;
+    if (wd.smallButton(f, ix, cy, groupW, this.s(28), 'GROUP')) { this.groups.groupClashes(this.targetClashes(), null); }
+    if (wd.smallButton(f, ix + groupW + this.s(6), cy, groupW, this.s(28), 'UNGROUP')) { this.groups.ungroupFromKeys(); }
+    const toolsX = ix + groupW * 2 + this.s(12);
+    if (overlays.button(f, input, toolsX, cy, toolsW, this.s(28), 'TOOLS', overlays.isDropdownOpen(this.list, DROP_DOCK_AUTO))) {
+      const menuW = Math.min(this.s(300), iw);
+      overlays.openDropdown(this.list, DROP_DOCK_AUTO, ix + iw - menuW, cy, menuW, this.s(28), CLASH_TOOL_ACTIONS, -1, i => this.groups.runToolAction(i));
+    }
+    cy += this.s(36);
+
+    // The current clash's card (bottom, tall enough for its key hint) and the list above it
     const cardH = this.s(CARD_BUTTONS_Y) + this.s(34) + ui.textWrapped(f.small, 0, 0, iw, CLASH_HINT.text, UiTheme.TEXT_FAINT, 3, false) + this.s(10);
     const cardY = y + h - cardH;
-    const go = this.buildRows(f, input, ix, cy, iw, cardY - this.s(10), overDock);
+    const go = this.buildRows(f, input, ix, cy, iw, cardY - this.s(10));
     this.buildCard(f, input, ix, cardY, iw);
 
+    // C-C3: the label of the dot under the mouse (in the view), then the open dropdown on top (a pick acts here)
+    if (this.tools.tool === CLASH_TOOL_NONE) { this.tools.drawHoverLabel(f, input, width); }
     overlays.draw(f, input, x, y, w, h);
+    if (this.tools.runBarAction()) { return; } // C-C2: the tool bar's buttons
 
+    // Actions after drawing
+    if (this.report.exportRequested !== 0) {
+      const confirmed = this.report.exportRequested === 2;
+      this.report.exportRequested = 0;
+      this.report.start(confirmed);
+    }
+    if (this.reportAction !== 0) {
+      const action = this.reportAction;
+      this.reportAction = 0;
+      switch (action) {
+        case 1: this.report.openCard(); break; // C-C3
+        case 2: this.exportReport(); return;
+        case 3: void this.importReport(); return;
+      }
+    }
     if (this.markupClick && this.modeOn) {
       const markup = this.markupClick;
       this.markupClick = null;
       this.openMarkup(markup);
       return;
     }
-    if (go && this.modeOn) { this.clickRow(go, input.isDown(Vk.CONTROL), input.isDown(Vk.SHIFT)); }
-    if (overDock && input.leftPressed) { input.consumeClicks(); }
+    if (go && this.modeOn) {
+      // C-C2: while picking points a row click toggles its pick; with the cluster sphere it moves the centre
+      if (this.tools.tool === CLASH_TOOL_PICK) { this.tools.togglePick(go); }
+      else if (this.tools.tool === CLASH_TOOL_SPHERE) { this.tools.moveSphere(go); }
+      else { this.clickRow(go, input.isDown(Vk.CONTROL), input.isDown(Vk.SHIFT)); }
+    }
+    const groups = this.groups;
+    if (groups.markupClick && this.modeOn) {
+      const markupGroup = groups.markupClick;
+      groups.markupClick = null;
+      groups.openMarkup(markupGroup);
+      return;
+    }
+
+    // C-C1: a chevron, a group row, a right-click (the menu opens now, drawn from the next frame)
+    const chevron = groups.chevron, groupClick = groups.groupClick, menuRow = groups.menuRow;
+    groups.chevron = groups.groupClick = null;
+    groups.menuRow = null;
+    if (this.modeOn) {
+      if (chevron) { groups.toggleExpanded(chevron); }
+      else if (groupClick && this.tools.tool === CLASH_TOOL_PICK) { this.tools.togglePicks(groups.shownMembers(groupClick)); } // C-C2
+      else if (groupClick && this.tools.tool === CLASH_TOOL_NONE) { groups.clickGroupRow(groupClick, input.isDown(Vk.CONTROL)); }
+      if (menuRow) { groups.openRowMenu(menuRow, groups.menuAt); }
+    }
+    if (overDock && (input.leftPressed || input.rightPressed)) { input.consumeClicks(); }
   }
 
   /** True while the mouse is over the dock (a click there doesn't look around). */
-  overDock(input: InputState): boolean {
-    const width = this.session.screenWidth, height = this.session.screenHeight;
-    const w = Math.min(this.s(420), width * 0.42);
-    return input.mouseX >= width - w - this.s(16) && input.mouseY >= this.s(16) && input.mouseY < height - this.s(16);
+  overDock(input: InputState): boolean { return this.overDockAt(input.mouseX, input.mouseY); }
+
+  /** True when a point is over last frame's dock (or the grids panel beside it). */
+  overDockAt(mx: number, my: number): boolean {
+    const [x, y, w, h] = this.dockRect;
+    return (w > 0 && mx >= x && mx < x + w && my >= y && my < y + h) || this.session.grids.overPanel(mx, my);
   }
 
   private pickReviewTest(testId: string): void {
@@ -1130,80 +1330,131 @@ export class Clashes {
     }
   }
 
-  /** The list rows (the wheel scrolls over the dock; the current row stays in view after a step). Returns the clicked clash. */
-  private buildRows(f: FontAtlas, input: InputState, x: number, y: number, w: number, bottom: number, overDock: boolean): ClashRecord | null {
-    const session = this.session, ui = session.ui;
-    if (this.rows.length === 0) {
+  /**
+   * The list rows (P-A2: a clipped, pixel-scrolled ScrollRegion; a step to another clash brings its row into view,
+   * centred). C-C1: group rows with their members indented when expanded; a right-click on any row opens its menu.
+   * Returns the clash row clicked this frame.
+   */
+  private buildRows(f: FontAtlas, input: InputState, x: number, y: number, w: number, bottom: number): ClashRecord | null {
+    const session = this.session, ui = session.ui, shell = session.shell, wd = session.menu.widgets, groups = this.groups;
+    const display = groups.display;
+    if (display.length === 0) {
       ui.textWrapped(f.body, x, y + this.s(6), w, this.testCount === 0 ? 'This test has no clashes yet: TESTS… runs it.' : 'No clash matches the filters.', UiTheme.TEXT_MUTED, 3);
       return null;
     }
+    // C-B2: with pictures on, each row is tall enough for a 160 × 90 picture (narrower docks shrink it)
     const pictures = session.settings.clashRowPictures;
-    const thumbW = pictures ? Math.min(this.s(THUMB_W), w * 0.42) : 0;
+    const region = this.listScroll;
+    const viewH = Math.max(this.s(40), bottom - y - this.s(16)); // the "1–20 of 140" line sits under it
+    const listW = w - this.s(UiTheme.SCROLL_GUTTER) + this.s(8); // the bar sits in the dock's padding
+    const thumbW = pictures ? Math.min(this.s(THUMB_W), listW * 0.42) : 0;
     const thumbH = thumbW * THUMB_H / THUMB_W;
     const rowH = pictures ? Math.max(this.s(50), thumbH + this.s(10)) : this.s(50);
-    const visible = Math.max(1, Math.trunc((bottom - y) / rowH));
-    const maxScroll = Math.max(0, this.rows.length - visible);
+    const count = display.length;
     if (this.scrollToCurrent) {
       this.scrollToCurrent = false;
-      const current = this.current ? this.list.indexOf(this.current) : -1;
-      if (current >= 0 && (current < this.dockScroll || current >= this.dockScroll + visible)) { this.dockScroll = current - Math.trunc(visible / 2); }
+      const current = this.displayIndexOf(this.current);
+      if (current >= 0) { region.reveal(current * rowH - (viewH - rowH) * 0.5, current * rowH + rowH + (viewH - rowH) * 0.5); }
     }
-    if (overDock && input.wheel !== 0) { this.dockScroll -= input.wheel * 3; }
-    this.dockScroll = Math.min(Math.max(this.dockScroll, 0), maxScroll);
-
+    const top = shell.beginScroll(region, input, x, y, w + this.s(8), viewH);
+    const [first, last] = region.visibleRows(rowH, count);
     let picked: ClashRecord | null = null;
-    const last = Math.min(this.rows.length, this.dockScroll + visible);
-    const hover = (hx: number, hy: number, hw: number, hh: number) => input.mouseX >= hx && input.mouseX < hx + hw && input.mouseY >= hy && input.mouseY < hy + hh;
-    for (let i = this.dockScroll; i < last; i++) {
-      const row = this.rows[i];
-      const ry = y + (i - this.dockScroll) * rowH;
-      const current = row.clash === this.current || this.isSelected(row.clash);
-      const rowHover = hover(x, ry, w, rowH - this.s(4));
-      const fill = current ? Rgba.hex(0x22d3ee, 0.14) : rowHover ? Rgba.hex(0xffffff, 0.08) : (i & 1) === 0 ? Rgba.hex(0xffffff, 0.03) : 0;
-      if (fill) { ui.rect(x, ry, w, rowH - this.s(4), fill); }
-      ui.rect(x, ry, this.s(4), rowH - this.s(4), clashStatusColour(row.clash.status));
-      const titleColour = row.clash.status === ClashStatus.RESOLVED ? UiTheme.TEXT_FAINT : UiTheme.TEXT;
-      if (pictures) {
-        const px = x + this.s(10), py = ry + this.s(3);
-        const texture = this.thumbnailTexture(row.clash);
-        if (texture) {
-          ui.image(texture, px, py, thumbW, thumbH, session.screenWidth, session.screenHeight);
-          ui.outline(px, py, thumbW, thumbH, Math.max(1, ui.scale), Rgba.hex(0xffffff, 0.15));
-        } else {
-          ui.panel(px, py, thumbW, thumbH, UiTheme.CONTROL, UiTheme.CONTROL_BORDER);
-          ui.textCentred(f.small, px + thumbW * 0.5, py + thumbH * 0.5 - this.s(7), '…', UiTheme.TEXT_FAINT);
-        }
-        if (this.commentPencil(input, px + thumbW - this.s(14), py + this.s(14), row.clash)) { this.markupClick = row.clash; }
-        const tx = px + thumbW + this.s(10), tw = x + w - this.s(8) - tx;
-        ui.text(f.small, tx, ry + this.s(5), row.status, clashStatusColour(row.clash.status));
-        ui.textWrapped(f.body, tx, ry + this.s(22), tw, row.title, titleColour, 2);
-        ui.textWrapped(f.small, tx, ry + this.s(62), tw, row.detail, UiTheme.TEXT_MUTED, 2);
+    for (let i = first; i < last; i++) {
+      const line = display[i];
+      const ry = top + i * rowH;
+      const hover = wd.hover(x, ry, listW, rowH - this.s(4));
+      if (!line.row) {
+        groups.buildGroupRow(f, input, line, x, ry, listW, rowH, pictures, thumbW, thumbH, hover);
       } else {
-        ui.textWrapped(f.body, x + this.s(12), ry + this.s(5), w - this.s(110), row.title, titleColour, 1);
-        ui.textWrapped(f.small, x + this.s(12), ry + this.s(26), w - this.s(24), row.detail, UiTheme.TEXT_MUTED, 1);
-        ui.textRight(f.small, x + w - this.s(8), ry + this.s(7), row.status, clashStatusColour(row.clash.status));
-        if (this.commentPencil(input, x + w - this.s(20), ry + this.s(32), row.clash)) { this.markupClick = row.clash; }
+        // Members sit indented under their group (a faint rule down the left)
+        const indent = line.member ? this.s(14) : 0;
+        if (line.member) { ui.rect(x + this.s(5), ry, this.s(2), rowH, Rgba.hex(0xffffff, 0.12)); }
+        this.buildRowBody(f, input, line.row, x + indent, ry, listW - indent, rowH, pictures, thumbW, thumbH, hover, (i & 1) === 0);
+        if (hover && input.leftPressed) {
+          input.consumeClicks();
+          session.sound.play(SoundId.UiClick);
+          picked = line.row.clash;
+        }
       }
-      if (rowHover && input.leftPressed) {
-        input.consumeClicks();
-        session.sound.play(SoundId.UiClick);
-        picked = row.clash;
+      if (hover && input.rightPressed) {
+        groups.menuRow = line;
+        groups.menuAt = [input.mouseX, input.mouseY];
       }
     }
-    if (maxScroll > 0) {
-      ui.textRight(f.small, x + w, bottom - this.s(2), `${this.dockScroll + 1}–${last} of ${this.rows.length.toLocaleString('en')}`, UiTheme.TEXT_FAINT);
+    shell.endScroll(region, input, top + count * rowH);
+    if (count * rowH > viewH) {
+      const from = Math.min(Math.max(Math.trunc(region.offset / rowH) + 1, 1), count);
+      const to = Math.min(Math.max(Math.trunc((region.offset + viewH) / rowH), from), count);
+      ui.textRight(f.small, x + w, y + viewH + this.s(2), `${from}–${to} of ${count.toLocaleString('en')}`, UiTheme.TEXT_FAINT);
     }
     return picked;
   }
 
+  /** The display row showing a clash: its own row, or its group's row when the group is collapsed (−1: none). */
+  private displayIndexOf(clash: ClashRecord | null): number {
+    if (!clash) { return -1; }
+    const display = this.groups.display, group = this.groups.groupOf(clash);
+    let groupRow = -1;
+    for (let i = 0; i < display.length; i++) {
+      const line = display[i];
+      if (line.row && line.row.clash === clash) { return i; }
+      if (!line.row && group && line.group === group) { groupRow = i; }
+    }
+    return groupRow;
+  }
+
+  /** One clash row: status bar, picture or text layout, status, the comment pencil. */
+  private buildRowBody(f: FontAtlas, input: InputState, row: ClashRow, x: number, ry: number, w: number, rowH: number, pictures: boolean,
+    thumbW: number, thumbH: number, hover: boolean, even: boolean): void {
+    const ui = this.session.ui;
+    const current = row.clash === this.current || this.isSelected(row.clash);
+    const fill = current ? Rgba.hex(0x22d3ee, 0.14) : hover ? Rgba.hex(0xffffff, 0.08) : even ? Rgba.hex(0xffffff, 0.03) : 0;
+    if (fill) { ui.rect(x, ry, w, rowH - this.s(4), fill); }
+    ui.rect(x, ry, this.s(4), rowH - this.s(4), clashStatusColour(row.clash.status));
+    const titleColour = row.clash.status === ClashStatus.RESOLVED ? UiTheme.TEXT_FAINT : UiTheme.TEXT;
+    if (pictures) {
+      const px = x + this.s(10), py = ry + this.s(3);
+      this.drawRowPicture(f, row.clash, px, py, thumbW, thumbH);
+      if (this.commentPencil(input, px + thumbW - this.s(14), py + this.s(14), this.findComment(row.clash))) { this.markupClick = row.clash; }
+      const tx = px + thumbW + this.s(10), tw = x + w - this.s(8) - tx;
+      ui.text(f.small, tx, ry + this.s(5), row.status, clashStatusColour(row.clash.status));
+      ui.textWrapped(f.body, tx, ry + this.s(22), tw, row.title, titleColour, 2);
+      ui.textWrapped(f.small, tx, ry + this.s(62), tw, row.detail, UiTheme.TEXT_MUTED, 2);
+    } else {
+      ui.textWrapped(f.body, x + this.s(12), ry + this.s(5), w - this.s(110), row.title, titleColour, 1);
+      ui.textWrapped(f.small, x + this.s(12), ry + this.s(26), w - this.s(24), row.detail, UiTheme.TEXT_MUTED, 1);
+      ui.textRight(f.small, x + w - this.s(8), ry + this.s(7), row.status, clashStatusColour(row.clash.status));
+      if (this.commentPencil(input, x + w - this.s(20), ry + this.s(32), this.findComment(row.clash))) { this.markupClick = row.clash; }
+    }
+  }
+
+  /** A row picture (asked for when missing or stale) or its placeholder. */
+  drawRowPicture(f: FontAtlas, clash: ClashRecord | null, px: number, py: number, thumbW: number, thumbH: number): void {
+    const session = this.session, ui = session.ui;
+    const texture = clash ? this.thumbnailTexture(clash) : null;
+    if (texture) {
+      ui.image(texture, px, py, thumbW, thumbH, session.screenWidth, session.screenHeight);
+      ui.outline(px, py, thumbW, thumbH, Math.max(1, ui.scale), Rgba.hex(0xffffff, 0.15));
+    } else {
+      ui.panel(px, py, thumbW, thumbH, UiTheme.CONTROL, UiTheme.CONTROL_BORDER);
+      ui.textCentred(f.small, px + thumbW * 0.5, py + thumbH * 0.5 - this.s(7), '…', UiTheme.TEXT_FAINT);
+    }
+  }
+
   /** The current clash: position, the pair, depth or gap, status 1–5, assignee, notes, comments and the bottom buttons. */
   private buildCard(f: FontAtlas, input: InputState, x: number, y: number, w: number): void {
-    const session = this.session, ui = session.ui, wd = session.menu.widgets;
+    const session = this.session, ui = session.ui, wd = session.menu.widgets, groups = this.groups;
     ui.rect(x, y - this.s(6), w, Math.max(1, ui.scale), UiTheme.PANEL_BORDER);
     let cy = y + this.s(4);
     const clash = this.current;
     if (this.batch) {
       this.buildBatchProgress(f, x, cy, w);
+    } else if (this.report.job) {
+      this.report.buildProgress(f, x, cy, w); // C-C3: the report's pictures
+    } else if (this.report.cardOpen) {
+      this.report.buildCard(f, input, x, cy, w); // C-C3: REPORT… → EXPORT REPORT (HTML / XML)…
+    } else if (groups.current) {
+      groups.buildCard(f, input, x, cy, w); // C-C1: a group row was clicked
     } else if (!clash) {
       ui.text(f.body, x, cy, 'Pick a clash in the list.', UiTheme.TEXT_MUTED);
     } else {
@@ -1227,7 +1478,7 @@ export class Clashes {
         const status = ClashStatus.ALL[k];
         const bx = x + k * (chip + this.s(4));
         const on = clash.status === status;
-        const hover = input.mouseX >= bx && input.mouseX < bx + chip && input.mouseY >= cy && input.mouseY < cy + this.s(28);
+        const hover = wd.hover(bx, cy, chip, this.s(28));
         ui.rect(bx, cy, chip, this.s(28), on ? clashStatusColour(status) : hover ? Rgba.hex(0xffffff, 0.1) : UiTheme.CONTROL);
         ui.outline(bx, cy, chip, this.s(28), Math.max(1, ui.scale), on ? clashStatusColour(status) : UiTheme.CONTROL_BORDER);
         ui.textCentred(f.small, bx + chip * 0.5, cy + this.s(7), CLASH_STATUS_SHORT[k], on ? Rgba.hex(0x111827) : UiTheme.TEXT);
@@ -1242,19 +1493,26 @@ export class Clashes {
       if (wd.smallButton(f, x + half + this.s(6), cy, half, this.s(28), this.cardNotes ?? 'NOTES…')) { this.beginNotes(clash); }
     }
 
-    // Comments: the selection (or this clash) → comments; MARKUP this clash's comment picture
-    if (!this.batch) {
+    // Comments: the selection (or this clash) → comments; MARKUP this clash's comment picture (C-C1: the group's comment)
+    if (!this.batch && !this.report.job && !this.report.cardOpen) {
       const halfW = (w - this.s(6)) * 0.5, ty = y + this.s(CARD_BUTTONS_Y) - this.s(34);
-      const make = this.multiActive ? `${this.selected.length} TO COMMENTS` : clash && this.findComment(clash) ? 'UPDATE COMMENT' : 'TO COMMENT';
-      if (wd.smallButton(f, x, ty, halfW, this.s(28), make)) { this.toComment(); }
-      if (wd.smallButton(f, x + halfW + this.s(6), ty, halfW, this.s(28), 'MARKUP') && clash) { this.openMarkup(clash); }
+      const group = groups.current;
+      if (group) {
+        if (wd.smallButton(f, x, ty, halfW, this.s(28), groups.findComment(group) ? 'UPDATE GROUP COMMENT' : 'GROUP TO COMMENT')) { groups.toComment(group); }
+        if (wd.smallButton(f, x + halfW + this.s(6), ty, halfW, this.s(28), 'MARKUP')) { groups.openMarkup(group); }
+      } else {
+        const make = this.multiActive ? `${this.selected.length} TO COMMENTS` : clash && this.findComment(clash) ? 'UPDATE COMMENT' : 'TO COMMENT';
+        if (wd.smallButton(f, x, ty, halfW, this.s(28), make)) { this.toComment(); }
+        if (wd.smallButton(f, x + halfW + this.s(6), ty, halfW, this.s(28), 'MARKUP') && clash) { this.openMarkup(clash); }
+      }
     }
 
     const quarter = (w - this.s(18)) / 4;
     const by = y + this.s(CARD_BUTTONS_Y);
     if (wd.smallButton(f, x, by, quarter, this.s(28), 'REVIT')) { this.showInRevit(false); }
     if (wd.smallButton(f, x + (quarter + this.s(6)), by, quarter, this.s(28), 'TESTS…')) {
-      if (this.batch) { this.finishBatch(true); }
+      if (this.batch) { this.finishBatch(true); } // runs and resets wait for the comments
+      this.report.cancel(); // C-C3: and for the report's pictures
       this.panel.show();
       return;
     }
@@ -1316,9 +1574,121 @@ export class Clashes {
     return this.current ? [this.current] : [];
   }
 
+  /** The clashes GROUP, the box tool and the report act on (a copy). */
+  targetClashes(): ClashRecord[] { return [...this.targets()]; }
+
+  /** The selected clashes (C-B3). */
+  get selection(): readonly ClashRecord[] { return this.selected; }
+
+  get selectedCount(): number { return this.selected.length; }
+
+  /** True when a clash is in the selection. */
+  isSelectedClash(clash: ClashRecord): boolean { return this.selectedLookup.has(clash); }
+
+  /** C-C1: several clashes shown together (a group row's members), with one on the card. */
+  selectMany(members: readonly ClashRecord[], current: ClashRecord, animate: boolean): void {
+    this.clearSelection();
+    this.selected.push(...members);
+    this.syncLookup();
+    this.current = current;
+    this.anchor = current;
+    this.goToSelected(animate);
+  }
+
+  /**
+   * C-C1 Ctrl+click on a group row: the members in or out of the selection (starting from the clash on screen); the view
+   * follows. True when they were all selected (so they left).
+   */
+  toggleMany(members: readonly ClashRecord[]): boolean {
+    const animate = !this.session.settings.clashInstantFly;
+    if (this.selected.length === 0 && this.current && this.list.includes(this.current)) { this.selected.push(this.current); }
+    this.syncLookup();
+    const all = members.every(c => this.selectedLookup.has(c));
+    if (all) {
+      const leaving = new Set(members);
+      for (let i = this.selected.length - 1; i >= 0; i--) { if (leaving.has(this.selected[i])) { this.selected.splice(i, 1); } }
+    } else {
+      for (const clash of members) { if (!this.selectedLookup.has(clash)) { this.selectedLookup.add(clash); this.selected.push(clash); } }
+    }
+    this.syncLookup();
+    if (this.selected.length === 0) { return all; }
+    if (this.selected.length === 1) {
+      this.goTo(this.selected[0], animate);
+    } else {
+      if (!this.current || !this.selectedLookup.has(this.current)) { this.current = this.selected[this.selected.length - 1]; }
+      this.goToSelected(animate);
+    }
+    return all;
+  }
+
+  /** C-C2: no selection, the current clash kept (the tools). */
+  clearSelectionKeepCurrent(): void {
+    const keep = this.current;
+    this.clearSelection();
+    this.current = keep;
+  }
+
+  /** C-C2: clashes added to the picks (the marquee); returns how many were new. */
+  addToSelection(list: readonly ClashRecord[]): number {
+    this.syncLookup();
+    let added = 0;
+    for (const clash of list) {
+      if (this.selectedLookup.has(clash)) { continue; }
+      this.selectedLookup.add(clash);
+      this.selected.push(clash);
+      added++;
+    }
+    if (added > 0) { this.current = this.selected[this.selected.length - 1]; }
+    return added;
+  }
+
+  /** C-C2: a clash in or out of the picks (the camera stays). */
+  togglePickOne(clash: ClashRecord): void {
+    this.syncLookup();
+    const index = this.selected.indexOf(clash);
+    if (index >= 0) {
+      this.selected.splice(index, 1);
+      this.selectedLookup.delete(clash);
+      if (this.current === clash) { this.current = this.selected[this.selected.length - 1] ?? null; }
+    } else {
+      this.selected.push(clash);
+      this.selectedLookup.add(clash);
+      this.current = clash;
+    }
+  }
+
+  /** C-C2: a group's shown members in (or out, when all are picked). */
+  togglePickMany(list: readonly ClashRecord[]): void {
+    this.syncLookup();
+    if (list.every(c => this.selectedLookup.has(c))) {
+      const leaving = new Set(list);
+      for (let i = this.selected.length - 1; i >= 0; i--) { if (leaving.has(this.selected[i])) { this.selected.splice(i, 1); } }
+      if (this.current && leaving.has(this.current)) { this.current = this.selected[this.selected.length - 1] ?? null; }
+    } else {
+      for (const clash of list) { if (!this.selectedLookup.has(clash)) { this.selectedLookup.add(clash); this.selected.push(clash); } }
+      this.current = list[list.length - 1];
+    }
+    this.syncLookup();
+  }
+
+  /** C-C2: after the picks changed: the pairs found again and drawn; the card follows; the camera and the box stay. */
+  resolvePicks(): void {
+    this.syncLookup();
+    this.multiA = []; this.multiB = []; this.multiBoth = [];
+    this.multiDynamicA = []; this.multiDynamicB = []; this.multiDynamicBoth = [];
+    if (this.current) {
+      [this.elementA, this.dynamicA] = this.resolve(this.current.a);
+      [this.elementB, this.dynamicB] = this.resolve(this.current.b);
+    }
+    if (this.selected.length > 1) { this.resolveSelected(); }
+    this.refreshCard();
+  }
+
   /** A row click: plain = that clash alone; Ctrl = add / remove it; Shift = the run from the last clicked. */
   private clickRow(clash: ClashRecord, ctrl: boolean, shift: boolean): void {
     const session = this.session;
+    this.groups.current = null; // C-C1: the group card goes with the selection
+    this.groups.picks.length = 0;
     if (!ctrl && !shift) {
       this.anchor = clash;
       this.goTo(clash, !session.settings.clashInstantFly);
@@ -1369,6 +1739,7 @@ export class Clashes {
 
   /** Back to a single clash (the current one stays on screen). */
   private clearSelection(): void {
+    this.groups.current = null; // C-C1
     this.selected.length = 0;
     this.selectedLookup.clear();
     this.multiA = [];
@@ -1423,12 +1794,10 @@ export class Clashes {
     session.toast(`All ${this.selected.length.toLocaleString('en')} clashes shown together${box} · ${keyOf(InputAction.ClashSelectAll)} again clears`, 3);
   }
 
+  /** C-C2: narrower (it shares a row with search and REPORT…; the key hint names the key). */
   private selectAllLabel(): string {
     const selected = this.multiActive ? this.selected.length : 0;
-    const key = keyOf(InputAction.ClashSelectAll);
-    return this.allShownSelected ? `CLEAR ALL ${selected.toLocaleString('en')} (${key})`
-      : selected > 1 ? `SELECT ALL ${this.list.length.toLocaleString('en')} (${selected.toLocaleString('en')} SELECTED) (${key})`
-        : `SELECT ALL SHOWN (${key})`;
+    return this.allShownSelected ? `CLEAR ALL ${selected.toLocaleString('en')}` : selected > 1 ? `SELECT ALL ${this.list.length.toLocaleString('en')}` : 'SELECT ALL';
   }
 
   /** Shows the selected clashes together: every pair, the box over all their regions, the camera far enough back. */
@@ -1505,6 +1874,7 @@ export class Clashes {
     if (!this.modeOn) {
       this.thumbWanted.length = 0;
       this.commentPending = 0;
+      this.groups.commentPending = null;
       return;
     }
     if (this.commentPending !== 0) {
@@ -1512,6 +1882,16 @@ export class Clashes {
       this.commentPending = 0;
       this.thumbWanted.length = 0;
       this.makeCurrentComment(replace);
+      return;
+    }
+    if (this.groups.commentPending) {
+      this.thumbWanted.length = 0;
+      this.groups.makePendingComment(); // C-C1: one comment for a group, framed on every member
+      return;
+    }
+    if (this.report.job) {
+      this.thumbWanted.length = 0;
+      this.report.step(); // C-C3: the report's pictures
       return;
     }
     if (this.batch) {
@@ -1590,6 +1970,72 @@ export class Clashes {
       camera.update();
       gl.bindFramebuffer(gl.FRAMEBUFFER, null);
       gl.viewport(0, 0, session.screenWidth, session.screenHeight);
+    }
+  }
+
+  /** A clash framed on its own (the report's pictures): pixels at a size, or null. */
+  renderShot(clash: ClashRecord, width: number, height: number): { pixels: Uint8Array } | null {
+    this.shotTarget ??= new PhotoTarget();
+    return this.renderPicture(clash, this.shotTarget, width, height, true);
+  }
+
+  /** Frees the comment / report picture target. */
+  releaseShotTarget(): void {
+    this.shotTarget?.dispose();
+    this.shotTarget = null;
+  }
+
+  /**
+   * C-C1: a group's picture: one member from its own framing; several from the union framing (every pair drawn, the box
+   * over all their regions when on and they are at most CLASH_FOCUS_BOX_CAP, far enough back to see them all). The
+   * selection, camera and section on screen are put back.
+   */
+  renderGroupPicture(members: readonly ClashRecord[], width: number, height: number):
+    { pixels: Uint8Array; frame: ClashView; cut: SectionCut; centre: Vec3 } | null {
+    const session = this.session, origin = session.scene.originOffset, first = members[0];
+    this.shotTarget ??= new PhotoTarget();
+    let centre = vec3(first.x - origin.x, first.y - origin.y, first.z - origin.z);
+    if (members.length === 1) {
+      const shot = this.renderPicture(first, this.shotTarget, width, height, true);
+      return shot ? { ...shot, centre } : null;
+    }
+    const camera = session.camera;
+    const saved = {
+      selected: [...this.selected], current: this.current, suspended: this.multiSuspended, section: session.section.current.clone(),
+      position: camera.position, yaw: camera.yaw, pitch: camera.pitch
+    };
+    try {
+      this.multiSuspended = false;
+      this.selected.length = 0;
+      this.selected.push(...members);
+      this.syncLookup();
+      this.current = first;
+      const { region, boxesA, boxesB } = this.resolveSelected();
+      centre = region.center;
+      const distance = ClashFraming.distanceToSee(region, session.settings.fieldOfView, width / height);
+      const view = ClashFraming.frame(region.center, boxesA, boxesB, region, session.player.yaw, null, distance);
+      session.section.setQuiet(this.boxOn && members.length <= CLASH_FOCUS_BOX_CAP ? this.cutOf(region) : new SectionCut());
+      camera.position = view.eye;
+      camera.yaw = view.yaw;
+      camera.pitch = view.pitch;
+      const shot = this.renderPicture(first, this.shotTarget, width, height, false);
+      return shot ? { ...shot, centre } : null;
+    } finally {
+      this.selected.length = 0;
+      this.selected.push(...saved.selected);
+      this.syncLookup();
+      this.current = saved.current;
+      this.multiSuspended = saved.suspended;
+      if (this.selected.length > 1) { this.resolveSelected(); }
+      else {
+        this.multiA = []; this.multiB = []; this.multiBoth = [];
+        this.multiDynamicA = []; this.multiDynamicB = []; this.multiDynamicBoth = [];
+      }
+      session.section.setQuiet(saved.section);
+      camera.position = saved.position;
+      camera.yaw = saved.yaw;
+      camera.pitch = saved.pitch;
+      camera.update();
     }
   }
 
@@ -1748,9 +2194,8 @@ export class Clashes {
     session.markup.show(comment, true);
   }
 
-  /** The pencil on a clash row whose comment has a picture; true when clicked (the click is consumed). */
-  private commentPencil(input: InputState, cx: number, cy: number, clash: ClashRecord): boolean {
-    const comment = this.findComment(clash);
+  /** A comment's pencil (C-B3; groups since C-C1): drawn only when the comment has a picture; true when clicked. */
+  commentPencil(input: InputState, cx: number, cy: number, comment: CommentRecord | null): boolean {
     if (!comment || (!comment.snapshotData && !comment.snapshotOriginalData && !comment.thumbnail)) { return false; }
     const ui = this.session.ui;
     const r = this.s(11);
@@ -1802,7 +2247,7 @@ export class Clashes {
       const origin = session.scene.originOffset;
       const point = vec3(clash.x - origin.x, clash.y - origin.y, clash.z - origin.z);
       const hostA = !clash.a.link && clash.a.cloneKey === 0;
-      record = comments.add(point, commentText(clash, test), hostA ? clash.a.elementId : -1, clashLevel(clash), hostA ? clash.a.uniqueId : null);
+      record = comments.add(point, this.commentText(clash, test), hostA ? clash.a.elementId : -1, clashLevel(clash), hostA ? clash.a.uniqueId : null);
       record.clashId = clash.id;
       comments.setIssue(record, { status, priority: ClashCommentRules.priorityFor(clash, test?.kind ?? ClashKind.HARD), assignedTo: clash.assignedTo?.trim() ?? '' });
       clash.commentId = record.id;
@@ -1881,8 +2326,16 @@ export class Clashes {
     return clash?.commentId ? this.session.comments.find(clash.commentId) : null;
   }
 
+  /** A clash comment's text (grids round B: " · Near C-4 : Level 2" when "In clash comments" is on). */
+  private commentText(clash: ClashRecord, test: ClashTest | null): string {
+    const grids = this.session.grids;
+    const text = `Clash: ${test?.name ?? 'clash test'} · ${elementRefLabel(clash.a)} × ${elementRefLabel(clash.b)} · ${clashAmount(clash)} · ${clashLevel(clash)}`
+      + (grids.inClashComments ? grids.clashSuffix(clash, false) : '');
+    return clash.notes?.trim() ? `${text} · Notes: ${clash.notes.trim()}` : text;
+  }
+
   /** Makes a clash's comment show the clash's status (clash → comment, one way). */
-  private syncComment(clash: ClashRecord): boolean {
+  syncComment(clash: ClashRecord): boolean {
     const record = this.findComment(clash);
     return record !== null && this.session.comments.setIssue(record, { status: ClashCommentRules.commentStatusFor(clash.status) });
   }
@@ -1892,6 +2345,7 @@ export class Clashes {
     for (const clash of this.document?.clashes ?? []) {
       if (clash.commentId) { this.syncComment(clash); }
     }
+    this.groups.syncGroupComments(); // C-C1
   }
 
   /** Deleted comments made from clashes: their clashes forget them (only when clash detection is on). */
@@ -1923,14 +2377,8 @@ export class Clashes {
   // #endregion
 }
 
-/** A clash comment's text: "Clash: test · A × B · crossing 32 mm · Level 2", then the clash's notes. */
-function commentText(clash: ClashRecord, test: ClashTest | null): string {
-  const text = `Clash: ${test?.name ?? 'clash test'} · ${elementRefLabel(clash.a)} × ${elementRefLabel(clash.b)} · ${clashAmount(clash)} · ${clashLevel(clash)}`;
-  return clash.notes?.trim() ? `${text} · Notes: ${clash.notes.trim()}` : text;
-}
-
 /** Bottom-up RGBA pixels as a top-down canvas (opaque). */
-function pixelsCanvas(pixels: Uint8Array, width: number, height: number): HTMLCanvasElement {
+export function pixelsCanvas(pixels: Uint8Array, width: number, height: number): HTMLCanvasElement {
   const canvas = document.createElement('canvas');
   canvas.width = width;
   canvas.height = height;
@@ -1943,7 +2391,7 @@ function pixelsCanvas(pixels: Uint8Array, width: number, height: number): HTMLCa
   return canvas;
 }
 
-function base64Bytes(text: string): Uint8Array {
+export function base64Bytes(text: string): Uint8Array {
   const binary = atob(text);
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) { bytes[i] = binary.charCodeAt(i); }

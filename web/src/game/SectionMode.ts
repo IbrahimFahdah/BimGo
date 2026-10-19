@@ -56,8 +56,13 @@ export class SectionMode {
   private panelRect = [0, 0, 0, 0];
   private notice: string | null = null;
   // Handles: 0–5 box faces (+X, −X, +Y, −Y, +Z, −Z), 6 the free plane; -1 none
-  private hover = -1;
-  private drag = -1;
+  hover = -1;
+  drag = -1;
+  /**
+   * Clash round C-C2: GROUP BY BOX… edits the box with these handles while the editor is closed: the handles it hides
+   * (the plane always; top and bottom at full height), or null when no tool uses them.
+   */
+  toolHides: ((handle: number) => boolean) | null = null;
   private dragAxis: Vec3 = vec3();
   private dragOrigin: Vec3 = vec3();
   private dragStartParameter = 0;
@@ -100,7 +105,7 @@ export class SectionMode {
   }
 
   /** Recomputes the planes after any change and records it for saving. */
-  private changed(): void {
+  changed(): void {
     this.updatePlanes();
     this.session.visibilityChanged();
   }
@@ -255,10 +260,10 @@ export class SectionMode {
     }
   }
 
-  /** The handle nearest the mouse (within 18 px), or -1. */
-  private handleUnder(mx: number, my: number): number {
+  /** The handle nearest the mouse (within 18 px), up to a last handle, or -1. */
+  handleUnder(mx: number, my: number, last = 6): number {
     let best = -1, bestDistance = this.s(18);
-    for (let h = 0; h < 7; h++) {
+    for (let h = 0; h <= last; h++) {
       const handle = this.handlePosition(h);
       if (!handle) { continue; }
       const screen = this.session.camera.worldToScreen(handle.position);
@@ -273,7 +278,7 @@ export class SectionMode {
   }
 
   /** A handle's position (scene-local) and its axis (outward for box faces, the plane's normal). */
-  private handlePosition(handle: number): { position: Vec3; axis: Vec3 } | null {
+  handlePosition(handle: number): { position: Vec3; axis: Vec3 } | null {
     const origin = this.session.scene.originOffset, cut = this.cut;
     if (handle < 6) {
       if (!cut.boxOn) { return null; }
@@ -286,7 +291,7 @@ export class SectionMode {
     return { position: V.sub(cut.planePoint, origin), axis: V.copy(cut.planeNormal) };
   }
 
-  private beginDrag(handle: number, mx: number, my: number): void {
+  beginDrag(handle: number, mx: number, my: number): void {
     const h = this.handlePosition(handle);
     if (!h) { return; }
     const ray = this.session.screenRay(mx, my);
@@ -301,7 +306,7 @@ export class SectionMode {
   }
 
   /** Moves the dragged face (or plane) to where the mouse ray passes closest to its axis, snapped unless free. */
-  private dragHandle(mx: number, my: number, free: boolean): void {
+  dragHandle(mx: number, my: number, free: boolean): void {
     const ray = this.session.screenRay(mx, my);
     const parameter = closestOnAxis(this.dragOrigin, this.dragAxis, ray.origin, ray.direction);
     if (parameter === null) { return; }
@@ -360,7 +365,7 @@ export class SectionMode {
 
   /** The cut's frame and handles while the editor is open (3D pass, after the scene). */
   drawGizmo(): void {
-    if (!this.open || !this.cut.isActive) { return; }
+    if ((!this.open && !this.toolHides) || !this.cut.isActive) { return; }
     const camera = this.session.camera;
     if (!this.overlay) {
       this.overlay = new Overlay3D();
@@ -388,7 +393,7 @@ export class SectionMode {
     }
     for (let h = 0; h < 7; h++) {
       const handle = this.handlePosition(h);
-      if (!handle) { continue; }
+      if (!handle || this.toolHides?.(h)) { continue; }
       const active = h === this.drag || (h === this.hover && this.drag < 0);
       const colour = active ? Rgba.hex(0xffffff, 1) : h === 6 ? Rgba.hex(0xfbbf24, 1) : Rgba.hex(0x22d3ee, 1);
       overlay.dot(handle.position, active ? 11 : 8, colour);
