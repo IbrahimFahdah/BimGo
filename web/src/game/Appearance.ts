@@ -31,8 +31,6 @@ const WATER_TINT_AMOUNT = 0.85;
 export class Appearance {
   /** Grass round: the tab's page: 0 main, 1 water, 2 grass (per session). */
   page = 0;
-  /** QOL round: the options preview (no backdrop, graphics settings only; Esc returns). */
-  menuPreview = false;
   /** Water round W: the ripples' clock (advanced at the ripple speed). */
   private waterClock = 0;
 

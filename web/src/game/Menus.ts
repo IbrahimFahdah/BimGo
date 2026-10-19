@@ -21,6 +21,8 @@ import { UnitFormat } from './UnitFormat';
 import { ColourMode } from './ViewerSettings';
 import { Hints } from './Hints';
 import { ScrollRegion } from './PanelShell';
+import { InputAction } from '../core/scene/InputCatalog';
+import { keyOf } from '../platform/Hotkeys';
 
 const COLOUR_OPTIONS = ['Whitecard', 'Material', 'Realistic'];
 const STATUS_FILTERS = ['All', 'Open', 'In progress', 'Closed'];
@@ -62,7 +64,8 @@ export class Widgets {
     return i.mouseX >= x && i.mouseX < x + w && i.mouseY >= y && i.mouseY < y + h && this.ui.clipContains(i.mouseX, i.mouseY);
   }
 
-  menuButton(f: FontAtlas, x: number, y: number, w: number, label: string, primary: boolean, danger: boolean, enabled = true, height = 0): boolean {
+  /** A full-width menu button; compact (QOL round): the body font and tighter padding (the pause menu's stacks). */
+  menuButton(f: FontAtlas, x: number, y: number, w: number, label: string, primary: boolean, danger: boolean, enabled = true, height = 0, compact = false): boolean {
     const ui = this.ui;
     const h = height > 0 ? height : this.s(48);
     const hover = enabled && this.hover(x, y, w, h);
@@ -74,7 +77,8 @@ export class Widgets {
       ui.outline(x, y, w, h, Math.max(1, ui.scale), fade(danger ? Rgba.hex(0xfca5a5, 0.45) : Rgba.hex(0xffffff, 0.2), alpha));
     }
     const textColour = primary ? Rgba.hex(0x06232a) : danger ? UiTheme.DANGER : UiTheme.TEXT;
-    ui.text(f.bold, x + this.s(16), y + h * 0.5 - f.bold.lineHeight * 0.5, label, primary ? textColour : fade(textColour, alpha), this.s(1.3));
+    const font = compact ? f.body : f.bold;
+    ui.text(font, x + this.s(compact ? 12 : 16), y + h * 0.5 - font.lineHeight * 0.5, label, primary ? textColour : fade(textColour, alpha), this.s(compact ? 0.9 : 1.3));
     return this.click(hover);
   }
 
@@ -214,6 +218,9 @@ export class PauseMenu {
   private replyDeleteArmedUntil = 0;
   /** Open right-column tab: 0 display, 1 reflections, 2 debug (per session). */
   private rightTab = 0;
+  /** QOL round: the options preview is showing (the scene without the menu's backdrop). */
+  preview = false;
+  private previewLabel: string | null = null;
   private readonly settingsScroll = new ScrollRegion();
   private bookmarksOpen = false;
   private bookmarkScroll = 0;
@@ -258,6 +265,7 @@ export class PauseMenu {
 
   /** Closes an open list (Esc); false when none was open. */
   closePanels(): boolean {
+    if (this.closePreview()) { return true; }
     if (this.overlays.close()) { return true; }
     if (this.session.textures?.close()) { return true; }
     if (this.rooms.close()) { return true; }
@@ -291,6 +299,20 @@ export class PauseMenu {
     const input = session.input;
     const width = session.screenWidth, height = session.screenHeight;
     if (!input.leftDown) { w.activeSlider = -1; }
+
+    // Sky round: Tab (the pad's Y) toggles the preview
+    if (!session.editor.active && input.pressed(InputAction.MenuPreview)) {
+      this.preview = !this.preview;
+      w.activeSlider = -1;
+      session.sound.play(SoundId.UiClick);
+    }
+
+    // QOL round: the options preview (no backdrop, graphics settings only; Esc returns)
+    if (this.preview) {
+      this.buildPreview(f, width, height);
+      return;
+    }
+
     ui.rect(0, 0, width, height, UiTheme.MENU_BACKGROUND);
 
     // Layout (review tools round, to keep the menu inside a 720 px high window): the buttons in two stacks (session ·
@@ -298,7 +320,7 @@ export class PauseMenu {
     // Display / Reflections / Debug tabs) when they fit, else stacked. The category cards moved to their own panel
     // (CATEGORIES & LINKS).
     const pad = this.s(48);
-    const leftX = this.s(56), stackW = this.s(220), stackGap = this.s(24);
+    const leftX = this.s(56), stackW = this.s(196), stackGap = this.s(20); // QOL round: slimmer buttons (were 220 px, 54 px pitch)
     const columnW = this.s(280), columnGap = this.s(24);
     const rightEdge = width - this.s(56);
     const twoStacks = width >= leftX + stackW * 2 + stackGap + this.s(40) + columnW * 2 + columnGap + this.s(56);
@@ -310,36 +332,36 @@ export class PauseMenu {
     ui.text(f.small, leftX, y, 'BIMGO', UiTheme.TEXT_MUTED, this.s(2.6));
     y += this.s(20);
     ui.text(f.title, leftX, y, 'PAUSED', UiTheme.TEXT, this.s(2.4));
-    y += this.s(64);
+    y += this.s(56);
     const buttonsTop = y;
 
-    // Button pitch: 54 px, tightened when a stack would run into CLOSE MODEL (small or high-DPI screens)
-    const endY = height - pad - this.s(48);
+    // Button pitch: 44 px, tightened when a stack would run into CLOSE MODEL (small or high-DPI screens)
+    const endY = height - pad - this.s(40);
     const hiddenThings = session.hiddenThingsCount;
     const texturesButton = session.textures?.available ?? false;
     const roomsButton = session.scene.rooms.length > 0;
     const libraryButton = this.library.available;
     const sessionButtons = 5; // + CONTROLS
-    const reviewButtons = 6 + (hiddenThings > 0 ? 1 : 0) + (texturesButton ? 1 : 0) + (libraryButton ? 1 : 0) + (roomsButton ? 1 : 0);
+    const reviewButtons = 5 + (hiddenThings > 0 ? 1 : 0) + (texturesButton ? 1 : 0) + (libraryButton ? 1 : 0) + (roomsButton ? 1 : 0);
     const rows = twoStacks ? Math.max(sessionButtons, reviewButtons) : sessionButtons + reviewButtons;
-    const step = Math.min(Math.max((endY - this.s(12) - buttonsTop) / rows, this.s(40)), this.s(54));
+    const step = Math.min(Math.max((endY - this.s(12) - buttonsTop) / rows, this.s(32)), this.s(44));
     const buttonH = step - this.s(6);
 
     // Stack 1: the session
     let x = leftX;
-    if (w.menuButton(f, x, y, stackW, 'RESUME', true, false, true, buttonH)) { session.setPaused(false); return; }
+    if (w.menuButton(f, x, y, stackW, 'RESUME', true, false, true, buttonH, true)) { session.setPaused(false); return; }
     y += step;
-    if (w.menuButton(f, x, y, stackW, 'RETURN HOME', false, false, true, buttonH)) { session.player.goHome(); session.setPaused(false); return; }
+    if (w.menuButton(f, x, y, stackW, 'RETURN HOME', false, false, true, buttonH, true)) { session.player.goHome(); session.setPaused(false); return; }
     y += step;
-    if (w.menuButton(f, x, y, stackW, session.clock < session.homeSetUntil ? 'HOME SET HERE' : 'SET HOME HERE', false, false, true, buttonH)) { session.setHomeHere(); }
+    if (w.menuButton(f, x, y, stackW, session.clock < session.homeSetUntil ? 'HOME SET HERE' : 'SET HOME HERE', false, false, true, buttonH, true)) { session.setHomeHere(); }
     y += step;
     // Save in place (Chrome / Edge) or download; Save As picks a new file
     const half = (stackW - this.s(6)) / 2;
-    if (w.menuButton(f, x, y, half, session.isDirty ? 'SAVE *' : 'SAVE', false, false, true, buttonH)) { void session.save(false); return; }
-    if (w.menuButton(f, x + half + this.s(6), y, half, 'SAVE AS', false, false, true, buttonH)) { void session.save(true); return; }
+    if (w.menuButton(f, x, y, half, session.isDirty ? 'SAVE *' : 'SAVE', false, false, true, buttonH, true)) { void session.save(false); return; }
+    if (w.menuButton(f, x + half + this.s(6), y, half, 'SAVE AS', false, false, true, buttonH, true)) { void session.save(true); return; }
     y += step;
     // Keys, mouse buttons, the wheel and the gamepad: every binding, rebindable
-    if (w.menuButton(f, x, y, stackW, 'CONTROLS', false, false, true, buttonH)) { this.controls.show(); return; }
+    if (w.menuButton(f, x, y, stackW, 'CONTROLS', false, false, true, buttonH, true)) { this.controls.show(); return; }
     y += step;
 
     // Stack 2: review tools and panels (beside the first, or below it)
@@ -348,50 +370,54 @@ export class PauseMenu {
       y = buttonsTop;
     }
     const comments = session.comments.comments.length;
-    if (w.menuButton(f, x, y, stackW, comments === 0 ? 'COMMENTS' : `COMMENTS (${comments})`, false, false, true, buttonH)) { this.openComments(); return; }
+    if (w.menuButton(f, x, y, stackW, comments === 0 ? 'COMMENTS' : `COMMENTS (${comments})`, false, false, true, buttonH, true)) { this.openComments(); return; }
     y += step;
     const bookmarks = session.bookmarks.bookmarks.length;
-    if (w.menuButton(f, x, y, stackW, bookmarks === 0 ? 'BOOKMARKS' : `BOOKMARKS (${bookmarks})`, false, false, true, buttonH)) { this.openBookmarks(); return; }
+    if (w.menuButton(f, x, y, stackW, bookmarks === 0 ? 'BOOKMARKS' : `BOOKMARKS (${bookmarks})`, false, false, true, buttonH, true)) { this.openBookmarks(); return; }
     y += step;
     if (texturesButton) {
-      if (w.menuButton(f, x, y, stackW, session.textures.menuLabel(), false, false, true, buttonH)) { session.textures.show(); return; }
+      if (w.menuButton(f, x, y, stackW, session.textures.menuLabel(), false, false, true, buttonH, true)) { session.textures.show(); return; }
       y += step;
     }
     if (roomsButton) {
-      if (w.menuButton(f, x, y, stackW, 'FIND ROOM', false, false, true, buttonH)) { this.rooms.show(); return; }
+      if (w.menuButton(f, x, y, stackW, 'FIND ROOM', false, false, true, buttonH, true)) { this.rooms.show(); return; }
       y += step;
     }
-    if (w.menuButton(f, x, y, stackW, 'SUN HOURS STUDY', false, false, true, buttonH)) { session.sunHours.show(); return; }
+    if (w.menuButton(f, x, y, stackW, 'SUN HOURS STUDY', false, false, true, buttonH, true)) { session.sunHours.show(); return; }
     y += step;
     // Clash detection (Round C): tests, sets and runs (switching it on the first time); Y is clash mode
-    if (w.menuButton(f, x, y, stackW, session.clashes.panel.label(), false, false, true, buttonH)) { session.clashes.panel.show(); return; }
+    if (w.menuButton(f, x, y, stackW, session.clashes.panel.label(), false, false, true, buttonH, true)) { session.clashes.panel.show(); return; }
     y += step;
     if (libraryButton) {
-      if (w.menuButton(f, x, y, stackW, this.library.menuLabel(), false, false, true, buttonH)) { this.library.show(); return; }
+      if (w.menuButton(f, x, y, stackW, this.library.menuLabel(), false, false, true, buttonH, true)) { this.library.show(); return; }
       y += step;
     }
-    if (w.menuButton(f, x, y, stackW, this.geometryMenuLabel(), false, false, true, buttonH)) { this.geometryOpen = true; return; }
+    if (w.menuButton(f, x, y, stackW, this.geometryMenuLabel(), false, false, true, buttonH, true)) { this.geometryOpen = true; return; }
     y += step;
     if (hiddenThings > 0) {
-      if (w.menuButton(f, x, y, stackW, `SHOW ALL (${hiddenThings} HIDDEN)`, false, false, true, buttonH)) { session.showAll(); }
-      y += step;
+      if (w.menuButton(f, x, y, stackW, `SHOW ALL (${hiddenThings} HIDDEN)`, false, false, true, buttonH, true)) { session.showAll(); }
     }
-    if (w.menuButton(f, x, y, stackW, 'CLEAR MARKERS', false, false, true, buttonH)) {
-      // Every gun's markers except comments (persistent: use X with the Comment gun)
-      for (const gun of session.guns) { if (gun !== session.commentGun) { gun.clearMarkers(); } }
-      session.toast('Markers cleared (comments are kept)');
-    }
+    // Round W-A: CLEAR MARKERS left the menu (each gun clears its own markers with the clear key; comments are
+    // issues, managed in COMMENTS)
 
-    if (w.menuButton(f, leftX, endY, stackW, 'CLOSE MODEL', false, true)) { session.requestClose(); return; }
+    if (w.menuButton(f, leftX, endY, stackW, 'CLOSE MODEL', false, true, true, this.s(40), true)) { session.requestClose(); return; }
 
-    // ---- Settings: quality profile, eye height and units · Display / Reflections / Debug
+    // ---- Settings: quality profile, eye height and units · Display / Reflections / Appearance
     const tabsX = rightEdge - columnW;
+
+    // QOL round: PREVIEW hides the backdrop and everything but the graphics settings (Esc returns)
+    this.previewLabel ??= `PREVIEW (${keyOf(InputAction.MenuPreview)})`;
+    if (w.menuButton(f, rightEdge - this.s(150), this.s(10), this.s(150), this.previewLabel, false, false, true, this.s(28), true)) {
+      this.preview = true;
+      w.activeSlider = -1;
+      return;
+    }
     if (twoColumns) {
       this.buildSettingsColumn(f, tabsX - columnGap - columnW, pad, columnW);
-      this.buildSettingsTabs(f, tabsX, pad, columnW);
+      this.buildSettingsTabs(f, tabsX, pad, columnW, this.s(32)); // the file footer stays clear
     } else {
       const used = this.buildSettingsColumn(f, tabsX, pad, columnW);
-      this.buildSettingsTabs(f, tabsX, pad + used + this.s(12), columnW);
+      this.buildSettingsTabs(f, tabsX, pad + used + this.s(12), columnW, this.s(32));
     }
 
     const scene = session.scene;
@@ -535,15 +561,8 @@ export class PauseMenu {
    * @returns Its height.
    */
   private buildSettingsColumn(f: FontAtlas, x: number, top: number, width: number): number {
-    const session = this.session, ui = session.ui, w = this.w;
-
-    // Quality profile: Basic / Medium / Realistic, or "Custom" once anything it sets was changed by hand
-    const profile = QualityProfiles.detect(session.settings);
-    ui.text(f.small, x, top + this.s(2), 'QUALITY PROFILE', UiTheme.TEXT_MUTED, this.s(1.8));
-    if (profile === QualityProfile.Custom) { ui.textRight(f.small, x + width, top + this.s(2), 'CUSTOM', UiTheme.MEASURE_LABEL, this.s(1.2)); }
-    const shown = profile === QualityProfile.Custom ? -1 : profile - 1;
-    const picked = w.segmented(f, x, top + this.s(22), width, QualityProfiles.LABELS, shown);
-    if (picked !== shown && picked >= 0) { session.reflections.applyProfile(QualityProfiles.PICKABLE[picked]); }
+    const session = this.session, w = this.w;
+    this.buildProfileRow(f, x, top, width);
 
     // Eye height: standing / seated / child (tour round), then the units (review tools round)
     let y = top + this.s(68);
@@ -567,11 +586,60 @@ export class PauseMenu {
     return this.s(94);
   }
 
+  /** Quality profile: Basic / Medium / Realistic, or "Custom" once anything it sets was changed by hand (68 px). */
+  private buildProfileRow(f: FontAtlas, x: number, top: number, width: number): void {
+    const session = this.session, ui = session.ui, w = this.w;
+    const profile = QualityProfiles.detect(session.settings);
+    ui.text(f.small, x, top + this.s(2), 'QUALITY PROFILE', UiTheme.TEXT_MUTED, this.s(1.8));
+    if (profile === QualityProfile.Custom) { ui.textRight(f.small, x + width, top + this.s(2), 'CUSTOM', UiTheme.MEASURE_LABEL, this.s(1.2)); }
+    const shown = profile === QualityProfile.Custom ? -1 : profile - 1;
+    const picked = w.segmented(f, x, top + this.s(22), width, QualityProfiles.LABELS, shown);
+    if (picked !== shown && picked >= 0) { session.reflections.applyProfile(QualityProfiles.PICKABLE[picked]); }
+  }
+
+  /** Leaves the options preview (Esc): back to the full pause menu. True when the preview was open. */
+  closePreview(): boolean {
+    if (!this.preview) { return false; }
+    this.preview = false;
+    this.w.activeSlider = -1;
+    return true;
+  }
+
+  /**
+   * The options preview: no backdrop, no buttons, only the quality profile and the Display / Reflections / Appearance
+   * card on a light panel, so the scene behind can be judged while tuning.
+   */
+  private buildPreview(f: FontAtlas, width: number, height: number): void {
+    const ui = this.session.ui, w = this.w;
+    // Polish round P-A1: the card's height comes from the window (it scrolls when short), DONE always fits under it
+    const columnW = this.s(280), pad = this.s(48);
+    const x = width - this.s(56) - columnW;
+    const cardTop = pad + this.s(68) + this.s(32), doneReserve = this.s(12) + this.s(36);
+    let cardH = this.settingsCardHeight(cardTop, doneReserve);
+    const panelTop = pad - this.s(36), panelBottom = cardTop + cardH + doneReserve + this.s(12);
+    ui.rect(x - this.s(16), panelTop, columnW + this.s(32), Math.min(panelBottom, height - this.s(8)) - panelTop, Rgba.hex(0x101318, 0.55));
+
+    ui.text(f.small, x, panelTop + this.s(10), 'PREVIEW', UiTheme.ACCENT, this.s(2));
+    ui.textRight(f.small, x + columnW, panelTop + this.s(10), 'ESC RETURNS', UiTheme.TEXT_MUTED, this.s(1.2));
+    this.buildProfileRow(f, x, pad, columnW);
+    cardH = this.buildSettingsTabs(f, x, pad + this.s(68), columnW, doneReserve);
+
+    const doneY = cardTop + cardH + this.s(12);
+    if (w.menuButton(f, x, doneY, columnW, 'DONE', false, false, true, this.s(36), true)) { this.closePreview(); }
+  }
+
+  /** The settings card's height below a top: the full height, or what the window has left (less reserve), at least 160 px. */
+  private settingsCardHeight(cardTop: number, reserve = 0): number {
+    return Math.min(this.s(RIGHT_CARD_HEIGHT), Math.max(this.s(160), this.session.screenHeight - this.s(UiTheme.PANEL_MARGIN) - reserve - cardTop));
+  }
+
   /**
    * The Display · Reflections · Appearance tabs and the open tab's card. One fixed card height so the column doesn't
    * jump between tabs (shorter, and scrolled, in a short window).
+   * @param reserve Height kept free under the card (the preview's DONE).
+   * @returns The card's height.
    */
-  private buildSettingsTabs(f: FontAtlas, x: number, top: number, width: number): void {
+  private buildSettingsTabs(f: FontAtlas, x: number, top: number, width: number, reserve = 0): number {
     const session = this.session, ui = session.ui, w = this.w, input = session.input;
     const tab = w.tabs(f, x, top, width, RIGHT_TABS, this.rightTab);
     if (tab !== this.rightTab) {
@@ -581,7 +649,7 @@ export class PauseMenu {
     }
 
     const cardTop = top + this.s(32);
-    const cardH = Math.min(this.s(RIGHT_CARD_HEIGHT), Math.max(this.s(160), session.screenHeight - this.s(UiTheme.PANEL_MARGIN) - cardTop));
+    const cardH = this.settingsCardHeight(cardTop, reserve);
     ui.panel(x, cardTop, width, cardH, UiTheme.CARD, UiTheme.CARD_BORDER);
     const ix = x + this.s(14), iw = width - this.s(28);
 
@@ -594,6 +662,7 @@ export class PauseMenu {
       default: this.buildDisplayTab(f, ix, y, iw); break;
     }
     session.shell.endScroll(this.settingsScroll, input, bottom);
+    return cardH;
   }
 
   /** Display tab: ground plane, colour, FOV, sensitivity, toggles and the author name. */
