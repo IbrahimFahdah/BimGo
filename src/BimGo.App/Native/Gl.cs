@@ -54,6 +54,7 @@ namespace BimGo.Native
 
         // Ambient occlusion (float colour targets, read with texelFetch)
         public const uint RGBA32F = 0x8814, RG16F = 0x822F, RG = 0x8227, HALF_FLOAT = 0x140B, RG32F = 0x8230;
+        public const uint R32F = 0x822E, RED = 0x1903; // Round W-B: the cover map
 
         // Artificial lights (glow target as a second colour attachment)
         public const uint RGBA16F = 0x881A, COLOR_ATTACHMENT1 = 0x8CE1;

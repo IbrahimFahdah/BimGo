@@ -178,6 +178,50 @@ namespace BimGo.Format
         public float MilkyWay { get; set; } = 1f;
 
         /// <summary>
+        /// Round W-B: the weather: "off" (the default), "rain" or "snow" (a string, so a later kind never fails an older
+        /// reader; anything unknown reads as off). Shows in the classic light and with shadows on.
+        /// </summary>
+        public string Weather { get; set; } = WEATHER_OFF;
+
+        /// <summary>Round W-B: the weather's values.</summary>
+        public const string WEATHER_OFF = "off", WEATHER_RAIN = "rain", WEATHER_SNOW = "snow";
+
+        /// <summary>Round W-B: how hard it rains or snows (0.05–1; 0.5 = steady).</summary>
+        public float WeatherIntensity { get; set; } = 0.5f;
+
+        /// <summary>Round W-B: how wet open surfaces look while it rains (0 = dry, 1 = the default, soaked with puddles).</summary>
+        public float Wetness { get; set; } = 1f;
+
+        /// <summary>Round W-B: how much snow has settled on open, up-facing surfaces while it snows (0 = none, 1 = deep).</summary>
+        public float SnowCover { get; set; } = 0.6f;
+
+        /// <summary>Round W-C: lightning while it rains (off by default).</summary>
+        public bool Lightning { get; set; }
+
+        /// <summary>Round W-C: how often it strikes: 0 rare, 1 sometimes (the default), 2 often.</summary>
+        public int LightningFrequency { get; set; } = 1;
+
+        /// <summary>Round W-C: how much a strike brightens the scene (0 = sky only, 1 = strongest; 0.35 = the default).</summary>
+        public float LightningFlash { get; set; } = 0.35f;
+
+        /// <summary>Round W-C: photosensitive comfort: each strike is one slow glow instead of flickers.</summary>
+        public bool ReduceFlashing { get; set; }
+
+        /// <summary>Round W-C: drops (rain) and melting flakes (snow) on the lens now and then, outdoors (never in photos or videos).</summary>
+        public bool LensDrops { get; set; } = true;
+
+        /// <summary>Round W-C: the rain's hiss (quieter under a roof) and thunder.</summary>
+        public bool WeatherSound { get; set; } = true;
+
+        /// <summary>Round W-B: true when it is raining.</summary>
+        [System.Text.Json.Serialization.JsonIgnore]
+        public bool Raining => Weather == WEATHER_RAIN;
+
+        /// <summary>Round W-B: true when it is snowing.</summary>
+        [System.Text.Json.Serialization.JsonIgnore]
+        public bool Snowing => Weather == WEATHER_SNOW;
+
+        /// <summary>
         /// A location chosen in BimGo instead of the model's (location override), or null to use the Revit site's.
         /// Older readers ignore it; Revit is never changed.
         /// </summary>
@@ -203,6 +247,13 @@ namespace BimGo.Format
             StarBrightness = Clamp(StarBrightness, 0f, 2f, 1f);
             StarTwinkle = Clamp(StarTwinkle, 0f, 2f, 1f);
             MilkyWay = Clamp(MilkyWay, 0f, 2f, 1f);
+            string weather = Weather?.Trim().ToLowerInvariant();
+            Weather = weather is WEATHER_RAIN or WEATHER_SNOW ? weather : WEATHER_OFF;
+            WeatherIntensity = Clamp(WeatherIntensity, 0.05f, 1f, 0.5f);
+            Wetness = Clamp(Wetness, 0f, 1f, 1f);
+            SnowCover = Clamp(SnowCover, 0f, 1f, 0.6f);
+            LightningFrequency = Math.Clamp(LightningFrequency, 0, 2);
+            LightningFlash = Clamp(LightningFlash, 0f, 1f, 0.35f);
             if (Location != null && !Location.Clean().IsValid) { Location = null; }
             return this;
         }
@@ -228,6 +279,16 @@ namespace BimGo.Format
             StarBrightness = StarBrightness,
             StarTwinkle = StarTwinkle,
             MilkyWay = MilkyWay,
+            Weather = Weather,
+            WeatherIntensity = WeatherIntensity,
+            Wetness = Wetness,
+            SnowCover = SnowCover,
+            Lightning = Lightning,
+            LightningFrequency = LightningFrequency,
+            LightningFlash = LightningFlash,
+            ReduceFlashing = ReduceFlashing,
+            LensDrops = LensDrops,
+            WeatherSound = WeatherSound,
             Location = Location?.Copy()
         };
 

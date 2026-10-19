@@ -149,6 +149,53 @@ namespace BimGo.Rendering
             };
         }
 
+        /// <summary>
+        /// Round W-B: the light under rain or snow clouds: the direct light (sun or moon) dims and its shadows soften,
+        /// the sky greys over (lighter for snow), the sun and moon discs fade behind the cloud. Unchanged when off.
+        /// </summary>
+        /// <param name="lighting">The clear-sky lighting.</param>
+        /// <param name="overcast">0 = none, 1 = a heavy storm.</param>
+        /// <param name="snow">Snow clouds: a lighter, whiter grey.</param>
+        public static SunLighting WithWeather(SunLighting lighting, float overcast, bool snow)
+        {
+            float o = float.IsFinite(overcast) ? Math.Clamp(overcast, 0f, 1f) : 0f;
+            if (!lighting.Enabled || o <= 0f) { return lighting; }
+            SunLighting l = lighting;
+            l.SunColour *= 1f - 0.6f * o;
+            l.ShadowStrength *= 1f - 0.5f * o;
+            l.SkyColour *= 1f - (snow ? 0.02f : 0.12f) * o;
+            l.Zenith = Vector3.Lerp(l.Zenith, Grey(l.Zenith) * (snow ? 1.25f : 0.95f), 0.75f * o);
+            l.Horizon = Vector3.Lerp(l.Horizon, Grey(l.Horizon) * (snow ? 1.08f : 0.9f), 0.7f * o);
+            l.SunDisc *= 1f - 0.95f * o;
+            l.MoonDisc *= 1f - 0.9f * o;
+            l.MoonGlow *= 1f - 0.6f * o;
+            return l;
+
+            static Vector3 Grey(Vector3 c)
+            {
+                float y = Math.Clamp(c.X * 0.30f + c.Y * 0.59f + c.Z * 0.11f, 0f, 1f);
+                return new Vector3(y * 0.97f, y, y * 1.03f);
+            }
+        }
+
+        /// <summary>
+        /// Round W-C: a lightning flash: the sky light (ambient) and the sky's colours lifted by a cool white, up to a
+        /// capped amount (so the scene brightens softly, never to white). Unchanged when off.
+        /// </summary>
+        /// <param name="lighting">The frame's lighting.</param>
+        /// <param name="amount">0 = none, 1 = the strongest flash allowed.</param>
+        public static SunLighting WithLightning(SunLighting lighting, float amount)
+        {
+            float a = float.IsFinite(amount) ? Math.Clamp(amount, 0f, 1f) : 0f;
+            if (!lighting.Enabled || a <= 0.001f) { return lighting; }
+            SunLighting l = lighting;
+            Vector3 flash = new(0.72f, 0.77f, 0.95f);
+            l.SkyColour += flash * (0.5f * a);
+            l.Zenith += flash * (0.22f * a);
+            l.Horizon += flash * (0.18f * a);
+            return l;
+        }
+
         /// <summary>W-A: a full moon's direct light against the sun's (tuned bright enough to walk by, about 1 / 6).</summary>
         private const float MOONLIGHT = 0.10f;
 

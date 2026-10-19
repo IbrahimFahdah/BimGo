@@ -36,7 +36,7 @@ namespace BimGo.Game
         private const int SLIDER_CLOUDS = 20, SLIDER_CLOUD_SPEED = 21, SLIDER_SUN_SIZE = 22, SLIDER_SUN_GLARE = 23;
 
         /// <summary>Sky round: the sun panel's lower tabs.</summary>
-        private static readonly string[] SUN_TABS = { "LIGHTING", "SKY", "NIGHT" }; // W-A: NIGHT (moon, stars)
+        private static readonly string[] SUN_TABS = { "LIGHTING", "SKY", "NIGHT", "WEATHER" }; // W-A: NIGHT (moon, stars); W-B: WEATHER
 
         /// <summary>Round W-A: the NIGHT tab's sliders.</summary>
         private const int SLIDER_MOONLIGHT = 32, SLIDER_STAR_DENSITY = 33, SLIDER_STAR_BRIGHTNESS = 34, SLIDER_STAR_TWINKLE = 35, SLIDER_MILKY_WAY = 36;
@@ -290,11 +290,11 @@ namespace BimGo.Game
             if (_cloudOffset.LengthSquared() > 1e8f) { _cloudOffset = Vector2.Zero; } // days of drift: keep the noise precise
             _renderer.Sky = new SkyLook
             {
-                CloudCover = _sun.CloudCover,
+                CloudCover = WeatherOn ? MathF.Max(_sun.CloudCover, 0.65f + 0.35f * _sun.WeatherIntensity) : _sun.CloudCover, // W-B: rain clouds
                 CloudOffset = _cloudOffset,
                 SunSize = _sun.SunSize,
                 SunGlare = _sun.SunGlare,
-                Stars = _sun.Stars ? new Vector4(_sun.StarDensity, _sun.StarBrightness, _sun.StarTwinkle, _sun.MilkyWay) : Vector4.Zero, // W-A
+                Stars = _sun.Stars ? new Vector4(_sun.StarDensity, _sun.StarBrightness * (1f - WeatherOvercast), _sun.StarTwinkle, _sun.MilkyWay * (1f - WeatherOvercast)) : Vector4.Zero, // W-A (W-B: hidden by the storm)
                 Time = _clock % 3600f,
                 CelestialX = _celestialX,
                 CelestialY = _celestialY,
@@ -322,7 +322,7 @@ namespace BimGo.Game
                 float cosElongation = Math.Clamp(1f - 2f * chosen, -1f, 1f);
                 lighting.MoonSunDirection = _moonDirection * cosElongation + side * MathF.Sqrt(1f - cosElongation * cosElongation);
             }
-            return lighting;
+            return SunLighting.WithWeather(lighting, WeatherOvercast, _sun.Snowing); // W-B: dimmer, greyer under rain or snow
         }
 
         /// <summary>
@@ -696,6 +696,11 @@ namespace BimGo.Game
                 cy = BuildNightTab(f, input, ix, cy, iw); // W-A
                 return true;
             }
+            if (_sunTab == 3)
+            {
+                cy = BuildWeatherTab(f, input, ix, cy, iw); // W-B
+                return true;
+            }
 
             // Intensities
             IntensitySlider(f, input, SLIDER_SUN, ix, cy, iw, "Sunlight", _sun.SunIntensity, 2f);
@@ -871,6 +876,10 @@ namespace BimGo.Game
                     case SLIDER_STAR_BRIGHTNESS: _sun.StarBrightness = result; break;
                     case SLIDER_STAR_TWINKLE: _sun.StarTwinkle = result; break;
                     case SLIDER_MILKY_WAY: _sun.MilkyWay = result; break;
+                    case SLIDER_WEATHER: _sun.WeatherIntensity = result; break; // W-B
+                    case SLIDER_WETNESS: _sun.Wetness = result; break;
+                    case SLIDER_SNOW_COVER: _sun.SnowCover = result; break;
+                    case SLIDER_FLASH: _sun.LightningFlash = result; break; // W-C
                 }
                 SunChanged();
             }

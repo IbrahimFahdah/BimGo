@@ -139,6 +139,9 @@ namespace BimGo.Rendering
             Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0);
         }
 
+        /// <summary>Round W-C: the framebuffer (to copy the colour from: the lens drops refract it).</summary>
+        public uint Framebuffer => _framebuffer;
+
         /// <summary>True when the framebuffer was created and is complete.</summary>
         public bool IsValid => _framebuffer != 0;
 

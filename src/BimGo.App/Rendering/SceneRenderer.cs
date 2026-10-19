@@ -435,6 +435,8 @@ namespace BimGo.Rendering
             _skyCelestialX = _skyProgram.Uniform("uCelestialX");
             _skyCelestialY = _skyProgram.Uniform("uCelestialY");
             _skyCelestialZ = _skyProgram.Uniform("uCelestialZ");
+            _skyLightning = _skyProgram.Uniform("uLightning"); // Round W-C
+            _skyBolt = _skyProgram.Uniform("uBolt");
             _depthViewProj = _shadowDepthProgram.Uniform("uViewProj");
             _depthModel = _shadowDepthProgram.Uniform("uModel");
             _transmitViewProj = _shadowTransmitProgram.Uniform("uViewProj");
@@ -447,6 +449,7 @@ namespace BimGo.Rendering
             _groundHalf = _groundProgram.Uniform("uHalf");
             _groundEye = _groundProgram.Uniform("uEye");
             _groundFog = _groundProgram.Uniform("uFogColor");
+            InitialiseWeather(); // Round W-B
 
             // Static geometry
             _vao = Gl.GenVertexArray();
@@ -1279,6 +1282,9 @@ namespace BimGo.Rendering
             Gl.Uniform3(_skyCelestialX, sky.CelestialX.X, sky.CelestialX.Y, sky.CelestialX.Z);
             Gl.Uniform3(_skyCelestialY, sky.CelestialY.X, sky.CelestialY.Y, sky.CelestialY.Z);
             Gl.Uniform3(_skyCelestialZ, sky.CelestialZ.X, sky.CelestialZ.Y, sky.CelestialZ.Z);
+            float strike = stars ? sky.Lightning.W : 0f; // W-C: not in probe faces
+            Gl.Uniform4(_skyLightning, sky.Lightning.X, sky.Lightning.Y, sky.Lightning.Z, strike);
+            Gl.Uniform4(_skyBolt, sky.Bolt.X, sky.Bolt.Y, sky.Bolt.Z, sky.Bolt.W);
             Gl.BindVertexArray(_emptyVao);
             Gl.DrawArrays(Gl.TRIANGLES, 0, 3);
             Gl.DepthMask(true);
@@ -1305,6 +1311,7 @@ namespace BimGo.Rendering
             ApplyLight(_groundLight, sun: true, transmit: true);
             ApplyAo(_groundAo, on: true);
             ApplyArtificial(_groundLights, on: true);
+            ApplyWeather(_groundWeather, on: true); // Round W-B
             Gl.BindVertexArray(_emptyVao);
             Gl.DrawArrays(Gl.TRIANGLES, 0, 6);
         }
@@ -1388,6 +1395,7 @@ namespace BimGo.Rendering
             // AO follows "transmit": on for opaque surfaces and highlights, off for glass (it isn't in the pre-pass)
             ApplyAo(_sceneAo, transmit && !p.Plan);
             ApplyArtificial(_sceneLights, !p.Plan);
+            ApplyWeather(_sceneWeather, !p.Plan); // Round W-B
             Gl.Uniform1(u.FogDensity, p.FogDensity);
             Gl.Uniform1(u.Whitecard, p.Whitecard ? 1 : 0);
             Gl.Uniform1(u.Plan, p.Plan ? 1 : 0);
@@ -1402,6 +1410,14 @@ namespace BimGo.Rendering
             if (profilePass > 0) { Gl.Uniform1(u.ProfileDetail, _profileDetail); }
             Gl.Uniform1(u.Ghost, overrideColour.W > 0f ? 0f : profilePass == 2 ? PROFILE_GHOST_ALPHA : GhostAlpha);
 
+            // The sky in reflections (Round W-B: wet surfaces reflect it in every colour mode)
+            SunLighting l = Lighting;
+            Vector3 zenith = l.Enabled ? l.Zenith : SKY_ZENITH, horizon = l.Enabled ? l.Horizon : FOG_COLOUR;
+            Gl.Uniform3(u.SkyZenith, zenith.X, zenith.Y, zenith.Z);
+            Gl.Uniform3(u.SkyHorizon, horizon.X, horizon.Y, horizon.Z);
+            Gl.Uniform1(u.CloudCover, Sky.CloudCover);
+            Gl.Uniform2(u.CloudOffset, Sky.CloudOffset.X, Sky.CloudOffset.Y);
+
             bool realistic = p.Realistic && !p.Whitecard && HasMaterials;
             Gl.Uniform1(u.Realistic, realistic ? 1 : 0);
             if (!realistic) { return; }
@@ -1411,8 +1427,6 @@ namespace BimGo.Rendering
             Gl.Uniform1(u.ReflectGain, p.ReflectGain > 0f ? p.ReflectGain : 1f);
             Gl.Uniform1(u.ReflectDebug, p.ReflectDebug);
             Gl.Uniform1(u.Time, WaterClock); // uTime only moves the water here (water round W)
-            Gl.Uniform1(u.CloudCover, Sky.CloudCover);
-            Gl.Uniform2(u.CloudOffset, Sky.CloudOffset.X, Sky.CloudOffset.Y);
             Gl.Uniform4(u.WaterTint, WaterTint.X, WaterTint.Y, WaterTint.Z, WaterTint.W);
             Gl.Uniform1(u.WaterReflect, WaterReflect);
             Gl.Uniform1(u.WaterWaves, WaterWaves);
@@ -1428,10 +1442,6 @@ namespace BimGo.Rendering
                 Gl.Uniform1(u.ProbeMaxLod, _probes.MaxLod);
             }
             Gl.Uniform1(u.TintMode, (int)p.Tint);
-            SunLighting l = Lighting;
-            Vector3 zenith = l.Enabled ? l.Zenith : SKY_ZENITH, horizon = l.Enabled ? l.Horizon : FOG_COLOUR;
-            Gl.Uniform3(u.SkyZenith, zenith.X, zenith.Y, zenith.Z);
-            Gl.Uniform3(u.SkyHorizon, horizon.X, horizon.Y, horizon.Z);
         }
 
         /// <summary>The classic sky's zenith (matches SKY_FS with the sun off).</summary>
@@ -1454,6 +1464,7 @@ namespace BimGo.Rendering
             DisposeSection();
             DisposePhoto();
             DisposeGrass();
+            DisposeWeather();
             DisposeProfile();
             _shadows.Dispose();
             _effects.Dispose();

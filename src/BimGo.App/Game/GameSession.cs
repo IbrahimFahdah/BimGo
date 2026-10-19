@@ -558,6 +558,7 @@ namespace BimGo.Game
                 _frameTime = dt;
                 AdvanceSky(dt); // sky round: clouds drift, the sky look reaches the renderer
                 AdvanceWater(dt); // water round W: the ripples' clock runs at the ripple speed
+                AdvanceWeather(dt); // Round W-B: the rain and snow's clock
 
                 if (_window.IsMinimised)
                 {
@@ -1312,6 +1313,7 @@ namespace BimGo.Game
             try { ReleaseLibraryPreviews(); } catch (Exception ex) { Utilities.Log_Utils.Write($"Library preview cleanup failed: {ex.Message}"); }
             try { ReleaseMarkup(); } catch (Exception ex) { Utilities.Log_Utils.Write($"Markup cleanup failed: {ex.Message}"); }
             Sound.Dispose();
+            _weatherSound.Dispose(); // Round W-C
             _renderer?.Dispose();
             _overlay.Dispose();
             _gridOverlay.Dispose();

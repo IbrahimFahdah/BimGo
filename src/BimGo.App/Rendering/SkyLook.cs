@@ -33,6 +33,12 @@ namespace BimGo.Rendering
         /// <summary>Round W-A: the equatorial axes in scene axes (a sky direction's dot with each = its equatorial coordinates).</summary>
         public Vector3 CelestialX, CelestialY, CelestialZ;
 
+        /// <summary>Round W-C: lightning: towards the strike (xyz, scene axes) and its brightness (w, 0 = none).</summary>
+        public Vector4 Lightning;
+
+        /// <summary>Round W-C: the bolt: shape seed, 1 = visible, the lit zone's radius (rad), unused.</summary>
+        public Vector4 Bolt;
+
         /// <summary>No clouds, the default disc.</summary>
         public static readonly SkyLook Default = new() { SunSize = 1f, SunGlare = 1f };
     }

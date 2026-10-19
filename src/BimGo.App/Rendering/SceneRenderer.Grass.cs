@@ -159,6 +159,8 @@ namespace BimGo.Rendering
             _gClipCount = p.Uniform("uClipCount");
             _gClipPlanes = p.Uniform("uClipPlanes");
             for (int i = 0; i < _gPalette.Length; i++) { _gPalette[i] = p.Uniform($"uGrassPalette[{i}]"); }
+            _grassWeather = WeatherUniforms.From(p); // Round W-B
+            _gSnowShrink = p.Uniform("uSnowShrink");
             return true;
         }
 
@@ -229,6 +231,8 @@ namespace BimGo.Rendering
             ApplyAo(_grassAo, on: false);
             ApplyArtificial(_grassLights, on: true);
             ApplyClip(_gClipCount, _gClipPlanes, p.Section);
+            ApplyWeather(_grassWeather, on: true); // Round W-B: wet / snowy blades, snow burying them
+            Gl.Uniform1(_gSnowShrink, Weather.Any ? Math.Clamp(Weather.Snow, 0f, 1f) * 0.75f : 0f);
             Gl.ActiveTexture(Gl.TEXTURE0 + GRASS_UNIT);
             Gl.BindTexture(Gl.TEXTURE_2D, _grassMap);
             Gl.ActiveTexture(Gl.TEXTURE0);

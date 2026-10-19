@@ -166,16 +166,19 @@ namespace BimGo.Game
             // ---- Colour round A: the active colour profile (evaluated again only when something changed)
             UpdateProfile();
 
+            // ---- Round W-B / W-C: the cover map, this frame's rain / snow and lightning (before the lighting: a flash lifts it)
+            UpdateWeather();
+
             // ---- Sun lighting and shadow maps (only changed cascades re-render). Clash pictures (C-B2) other than the real
             // model view draw without the sun, so they leave the cascades as the main view needs them
-            _renderer.Lighting = CurrentLighting();
+            _renderer.Lighting = FrameLighting();
             bool clashShotUnlit = _clashShot && _clashView != CLASH_VIEW_REAL;
             string shadowError = clashShotUnlit ? null : _renderer.UpdateShadows(Camera, Scene.Bounds, ShadowSceneKey(), _groupVisible, Dynamics, _whitecard,
                 ShadowMaps.PresetFor(_shadowQuality));
             if (shadowError != null)
             {
                 OnShadowFailure(shadowError);
-                _renderer.Lighting = CurrentLighting();
+                _renderer.Lighting = FrameLighting();
             }
 
             // ---- Artificial lights for this frame (after the sun: daylight dims them), and their cached shadow maps
@@ -236,7 +239,7 @@ namespace BimGo.Game
                 Tint = _tintMode,
                 Plan = false,
                 ClipZ = new Vector2(-1e7f, 1e7f),
-                FogDensity = 0.0022f,
+                FogDensity = 0.0022f * WeatherFog, // W-B: thicker in the rain / snow
                 Sun = true,
                 Section = true
             };
@@ -284,10 +287,17 @@ namespace BimGo.Game
                 _renderer.DrawDynamic(p, Dynamics, transparent: true);
                 Gl.DepthMask(true);
                 Gl.Disable(Gl.BLEND);
+
+                DrawWeather(p); // Round W-B: falling rain / snow (in photos and videos too)
             }
 
             // Bloom from glowing surfaces over everything (glass included)
             _renderer.CompositeGlow();
+
+            // Round W-C: a lightning flash in the classic light (with sun lighting it lifted the sky light instead); drops on
+            // the lens (the main view only: never photos, videos, thumbnails or screenshots)
+            if (!clashView) { DrawLightningFlash(); }
+            if (!photo && !clashView) { DrawLensDrops(target); }
 
             // Photo exposure (the preview and the photo alike)
             if (_photoOpen) { _renderer.ApplyExposure(_photoExposure); }

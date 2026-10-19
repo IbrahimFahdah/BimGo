@@ -96,7 +96,7 @@ namespace BimGo.Game
         /// </summary>
         private long ProbeSceneKey()
         {
-            SunLighting l = _renderer.Lighting;
+            SunLighting l = _probeLighting; // W-C: without a lightning flash (a flash never re-bakes the probes)
             var hash = new HashCode();
             hash.Add(l.Enabled);
             hash.Add(l.SunDirection);
@@ -114,6 +114,10 @@ namespace BimGo.Game
             hash.Add(_renderer.ProbeGrass); // polish round P-C: blades came (or went), or the field was rebuilt
             hash.Add(_grassField.GrassCells);
             hash.Add(_grassHeightMm);
+            hash.Add(_renderer.Weather.Kind); // Round W-B: wet / snowy surfaces in the probes (not the falling drops)
+            hash.Add(_renderer.Weather.Wet);
+            hash.Add(_renderer.Weather.Snow);
+            hash.Add(_renderer.HasCoverMap);
             long key = ShadowSceneKey() ^ ((long)hash.ToHashCode() << 17);
             return key == 0 ? 1 : key;
         }
